@@ -1,7 +1,32 @@
 const std = @import("std");
 const sl = @import("sl");
+const Tokenizer = @import("Tokenizer.zig");
 
 pub fn main() !void {
+    const source_file = try std.fs.cwd().openFile("source.sl", .{});
+    var reader = source_file.reader(&.{});
+
+    var alloc_writer = std.Io.Writer.Allocating.init(std.heap.page_allocator);
+    _ = try reader.interface.streamRemaining(&alloc_writer.writer);
+
+    const source = alloc_writer.writer.buffered();
+
+    // std.debug.print("source:\n{s}", .{source});
+    var tokenizer: Tokenizer = .new(source);
+    while (true) {
+        const t = try tokenizer.next();
+        switch (t) {
+            .eof => {
+                std.debug.print("eof\n", .{});
+                break;
+            },
+            .endl => std.debug.print("endl\n", .{}),
+            .identifier => |id| std.debug.print("id: {s}\n", .{id}),
+            else => unreachable,
+        }
+    }
+}
+pub fn kek() !void {
     const out_file = try std.fs.cwd().openFile("out.spv", .{ .mode = .read_write });
     defer out_file.close();
     var buf: [128]u8 = undefined;
