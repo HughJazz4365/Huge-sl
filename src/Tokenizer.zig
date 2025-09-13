@@ -1,5 +1,6 @@
 const std = @import("std");
 const Tokenizer = @This();
+const Parser = @import("Parser.zig");
 
 const Error = error{InvalidInput};
 
@@ -18,10 +19,15 @@ pub const TokenData = std.meta.Tuple(&.{ Token, usize });
 pub const Token = union(enum) {
     eof,
     endl,
+
     identifier: []const u8,
+
+    type_literal : Parser.Type,
+        int_literal: i128,
+    float_literal: f128,
+
     bin_op,
     un_op,
-    type_literal, //Type the real one
-    int_literal: i128,
-    float_literal: f128,
+
+    
 };
