@@ -15,15 +15,8 @@ pub fn main() !void {
     var tokenizer: Tokenizer = .new(source);
     while (true) {
         const t = try tokenizer.next();
-        switch (t) {
-            .eof => {
-                std.debug.print("eof\n", .{});
-                break;
-            },
-            .endl => std.debug.print("endl\n", .{}),
-            .identifier => |id| std.debug.print("id: {s}\n", .{id}),
-            else => unreachable,
-        }
+        t.print();
+        if (t == .eof) break;
     }
 }
 pub fn kek() !void {

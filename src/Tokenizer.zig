@@ -11,12 +11,12 @@ last: Token = .eof,
 start_ptr: [*]const u8,
 
 pub fn next(self: *Tokenizer) Error!Token {
-    const token: Token = switch (self.nextBytes()) {
-        .endl => .endl,
-        .eof => .eof,
-        .valid => |v| .{ .identifier = v },
+    const bytes = switch (self.nextBytes()) {
+        .endl => return .endl,
+        .eof => return .eof,
+        .valid => |v| v,
     };
-    return token;
+    return .{ .identifier = bytes };
 }
 
 pub fn nextBytes(self: *Tokenizer) RawToken {
@@ -111,4 +111,11 @@ pub const Token = union(enum) {
     _enum,
     _image,
     _defer,
+    pub fn print(self: Token) void {
+        switch (self) {
+            .identifier => |id| std.debug.print("[id]: {s}\n", .{id}),
+            .type_literal => std.debug.print("[type_literal]: \n", .{}),
+            inline else => |value, tag| std.debug.print("[{s}]: {any}\n", .{ @tagName(tag), value }),
+        }
+    }
 };
