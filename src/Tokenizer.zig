@@ -1,5 +1,6 @@
 const std = @import("std");
 const util = @import("util.zig");
+const tp = @import("type.zig");
 const Tokenizer = @This();
 const Parser = @import("Parser.zig");
 
@@ -11,6 +12,10 @@ last: Token = .eof,
 start_ptr: [*]const u8,
 
 pub fn next(self: *Tokenizer) Error!Token {
+    // inline for (comptime tp.Vector.allVectors()) |v| {
+    //     @compileLog(comptime v.literalComp());
+    // }
+
     const p = try self.peekRaw();
     self.last = p.token;
     self.shift(p.len);
@@ -23,9 +28,11 @@ fn peekRaw(self: *Tokenizer) Error!PeekRawResult {
         .valid => |v| v,
     };
     inline for (keywords) |tag| {
-        const offset = @intFromBool(@intFromEnum(tag) >= @intFromEnum(TokenTag._const));
-        if (util.strExtract(bytes, @tagName(tag)[offset..])) return .{
-            .len = @tagName(tag).len - offset,
+        if (if (@intFromEnum(tag) >= @intFromEnum(TokenTag.@"const"))
+            util.strExtract(bytes, @tagName(tag))
+        else
+            util.strStarts(bytes, @tagName(tag))) return .{
+            .len = @tagName(tag).len,
             .token = @unionInit(Token, @tagName(tag), {}),
         };
     }
@@ -42,8 +49,9 @@ fn peekRaw(self: *Tokenizer) Error!PeekRawResult {
             if (u_op_match) |x| return .{ .len = @tagName(x).len, .token = .{ .u_op = x } };
         },
     }
-    // parse operators
-    // parse type literal
+
+    if (self.getTypeLiteralRaw()) |t| return t;
+    if (self.getNumberLiteralRaw()) |l| return l;
     // parse number
     // parse swizzle
     // strip valid identifier
@@ -52,6 +60,23 @@ fn peekRaw(self: *Tokenizer) Error!PeekRawResult {
         .len = bytes.len,
         .token = .{ .identifier = bytes },
     };
+}
+fn getNumberLiteralRaw(self: *Tokenizer) ?PeekRawResult {
+    _ = self;
+    return null;
+}
+
+fn getTypeLiteralRaw(self: *Tokenizer) ?PeekRawResult {
+    inline for (.{ "void", "bool", "type", "int", "float" }) |s| {
+        if (util.strExtract(self.source, s))
+            return .{ .len = s.len, .token = .{ .type_literal = @unionInit(tp.Type, s, {}) } };
+    }
+    inline for (comptime tp.Vector.allVectors()) |v| {
+        const vec_literal = v.literalComp();
+        if (util.strExtract(self.source, vec_literal))
+            return .{ .len = vec_literal.len, .token = .{ .type_literal = .{ .vector = v } } };
+    }
+    return null;
 }
 const PeekRawResult = struct { len: usize, token: Token };
 
@@ -62,15 +87,15 @@ pub fn nextBytes(self: *Tokenizer) RawToken {
     var in_comment = false;
     var count: usize = 0;
 
-    while (self.source.len > 0) {
-        const char = self.source[0];
+    while (self.source.len > count) {
+        const char = self.source[count];
 
         const is_valid: std.meta.Tuple(&.{ bool, u32 }) = blk: {
-            if (util.strStartsComp(self.source, comment_symbol)) {
+            if (util.strStartsComp(self.source[count..], comment_symbol)) {
                 in_comment = true;
                 break :blk .{ false, comment_symbol.len };
             }
-            if (char == '\n' or util.strStartsComp(self.source, "\r\n")) {
+            if (char == '\n' or util.strStartsComp(self.source[count..], "\r\n")) {
                 is_endl = !in_comment;
                 in_comment = false;
                 break :blk .{ false, if (char == '\n') 1 else 2 };
@@ -80,7 +105,6 @@ pub fn nextBytes(self: *Tokenizer) RawToken {
         if (is_valid[0]) {
             if (is_endl) break;
             count += 1;
-            self.shift(1);
         } else {
             if (count > 0) break;
             self.shift(is_valid[1]);
@@ -89,11 +113,7 @@ pub fn nextBytes(self: *Tokenizer) RawToken {
     return if (count == 0)
         if (is_endl) .endl else .eof
     else
-        .{ .valid = blk: {
-            self.source.ptr -= count;
-            self.source.len += count;
-            break :blk self.source[0..count];
-        } };
+        .{ .valid = self.source[0..count] };
 }
 fn isWhitespace(char: u8) bool {
     return char == ' ' or char == '\t';
@@ -117,7 +137,7 @@ pub const Token = union(enum) {
 
     identifier: []const u8,
 
-    type_literal: Parser.Type,
+    type_literal: tp.Type,
     int_literal: i128,
     float_literal: f128,
 
@@ -139,34 +159,34 @@ pub const Token = union(enum) {
     @"{",
     @"}",
     //keywords
-    _const,
-    _var,
-    _in,
-    _out,
-    _uniform,
-    _property,
-    _shared,
+    @"const",
+    @"var",
+    in,
+    out,
+    uniform,
+    property,
+    shared,
 
-    _if,
-    _else,
-    _switch,
-    _return,
-    _break,
-    _for,
-    _while,
+    @"if",
+    @"else",
+    @"switch",
+    @"return",
+    @"break",
+    @"for",
+    @"while",
 
-    _fn,
-    _entrypoint,
+    @"fn",
+    entrypoint,
 
-    _struct,
-    _enum,
-    _image,
-    _defer,
+    @"struct",
+    @"enum",
+    image,
+    @"defer",
 
     pub fn print(self: Token) void {
         switch (self) {
             .identifier => |id| std.debug.print("[id]: {s}\n", .{id}),
-            .type_literal => std.debug.print("[type_literal]: \n", .{}),
+            .type_literal => |tl| std.debug.print("[type_literal]: {s}\n", .{@tagName(tl)}),
             inline else => |value, tag| std.debug.print("[{s}]: {any}\n", .{ @tagName(tag), value }),
         }
     }
