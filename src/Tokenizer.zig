@@ -52,8 +52,6 @@ fn peekRaw(self: *Tokenizer) Error!PeekRawResult {
 
     if (self.getTypeLiteralRaw()) |t| return t;
     if (self.getNumberLiteralRaw()) |l| return l;
-    // parse number
-    // parse swizzle
     // strip valid identifier
 
     return .{
@@ -62,6 +60,16 @@ fn peekRaw(self: *Tokenizer) Error!PeekRawResult {
     };
 }
 fn getNumberLiteralRaw(self: *Tokenizer) ?PeekRawResult {
+    // pos/ neg
+    // #check for prefix (0x - hex, 0b - binary)
+    // accumulate_numbers :
+    // if dot == 0 => int
+    // if dot == 1 => float
+    // else => invalid
+    // #scientific notation
+    //
+    // float: +- 000.000
+    // int:   +- 000
     _ = self;
     return null;
 }

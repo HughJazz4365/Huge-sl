@@ -7,7 +7,8 @@ const main = entrypoint(.fragment){
 	var albedo = .{0.01 + 0.3, 0.1, 1.89 - 0.9}
 
 	albedo *= exposure
-	out_col = albedo.xyz1
+	// out_col = albedo.xyz1
+	out_col = .{albedo, 1}
 }
 //needed tokens:
 //_in, _out, _const, _var
