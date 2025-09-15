@@ -50,38 +50,53 @@ fn peekRaw(self: *Tokenizer) Error!PeekRawResult {
         },
     }
 
-    if (self.getTypeLiteralRaw()) |t| return t;
-    if (self.getNumberLiteralRaw()) |l| return l;
+    if (getTypeLiteralRaw(bytes)) |t| return t;
+    if (getNumberLiteralRaw(bytes)) |l| return l;
+
     // strip valid identifier
+    const valid_identifier = try util.stripValidIdentifier(bytes);
 
     return .{
-        .len = bytes.len,
-        .token = .{ .identifier = bytes },
+        .len = valid_identifier.len,
+        .token = .{ .identifier = valid_identifier },
     };
 }
-fn getNumberLiteralRaw(self: *Tokenizer) ?PeekRawResult {
-    // pos/ neg
-    // #check for prefix (0x - hex, 0b - binary)
-    // accumulate_numbers :
-    // if dot == 0 => int
-    // if dot == 1 => float
-    // else => invalid
-    // #scientific notation
-    //
-    // float: +- 000.000
-    // int:   +- 000
-    _ = self;
-    return null;
+fn getNumberLiteralRaw(bytes: []const u8) ?PeekRawResult {
+    const neg = bytes[0] == '-';
+    var count: usize = @intFromBool(neg);
+    var dot = false;
+
+    while (bytes.len > count) {
+        const char = bytes[count];
+        if (char == '.') {
+            if (dot) break;
+            dot = true;
+            count += 1;
+        } else if (switch (char) {
+            '0'...'9' => true,
+            else => false,
+        }) count += 1 else break;
+    }
+    if (count - @as(usize, @intFromBool(neg)) - @as(usize, @intFromBool(dot)) == 0)
+        return null;
+    return if (dot)
+        .{ .len = count, .token = .{
+            .compfloat = std.fmt.parseFloat(f128, bytes[0..count]) catch unreachable,
+        } }
+    else
+        .{ .len = count, .token = .{
+            .compint = std.fmt.parseInt(i128, bytes[0..count], 10) catch unreachable,
+        } };
 }
 
-fn getTypeLiteralRaw(self: *Tokenizer) ?PeekRawResult {
+fn getTypeLiteralRaw(bytes: []const u8) ?PeekRawResult {
     inline for (.{ "void", "bool", "type", "int", "float" }) |s| {
-        if (util.strExtract(self.source, s))
+        if (util.strExtract(bytes, s))
             return .{ .len = s.len, .token = .{ .type_literal = @unionInit(tp.Type, s, {}) } };
     }
     inline for (comptime tp.Vector.allVectors()) |v| {
         const vec_literal = v.literalComp();
-        if (util.strExtract(self.source, vec_literal))
+        if (util.strExtract(bytes, vec_literal))
             return .{ .len = vec_literal.len, .token = .{ .type_literal = .{ .vector = v } } };
     }
     return null;
@@ -146,8 +161,8 @@ pub const Token = union(enum) {
     identifier: []const u8,
 
     type_literal: tp.Type,
-    int_literal: i128,
-    float_literal: f128,
+    compint: i128,
+    compfloat: f128,
 
     bin_op: BinaryOperator,
     u_op: UnaryOperator,
@@ -191,6 +206,9 @@ pub const Token = union(enum) {
     image,
     @"defer",
 
+    true,
+    false,
+
     pub fn print(self: Token) void {
         switch (self) {
             .identifier => |id| std.debug.print("[id]: {s}\n", .{id}),
@@ -211,7 +229,7 @@ const keywords: []const TokenTag = blk: {
     }
     break :blk slice;
 };
-const BinaryOperator = util.SortEnumDecending(
+pub const BinaryOperator = util.SortEnumDecending(
     enum {
         @"*",
         @"+",
@@ -219,8 +237,9 @@ const BinaryOperator = util.SortEnumDecending(
         @"^",
     },
 );
-const UnaryOperator = util.SortEnumDecending(
+pub const UnaryOperator = util.SortEnumDecending(
     enum {
         @"-",
+        @"+",
     },
 );

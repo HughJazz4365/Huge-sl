@@ -1,6 +1,7 @@
 const std = @import("std");
 const sl = @import("sl");
 const Tokenizer = @import("Tokenizer.zig");
+const Parser = @import("Parser.zig");
 
 pub fn main() !void {
     const source_file = try std.fs.cwd().openFile("source.sl", .{});
@@ -13,10 +14,11 @@ pub fn main() !void {
 
     // std.debug.print("source:\n{s}", .{source});
     var tokenizer: Tokenizer = .new(source);
-    while (true) {
-        const t = try tokenizer.next();
-        t.print();
-        if (t == .eof) break;
+
+    var parser: Parser = .{};
+    parser.init(std.heap.page_allocator, &tokenizer);
+    while (try parser.parseStatement()) |s| {
+        _ = s;
     }
 }
 pub fn kek() !void {

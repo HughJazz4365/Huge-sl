@@ -18,10 +18,32 @@ pub fn strStartsComp(haystack: []const u8, comptime needle: []const u8) bool {
 pub fn SortEnumDecending(Enum: type) type {
     return Enum;
 }
+pub fn stripValidIdentifier(bytes: []const u8) error{InvalidInput}![]const u8 {
+    var letter = false;
+    var global = false;
+    const end = for (bytes, 0..) |char, i| {
+        if (!switch (char) {
+            'a'...'z', 'A'...'Z' => blk: {
+                letter = true;
+                break :blk true;
+            },
+            '_' => true,
+            '@' => blk: {
+                global = true;
+                break :blk i == 0;
+            },
+            '0'...'9' => i != @as(usize, @intFromBool(global)),
+            else => false,
+        }) break i;
+    } else bytes.len;
+    if (!letter) return error.InvalidInput;
+    return bytes[0..end];
+}
 pub fn isIdentifierChar(char: u8) bool {
     return switch (char) {
         'a'...'z',
         'A'...'Z',
+        '0'...'9',
         '_',
         '@',
         => true,
