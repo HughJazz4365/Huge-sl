@@ -10,16 +10,15 @@ pub fn main() !void {
     var alloc_writer = std.Io.Writer.Allocating.init(std.heap.page_allocator);
     _ = try reader.interface.streamRemaining(&alloc_writer.writer);
 
-    const source = alloc_writer.writer.buffered();
+    const source = "1 + -52.8 / 9";
+    // const source = alloc_writer.writer.buffered();
 
     // std.debug.print("source:\n{s}", .{source});
     var tokenizer: Tokenizer = .new(source);
 
     var parser: Parser = .{};
     parser.init(std.heap.page_allocator, &tokenizer);
-    while (try parser.parseStatement()) |s| {
-        _ = s;
-    }
+    try parser.testicle();
 }
 pub fn kek() !void {
     const out_file = try std.fs.cwd().openFile("out.spv", .{ .mode = .read_write });

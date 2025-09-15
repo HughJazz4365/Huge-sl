@@ -1,25 +1,47 @@
 const std = @import("std");
+const debug = @import("debug.zig");
 const tp = @import("type.zig");
 const util = @import("util.zig");
 const Parser = @This();
 const Tokenizer = @import("Tokenizer.zig");
 
 tokenizer: *Tokenizer = undefined,
-current_scope: *Scope = undefined,
+
+allocator: Allocator = undefined,
 arena: std.heap.ArenaAllocator = undefined,
+
 global_scope: GloalScope = undefined,
+current_scope: *Scope = undefined,
+
+expr_buf: List(Expression) = undefined,
 
 const Error = error{
     OutOfMemory,
 
     UnexpectedToken,
     UndeclaredIdentifier,
-};
+} || Tokenizer.Error;
 
+pub fn testicle(self: *Parser) Error!void {
+    const expr = try self.parseExpression({});
+    debug.print(expr);
+}
 pub fn init(self: *Parser, allocator: Allocator, tokenizer: *Tokenizer) void {
+    self.allocator = allocator;
     self.tokenizer = tokenizer;
     self.arena = .init(allocator);
     self.global_scope = .new(self.arena.allocator());
+    self.expr_buf = .empty;
+}
+pub fn create(self: *Parser, value: anytype) *@TypeOf(value) {
+    const T = @TypeOf(value);
+    return switch (T) {
+        Expression => blk: {
+            try self.expr_buf.append(self.allocator, value);
+            break :blk &self.expr_buf.items[self.expr_buf.items.len - 1];
+        },
+        else => @compileError("cant create " ++ @typeName(T)),
+    };
 }
 pub fn parseStatement(self: *Parser) Error!?Statement {
     _ = self;
@@ -52,9 +74,43 @@ pub const VariableDecl = struct {
     value: ?Expression,
 };
 
-pub fn parseExpression() Error!Expression {}
+pub fn parseExpression(self: *Parser, stop_at: void) Error!Expression {
+    return try self.parseExpressionRecursive(stop_at, comptime blk: {
+        const enum_info = @typeInfo(BinaryOperator).@"enum";
+        var min_op: BinaryOperator = @enumFromInt(enum_info.fields[0].value);
+        break :blk for (enum_info.fields[1..]) |ef| {
+            if (Tokenizer.bindingPower(min_op) > Tokenizer.bindingPower(@as(BinaryOperator, @enumFromInt(ef.value)))) min_op = @as(BinaryOperator, @enumFromInt(ef.value));
+        } else min_op;
+    });
+}
+pub fn parseExpressionRecursive(self: *Parser, stop_at: void, last_op: BinaryOperator) Error!Expression {
+    var left = try self.parseExpressionSide();
+    while (true) {
+        const token = try self.tokenizer.next();
+        if (token != .bin_op) return left;
+
+        const op = token.bin_op;
+        const right = try self.parseExpressionRecursive(stop_at, op);
+        const add_left = try 
+        left = .{ .bin_op = .{
+            .left = left,
+            .op = op,
+            .right = right,
+        } };
+        if (Tokenizer.bindingPower(op) >= Tokenizer.bindingPower(last_op)) return left;
+    }
+    return left;
+}
 fn parseExpressionSide(self: *Parser) Error!Expression {
-    _ = self;
+    switch (try self.tokenizer.next()) {
+        .u_op => |u_op| return .{ .u_op = .{
+            .op = u_op,
+            .target = try self.parseExpressionSide(),
+        } },
+        .compfloat, .compint => return .@"if",
+        .eof, .endl => {},
+        else => return Error.UnexpectedToken,
+    }
     //var expr =
     //::::primary::::
     //if UnaryOperator => u_op
@@ -127,8 +183,8 @@ pub const UOp = struct {
 };
 pub const BinOp = struct {
     left: *Expression,
-    right: *Expression,
     op: BinaryOperator,
+    right: *Expression,
 };
 
 pub const GloalScope = struct {

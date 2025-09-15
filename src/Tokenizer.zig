@@ -4,7 +4,7 @@ const tp = @import("type.zig");
 const Tokenizer = @This();
 const Parser = @import("Parser.zig");
 
-const Error = error{InvalidInput};
+pub const Error = error{InvalidInput};
 
 source: []const u8,
 last: Token = .eof,
@@ -237,6 +237,13 @@ pub const BinaryOperator = util.SortEnumDecending(
         @"^",
     },
 );
+pub fn bindingPower(bin_op: BinaryOperator) u8 {
+    return switch (bin_op) {
+        .@"^" => 15,
+        .@"*" => 10,
+        .@"+", .@"-" => 5,
+    };
+}
 pub const UnaryOperator = util.SortEnumDecending(
     enum {
         @"-",
