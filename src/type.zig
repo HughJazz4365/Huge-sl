@@ -5,8 +5,8 @@ pub const Type = union(enum) {
     type,
     bool,
 
-    int,
-    float,
+    compint,
+    compfloat,
 
     number: Number,
     vector: Vector,

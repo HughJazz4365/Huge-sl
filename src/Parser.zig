@@ -21,14 +21,17 @@ const Error = error{
 } || Tokenizer.Error;
 
 pub fn testicle(self: *Parser) Error!void {
-    const expr = try self.parseExpression(defaultShouldStop);
-    std.debug.print("[E]: {f}\n", .{expr});
+    const statement = (try self.parseStatement()).?;
+    std.debug.print("[S]: {f}\n", .{statement});
+    // const expr = try self.parseExpression(defaultShouldStop);
+    // std.debug.print("[E]: {f}\n", .{expr});
 }
 pub fn init(self: *Parser, allocator: Allocator, tokenizer: *Tokenizer) void {
     self.allocator = allocator;
     self.tokenizer = tokenizer;
     self.arena = .init(allocator);
     self.global_scope = .new(self.arena.allocator());
+    self.current_scope = &self.global_scope.scope;
 }
 pub fn deinit(self: *Parser) void {
     self.arena.deinit();
@@ -43,7 +46,15 @@ pub fn create(self: *Parser, T: type) !*T {
 }
 
 pub fn parseStatement(self: *Parser) Error!?Statement {
-    _ = self;
+    var token = try self.tokenizer.next();
+    while (token == .endl) token = try self.tokenizer.next();
+
+    return switch (token) {
+        .eof => null,
+        .@"const", .@"var", .uniform, .property, .shared, .out, .in => try self.parseVariableDecl(token),
+
+        else => Error.UnexpectedToken,
+    };
     //1.if token == return => .return
     //2.if token == break => .break
     //3.try parsing qualifier, if can => continue to parse var_decl
@@ -51,7 +62,22 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
     //its an assignment and we parse the assigned value
     //else expr is .ignored
 
-    return null;
+}
+fn parseVariableDecl(self: *Parser, token: Token) Error!Statement {
+    _ = token;
+    const name = (try self.tokenizer.next()).identifier;
+    const t: tp.Type = .compfloat;
+    _ = try self.tokenizer.next();
+    const value = try self.parseExpression(defaultShouldStop);
+
+    const variable: Variable = .{
+        .qualifier = {},
+        .name = name,
+        .type = t,
+    };
+    try self.current_scope.addVar(variable);
+    const add_var = try self.current_scope.getVar(variable.name);
+    return .{ .var_decl = .{ .variable = add_var, .value = value } };
 }
 
 pub const Statement = union(enum) {
@@ -74,20 +100,21 @@ pub const VariableDecl = struct {
     value: ?Expression,
 };
 
-pub fn parseExpression(self: *Parser, should_stop: fn (Token) bool) Error!Expression {
-    return try self.parseExpressionRecursive(should_stop, 0);
+pub fn parseExpression(self: *Parser, should_stop: ShouldStopFn) Error!Expression {
+    return try self.parseExpressionRecursive(should_stop, true, 0);
 }
-pub fn parseExpressionRecursive(self: *Parser, should_stop: fn (Token) bool, last_bp: u8) Error!Expression {
+pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, should_consume_end: bool, last_bp: u8) Error!Expression {
     var left = try self.parseExpressionSide();
     var token = try self.tokenizer.peek();
-    while (!should_stop(token)) {
+    while (!should_stop(self, token)) {
+        if (token != .bin_op) return Error.UnexpectedToken;
         const op = token.bin_op;
         //go left
         if (Tokenizer.bindingPower(op) <= last_bp) break;
 
         self.tokenizer.skip();
 
-        const right = try self.parseExpressionRecursive(should_stop, Tokenizer.bindingPower(op));
+        const right = try self.parseExpressionRecursive(should_stop, false, Tokenizer.bindingPower(op));
         const add_left = try self.createVal(left);
         //go right
         left = .{ .bin_op = .{
@@ -98,13 +125,23 @@ pub fn parseExpressionRecursive(self: *Parser, should_stop: fn (Token) bool, las
 
         token = try self.tokenizer.peek();
     }
+    if (should_consume_end) self.tokenizer.skip();
     return left;
 }
-fn defaultShouldStop(token: Token) bool {
-    return token != .bin_op;
+
+fn bracketShouldStop(self: *Parser, token: Token) bool {
+    _ = self;
+    return token == .@")";
 }
+
+fn defaultShouldStop(self: *Parser, token: Token) bool {
+    _ = self;
+    return token == .endl or token == .eof;
+}
+
 fn parseExpressionSide(self: *Parser) Error!Expression {
-    var expr: Expression = switch (try self.tokenizer.next()) {
+    const token = try self.tokenizer.next();
+    var expr: Expression = switch (token) {
         .u_op => |u_op| .{ .u_op = .{
             .op = u_op,
             .target = try self.createVal(try self.parseExpressionSide()),
@@ -114,9 +151,9 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
             //comp_identifier??
             break :blk .{ .identifier = name };
         },
-        .compfloat, .compint => .@"if",
-        // else => return Error.UnexpectedToken,
-        else => .@"for",
+        .@"(" => try self.parseExpression(bracketShouldStop),
+        // .compfloat, .compint => .@"if",
+        else => .{ .val = try self.parseValue(token) },
     };
     _ = &expr;
 
@@ -131,6 +168,15 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
     //if '(' => function call
     //if '.' =>  member access
     return expr;
+}
+fn parseValue(self: *Parser, token: Token) Error!Value {
+    _ = self;
+    //true, false
+    return switch (token) {
+        .compint => |compint| .{ .type = .compint, .payload = .{ .wide = @bitCast(compint) } },
+        .compfloat => |compfloat| .{ .type = .compfloat, .payload = .{ .wide = @bitCast(compfloat) } },
+        else => Error.UnexpectedToken,
+    };
 }
 
 pub const Expression = union(enum) {
@@ -198,7 +244,7 @@ pub const GlobalScope = struct {
             .var_list = .empty,
             .scope = .{
                 .addVarFn = &addVarFn,
-                .declTypeFn = &declTypeFn,
+                .getVarFn = &getVarFn,
                 .referenceFn = &referenceFn,
             },
         };
@@ -210,9 +256,9 @@ pub const GlobalScope = struct {
         try global.var_list.append(global.allocator, variable);
         global.scope.vars = global.var_list.items;
     }
-    pub fn declTypeFn(scope: *Scope, name: []const u8) Error!tp.Type {
-        return for (scope.vars) |v| {
-            if (util.strEql(v.name, name)) break v.type;
+    pub fn getVarFn(scope: *Scope, name: []const u8) Error!*Variable {
+        return for (scope.vars) |*v| {
+            if (util.strEql(v.name, name)) break v;
         } else Error.UndeclaredIdentifier;
     }
     pub fn referenceFn(scope: *Scope, name: []const u8, ref_type: Scope.DeclReferenceType) Error!void {
@@ -222,13 +268,25 @@ pub const GlobalScope = struct {
 
 pub const Scope = struct {
     addVarFn: *const fn (*Scope, Variable) Error!void,
-    declTypeFn: *const fn (*Scope, []const u8) Error!tp.Type,
+    getVarFn: *const fn (*Scope, []const u8) Error!*Variable,
     referenceFn: *const fn (*Scope, []const u8, DeclReferenceType) Error!void,
 
     vars: []Variable = undefined,
     parent: *Scope = undefined,
 
     pub const DeclReferenceType = enum { track, untrack };
+
+    pub fn addVar(self: *Scope, variable: Variable) Error!void {
+        try self.addVarFn(self, variable);
+    }
+
+    pub fn getVar(self: *Scope, name: []const u8) Error!*Variable {
+        return try self.getVarFn(self, name);
+    }
+
+    pub fn reference(self: *Scope, name: []const u8, ref_type: DeclReferenceType) Error!void {
+        try self.referenceFn(self, name, ref_type);
+    }
 };
 pub const Variable = struct {
     qualifier: void,
@@ -239,6 +297,7 @@ pub const Variable = struct {
 pub const Value = struct {
     type: tp.Type,
     payload: ValuePayload,
+    pub const format = debug.formatValue;
 };
 
 pub const ValuePayload = union {
@@ -246,8 +305,9 @@ pub const ValuePayload = union {
     any: *anyopaque,
 };
 
+const ShouldStopFn = fn (*Parser, Token) bool;
 const List = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const BinaryOperator = Tokenizer.BinaryOperator;
 const UnaryOperator = Tokenizer.UnaryOperator;
-const Token = Tokenizer.Token;
+pub const Token = Tokenizer.Token;

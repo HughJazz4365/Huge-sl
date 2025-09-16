@@ -3,13 +3,28 @@ const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
 
 pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
-    _ = .{ statement, writer };
+    switch (statement) {
+        .var_decl => |var_decl| {
+            try writer.print("[Q] {s} : [TYPE]", .{var_decl.variable.name});
+            if (var_decl.value) |val| try writer.print(" = {f}", .{val});
+        },
+        else => try writer.print("[STATEMENT]", .{}),
+    }
 }
 pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
     switch (expr) {
+        .val => |v| try writer.print("{f}", .{v}),
         .bin_op => |bin_op| try writer.print("({f} {s} {f})", .{ bin_op.left, @tagName(bin_op.op), bin_op.right }),
         .u_op => |u_op| try writer.print("{s}{f}", .{ @tagName(u_op.op), u_op.target }),
         inline else => |_, tag| try writer.print("{s}", .{@tagName(tag)}),
+    }
+}
+pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
+    switch (value.type) {
+        .compint => try writer.print("{d}", .{@as(i128, @bitCast(value.payload.wide))}),
+        .compfloat => try writer.print("{d}", .{@as(f128, @bitCast(value.payload.wide))}),
+        // .number => |num| try writer.print("{d}"
+        else => try writer.print("[VAL]", .{}),
     }
 }
 pub fn formatToken(token: Token, writer: *std.Io.Writer) !void {

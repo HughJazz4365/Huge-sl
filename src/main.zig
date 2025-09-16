@@ -10,7 +10,7 @@ pub fn main() !void {
     var alloc_writer = std.Io.Writer.Allocating.init(std.heap.page_allocator);
     _ = try reader.interface.streamRemaining(&alloc_writer.writer);
 
-    const source = "1 + -52.8 * 9";
+    const source = "const kek = 1 + -52.8 * 9\n";
     // const source = alloc_writer.writer.buffered();
 
     // std.debug.print("source:\n{s}", .{source});

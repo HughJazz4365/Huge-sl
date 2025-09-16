@@ -47,13 +47,22 @@ fn peekRaw(self: *Tokenizer) Error!PeekRawResult {
     const bin_op_match = util.matchToEnum(BinaryOperator, bytes);
     const u_op_match = util.matchToEnum(UnaryOperator, bytes);
     switch (self.last) {
-        .@"=", .@"=>", .bin_op, .u_op => {
-            if (u_op_match) |x| return .{ .len = @tagName(x).len, .token = .{ .u_op = x } };
+        .identifier,
+        .type_literal,
+        .compfloat,
+        .compint,
+        .true,
+        .false,
+        .@")",
+        .@"]",
+        .@"}",
+        => {
             if (bin_op_match) |x| return .{ .len = @tagName(x).len, .token = .{ .bin_op = x } };
+            if (u_op_match) |x| return .{ .len = @tagName(x).len, .token = .{ .u_op = x } };
         },
         else => {
-            if (bin_op_match) |x| return .{ .len = @tagName(x).len, .token = .{ .bin_op = x } };
             if (u_op_match) |x| return .{ .len = @tagName(x).len, .token = .{ .u_op = x } };
+            if (bin_op_match) |x| return .{ .len = @tagName(x).len, .token = .{ .bin_op = x } };
         },
     }
 
@@ -97,7 +106,7 @@ fn getNumberLiteralRaw(bytes: []const u8) ?PeekRawResult {
 }
 
 fn getTypeLiteralRaw(bytes: []const u8) ?PeekRawResult {
-    inline for (.{ "void", "bool", "type", "int", "float" }) |s| {
+    inline for (.{ "void", "bool", "type", "compint", "compfloat" }) |s| {
         if (util.strExtract(bytes, s))
             return .{ .len = s.len, .token = .{ .type_literal = @unionInit(tp.Type, s, {}) } };
     }
