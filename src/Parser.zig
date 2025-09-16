@@ -21,8 +21,9 @@ const Error = error{
 } || Tokenizer.Error;
 
 pub fn testicle(self: *Parser) Error!void {
-    const statement = (try self.parseStatement()).?;
-    std.debug.print("[S]: {f}\n", .{statement});
+    while (try self.parseStatement()) |statement| {
+        std.debug.print("[S]: {f}\n", .{statement});
+    }
     // const expr = try self.parseExpression(defaultShouldStop);
     // std.debug.print("[E]: {f}\n", .{expr});
 }

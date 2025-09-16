@@ -37,6 +37,7 @@ pub fn stripValidIdentifier(bytes: []const u8) error{InvalidInput}![]const u8 {
         }) break i;
     } else bytes.len;
     if (!letter) return error.InvalidInput;
+
     return bytes[0..end];
 }
 pub fn isIdentifierChar(char: u8) bool {

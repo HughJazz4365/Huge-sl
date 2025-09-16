@@ -4,14 +4,15 @@ const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
 
 pub fn main() !void {
-    const source_file = try std.fs.cwd().openFile("source.sl", .{});
+    // const source_file = try std.fs.cwd().openFile("source.sl", .{});
+    const source_file = try std.fs.cwd().openFile("test.sl", .{});
     var reader = source_file.reader(&.{});
 
     var alloc_writer = std.Io.Writer.Allocating.init(std.heap.page_allocator);
     _ = try reader.interface.streamRemaining(&alloc_writer.writer);
 
-    const source = "const kek = 1 + -52.8 * 9\n";
-    // const source = alloc_writer.writer.buffered();
+    // const source = "const kek = 1 + -52.8 * 9\n";
+    const source = alloc_writer.writer.buffered();
 
     // std.debug.print("source:\n{s}", .{source});
     var tokenizer: Tokenizer = .new(source);
