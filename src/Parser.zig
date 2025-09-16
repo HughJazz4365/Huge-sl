@@ -10,7 +10,7 @@ tokenizer: *Tokenizer = undefined,
 allocator: Allocator = undefined,
 arena: std.heap.ArenaAllocator = undefined,
 
-global_scope: GloalScope = undefined,
+global_scope: GlobalScope = undefined,
 current_scope: *Scope = undefined,
 
 const Error = error{
@@ -21,7 +21,7 @@ const Error = error{
 } || Tokenizer.Error;
 
 pub fn testicle(self: *Parser) Error!void {
-    const expr = try self.parseExpression({});
+    const expr = try self.parseExpression(defaultShouldStop);
     std.debug.print("[E]: {f}\n", .{expr});
 }
 pub fn init(self: *Parser, allocator: Allocator, tokenizer: *Tokenizer) void {
@@ -74,20 +74,20 @@ pub const VariableDecl = struct {
     value: ?Expression,
 };
 
-pub fn parseExpression(self: *Parser, stop_at: void) Error!Expression {
-    return try self.parseExpressionRecursive(stop_at, 0);
+pub fn parseExpression(self: *Parser, should_stop: fn (Token) bool) Error!Expression {
+    return try self.parseExpressionRecursive(should_stop, 0);
 }
-pub fn parseExpressionRecursive(self: *Parser, stop_at: void, last_bp: u8) Error!Expression {
+pub fn parseExpressionRecursive(self: *Parser, should_stop: fn (Token) bool, last_bp: u8) Error!Expression {
     var left = try self.parseExpressionSide();
     var token = try self.tokenizer.peek();
-    while (token == .bin_op) {
+    while (!should_stop(token)) {
         const op = token.bin_op;
         //go left
         if (Tokenizer.bindingPower(op) <= last_bp) break;
 
         self.tokenizer.skip();
 
-        const right = try self.parseExpressionRecursive(stop_at, Tokenizer.bindingPower(op));
+        const right = try self.parseExpressionRecursive(should_stop, Tokenizer.bindingPower(op));
         const add_left = try self.createVal(left);
         //go right
         left = .{ .bin_op = .{
@@ -100,6 +100,9 @@ pub fn parseExpressionRecursive(self: *Parser, stop_at: void, last_bp: u8) Error
     }
     return left;
 }
+fn defaultShouldStop(token: Token) bool {
+    return token != .bin_op;
+}
 fn parseExpressionSide(self: *Parser) Error!Expression {
     var expr: Expression = switch (try self.tokenizer.next()) {
         .u_op => |u_op| .{ .u_op = .{
@@ -108,7 +111,6 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
         } },
         .identifier => |id| blk: {
             const name = id;
-            if (try self.tokenizer.peek() == .@"(") @panic("functioncall!");
             //comp_identifier??
             break :blk .{ .identifier = name };
         },
@@ -126,6 +128,7 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
     //(check proceeding tokens)
     //if swizzle => swizzle(expr)
     //if '[' => indexing into expr
+    //if '(' => function call
     //if '.' =>  member access
     return expr;
 }
@@ -184,7 +187,7 @@ pub const BinOp = struct {
     right: *Expression,
 };
 
-pub const GloalScope = struct {
+pub const GlobalScope = struct {
     scope: Scope,
     var_list: List(Variable),
     allocator: Allocator,
@@ -247,3 +250,4 @@ const List = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const BinaryOperator = Tokenizer.BinaryOperator;
 const UnaryOperator = Tokenizer.UnaryOperator;
+const Token = Tokenizer.Token;
