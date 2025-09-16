@@ -13,8 +13,6 @@ arena: std.heap.ArenaAllocator = undefined,
 global_scope: GloalScope = undefined,
 current_scope: *Scope = undefined,
 
-expr_buf: List(Expression) = undefined,
-
 const Error = error{
     OutOfMemory,
 
@@ -24,25 +22,26 @@ const Error = error{
 
 pub fn testicle(self: *Parser) Error!void {
     const expr = try self.parseExpression({});
-    debug.print(expr);
+    std.debug.print("[E]: {f}\n", .{expr});
 }
 pub fn init(self: *Parser, allocator: Allocator, tokenizer: *Tokenizer) void {
     self.allocator = allocator;
     self.tokenizer = tokenizer;
     self.arena = .init(allocator);
     self.global_scope = .new(self.arena.allocator());
-    self.expr_buf = .empty;
 }
-pub fn create(self: *Parser, value: anytype) *@TypeOf(value) {
-    const T = @TypeOf(value);
-    return switch (T) {
-        Expression => blk: {
-            try self.expr_buf.append(self.allocator, value);
-            break :blk &self.expr_buf.items[self.expr_buf.items.len - 1];
-        },
-        else => @compileError("cant create " ++ @typeName(T)),
-    };
+pub fn deinit(self: *Parser) void {
+    self.arena.deinit();
 }
+pub fn createVal(self: *Parser, value: anytype) !*@TypeOf(value) {
+    const ptr = try self.create(@TypeOf(value));
+    ptr.* = value;
+    return ptr;
+}
+pub fn create(self: *Parser, T: type) !*T {
+    return try self.arena.allocator().create(T);
+}
+
 pub fn parseStatement(self: *Parser) Error!?Statement {
     _ = self;
     //1.if token == return => .return
@@ -63,6 +62,7 @@ pub const Statement = union(enum) {
     ignore: Expression,
     @"return": ?Expression,
     @"break": ?Expression,
+    pub const format = debug.formatStatement;
 };
 pub const Assignment = struct {
     left: Expression,
@@ -75,29 +75,28 @@ pub const VariableDecl = struct {
 };
 
 pub fn parseExpression(self: *Parser, stop_at: void) Error!Expression {
-    return try self.parseExpressionRecursive(stop_at, comptime blk: {
-        const enum_info = @typeInfo(BinaryOperator).@"enum";
-        var min_op: BinaryOperator = @enumFromInt(enum_info.fields[0].value);
-        break :blk for (enum_info.fields[1..]) |ef| {
-            if (Tokenizer.bindingPower(min_op) > Tokenizer.bindingPower(@as(BinaryOperator, @enumFromInt(ef.value)))) min_op = @as(BinaryOperator, @enumFromInt(ef.value));
-        } else min_op;
-    });
+    return try self.parseExpressionRecursive(stop_at, 0);
 }
-pub fn parseExpressionRecursive(self: *Parser, stop_at: void, last_op: BinaryOperator) Error!Expression {
+pub fn parseExpressionRecursive(self: *Parser, stop_at: void, last_bp: u8) Error!Expression {
     var left = try self.parseExpressionSide();
-    while (true) {
-        const token = try self.tokenizer.next();
-        if (token != .bin_op) return left;
-
+    var token = try self.tokenizer.peek();
+    while (token == .bin_op) {
         const op = token.bin_op;
-        const right = try self.parseExpressionRecursive(stop_at, op);
-        const add_left = try 
+        //go left
+        if (Tokenizer.bindingPower(op) <= last_bp) break;
+
+        self.tokenizer.skip();
+
+        const right = try self.parseExpressionRecursive(stop_at, Tokenizer.bindingPower(op));
+        const add_left = try self.createVal(left);
+        //go right
         left = .{ .bin_op = .{
-            .left = left,
+            .left = add_left,
+            .right = try self.createVal(right),
             .op = op,
-            .right = right,
         } };
-        if (Tokenizer.bindingPower(op) >= Tokenizer.bindingPower(last_op)) return left;
+
+        token = try self.tokenizer.peek();
     }
     return left;
 }
@@ -105,7 +104,7 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
     switch (try self.tokenizer.next()) {
         .u_op => |u_op| return .{ .u_op = .{
             .op = u_op,
-            .target = try self.parseExpressionSide(),
+            .target = try self.createVal(try self.parseExpressionSide()),
         } },
         .compfloat, .compint => return .@"if",
         .eof, .endl => {},
@@ -163,6 +162,7 @@ pub const Expression = union(enum) {
             else => false,
         };
     }
+    pub const format = debug.formatExpression;
 };
 
 pub const Indexing = struct {

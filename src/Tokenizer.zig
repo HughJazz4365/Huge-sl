@@ -11,6 +11,10 @@ last: Token = .eof,
 
 start_ptr: [*]const u8,
 
+///assumes that there will be no error
+pub fn skip(self: *Tokenizer) void {
+    _ = self.next() catch unreachable;
+}
 pub fn next(self: *Tokenizer) Error!Token {
     // inline for (comptime tp.Vector.allVectors()) |v| {
     //     @compileLog(comptime v.literalComp());
@@ -20,6 +24,9 @@ pub fn next(self: *Tokenizer) Error!Token {
     self.last = p.token;
     self.shift(p.len);
     return p.token;
+}
+pub fn peek(self: *Tokenizer) Error!Token {
+    return (try self.peekRaw()).token;
 }
 fn peekRaw(self: *Tokenizer) Error!PeekRawResult {
     const bytes = switch (self.nextBytes()) {
@@ -209,13 +216,7 @@ pub const Token = union(enum) {
     true,
     false,
 
-    pub fn print(self: Token) void {
-        switch (self) {
-            .identifier => |id| std.debug.print("[id]: {s}\n", .{id}),
-            .type_literal => |tl| std.debug.print("[type_literal]: {s}\n", .{@tagName(tl)}),
-            inline else => |value, tag| std.debug.print("[{s}]: {any}\n", .{ @tagName(tag), value }),
-        }
-    }
+    pub const format = @import("debug.zig").formatToken;
 };
 const TokenTag = @typeInfo(Token).@"union".tag_type.?;
 const keywords: []const TokenTag = blk: {
