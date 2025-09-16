@@ -101,28 +101,25 @@ pub fn parseExpressionRecursive(self: *Parser, stop_at: void, last_bp: u8) Error
     return left;
 }
 fn parseExpressionSide(self: *Parser) Error!Expression {
-    switch (try self.tokenizer.next()) {
-        .u_op => |u_op| return .{ .u_op = .{
+    var expr: Expression = switch (try self.tokenizer.next()) {
+        .u_op => |u_op| .{ .u_op = .{
             .op = u_op,
             .target = try self.createVal(try self.parseExpressionSide()),
         } },
-        .compfloat, .compint => return .@"if",
-        .eof, .endl => {},
-        else => return Error.UnexpectedToken,
-    }
-    //var expr =
-    //::::primary::::
-    //if UnaryOperator => u_op
-    //if name:
-    //   if proceeded by bracket => fn call(parse args)
-    //   else => if(identifier) is struct_type or ...
-    //      comp_identifier
-    //      else
-    //      identifier
-    //if '(' parse expression
-    //if for parse for loop
-    //if 'if', 'switch', 'while' - same
-    //else try to parse value
+        .identifier => |id| blk: {
+            const name = id;
+            if (try self.tokenizer.peek() == .@"(") @panic("functioncall!");
+            //comp_identifier??
+            break :blk .{ .identifier = name };
+        },
+        .compfloat, .compint => .@"if",
+        // else => return Error.UnexpectedToken,
+        else => .@"for",
+    };
+    _ = &expr;
+
+    //while(true)
+    //if nothing matches break
 
     //expr =
     //::::secondary::::
@@ -130,7 +127,7 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
     //if swizzle => swizzle(expr)
     //if '[' => indexing into expr
     //if '.' =>  member access
-    return .@"for";
+    return expr;
 }
 
 pub const Expression = union(enum) {
