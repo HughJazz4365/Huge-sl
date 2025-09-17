@@ -1,4 +1,5 @@
 const std = @import("std");
+const Parser = @import("Parser.zig");
 
 pub const Type = union(enum) {
     void,
@@ -21,8 +22,12 @@ pub const Type = union(enum) {
     enum_literal,
 
     func: void,
-    entrypoint: void,
+    entrypoint: ShaderStage,
+    pub const format = @import("debug.zig").formatType;
 };
+
+pub const ShaderStage = enum { vertex, fragment, compute };
+
 pub const Matrix = struct {
     rows: VectorLen,
     column: Vector,
@@ -70,3 +75,5 @@ pub const Number = struct {
 };
 pub const NumberType = enum { float, int, uint };
 pub const BitWidth = enum(u8) { byte = 8, short = 16, word = 32, long = 64 };
+
+const Expression = Parser.Expression;

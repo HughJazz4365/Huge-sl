@@ -4,8 +4,8 @@ const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
 
 pub fn main() !void {
-    // const source_file = try std.fs.cwd().openFile("source.sl", .{});
-    const source_file = try std.fs.cwd().openFile("test.sl", .{});
+    const source_path = "source.sl";
+    const source_file = try std.fs.cwd().openFile(source_path, .{});
     var reader = source_file.reader(&.{});
 
     var alloc_writer = std.Io.Writer.Allocating.init(std.heap.page_allocator);

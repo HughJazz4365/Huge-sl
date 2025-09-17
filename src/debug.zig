@@ -1,16 +1,25 @@
 const std = @import("std");
+const tp = @import("type.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
 
 pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
     switch (statement) {
         .var_decl => |var_decl| {
-            try writer.print("[Q] {s} : [TYPE]", .{var_decl.variable.name});
+            try writer.print("{s} {s} : {f}", .{ @tagName(var_decl.variable.qualifier), var_decl.variable.name, var_decl.variable.type });
             if (var_decl.value) |val| try writer.print(" = {f}", .{val});
         },
         else => try writer.print("[STATEMENT]", .{}),
     }
 }
+
+pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
+    switch (t) {
+        .entrypoint => |ep| try writer.print("entrypoint(.{s})", .{@tagName(ep)}),
+        else => try writer.print("{s}", .{@tagName(t)}),
+    }
+}
+
 pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
     switch (expr) {
         .val => |v| try writer.print("{f}", .{v}),

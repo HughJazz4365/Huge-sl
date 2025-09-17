@@ -26,7 +26,11 @@ pub fn next(self: *Tokenizer) Error!Token {
     return p.token;
 }
 pub fn peek(self: *Tokenizer) Error!Token {
-    return (try self.peekRaw()).token;
+    const cpy = self.source;
+    defer self.source = cpy;
+
+    const token = (try self.peekRaw()).token;
+    return token;
 }
 fn peekRaw(self: *Tokenizer) Error!PeekRawResult {
     const bytes = switch (self.nextBytes()) {

@@ -1,5 +1,6 @@
 const std = @import("std");
 const debug = @import("debug.zig");
+const bi = @import("builtin.zig");
 const tp = @import("type.zig");
 const util = @import("util.zig");
 const Parser = @This();
@@ -22,7 +23,7 @@ const Error = error{
 
 pub fn testicle(self: *Parser) Error!void {
     while (try self.parseStatement()) |statement| {
-        std.debug.print("[S]: {f}\n", .{statement});
+        _ = statement;
     }
     // const expr = try self.parseExpression(defaultShouldStop);
     // std.debug.print("[E]: {f}\n", .{expr});
@@ -50,12 +51,14 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
     var token = try self.tokenizer.next();
     while (token == .endl) token = try self.tokenizer.next();
 
-    return switch (token) {
+    const statement: ?Statement = try switch (token) {
         .eof => null,
         .@"const", .@"var", .uniform, .property, .shared, .out, .in => try self.parseVariableDecl(token),
 
         else => Error.UnexpectedToken,
     };
+    if (statement) |s| std.debug.print("[S]: {f}\n", .{s});
+    return statement;
     //1.if token == return => .return
     //2.if token == break => .break
     //3.try parsing qualifier, if can => continue to parse var_decl
@@ -65,20 +68,37 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
 
 }
 fn parseVariableDecl(self: *Parser, token: Token) Error!Statement {
-    _ = token;
-    const name = (try self.tokenizer.next()).identifier;
-    const t: tp.Type = .compfloat;
-    _ = try self.tokenizer.next();
-    const value = try self.parseExpression(defaultShouldStop);
+    const qualifier = try self.parseQualifier(token);
+
+    const name_token = try self.tokenizer.next();
+    if (name_token != .identifier) return Error.UnexpectedToken;
+
+    const t: ?tp.Type = blk: {
+        const next = try self.tokenizer.peek();
+        if (next != .@":") break :blk null;
+        self.tokenizer.skip();
+
+        const expr = try self.parseExpressionSide();
+        break :blk self.asType(expr) orelse return Error.UnexpectedToken;
+    };
 
     const variable: Variable = .{
-        .qualifier = {},
-        .name = name,
-        .type = t,
+        .qualifier = qualifier,
+        .name = name_token.identifier,
+        .type = t orelse .compint,
     };
-    try self.current_scope.addVar(variable);
-    const add_var = try self.current_scope.getVar(variable.name);
-    return .{ .var_decl = .{ .variable = add_var, .value = value } };
+
+    const value: ?Expression = blk: {
+        const next = try self.tokenizer.peek();
+        if (next != .@"=") break :blk null;
+        self.tokenizer.skip();
+        break :blk try self.parseExpression(defaultShouldStop);
+    };
+
+    return .{ .var_decl = .{
+        .variable = variable,
+        .value = value,
+    } };
 }
 
 pub const Statement = union(enum) {
@@ -97,7 +117,7 @@ pub const Assignment = struct {
     modifier: ?BinaryOperator,
 };
 pub const VariableDecl = struct {
-    variable: *Variable,
+    variable: Variable,
     value: ?Expression,
 };
 
@@ -127,6 +147,7 @@ pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, should
         token = try self.tokenizer.peek();
     }
     if (should_consume_end) self.tokenizer.skip();
+
     return left;
 }
 
@@ -136,8 +157,7 @@ fn bracketShouldStop(self: *Parser, token: Token) bool {
 }
 
 fn defaultShouldStop(self: *Parser, token: Token) bool {
-    _ = self;
-    return token == .endl or token == .eof;
+    return token == .endl or token == .eof or (token == .@"}" and @intFromPtr(self.current_scope) != @intFromPtr(&self.global_scope.scope));
 }
 
 fn parseExpressionSide(self: *Parser) Error!Expression {
@@ -153,6 +173,12 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
             break :blk .{ .identifier = name };
         },
         .@"(" => try self.parseExpression(bracketShouldStop),
+        .@"." => switch (try self.tokenizer.next()) {
+
+            //if '{' constructor( tuple of values not a struct constructor for now)
+            //if name enum literal
+        },
+        .entrypoint => try self.parseEntryPointTypeOrValue(),
         // .compfloat, .compint => .@"if",
         else => .{ .val = try self.parseValue(token) },
     };
@@ -170,13 +196,100 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
     //if '.' =>  member access
     return expr;
 }
+
+fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
+    if (try self.tokenizer.next() != .@"(") return Error.UnexpectedToken;
+    var token = try self.tokenizer.next();
+    while (token != .@")") token = try self.tokenizer.next();
+
+    const stage_info: ShaderStageInfo = .fragment;
+    const ep_type: tp.Type = .{ .entrypoint = std.meta.activeTag(stage_info) };
+
+    if (try self.tokenizer.peek() != .@"{") return .{ .val = .{ .type = .type, .payload = .{ .type = ep_type } } };
+    self.tokenizer.skip();
+
+    var entry_point: EntryPoint = .new(self, stage_info);
+    try self.parseScope(&entry_point.scope);
+
+    const ep_ptr = try self.createVal(entry_point);
+    return .{ .val = .{
+        .type = ep_type,
+        .payload = .{ .ptr = @ptrCast(@alignCast(ep_ptr)) },
+    } };
+}
+
+fn parseScope(self: *Parser, scope: *Scope) Error!void {
+    self.current_scope = scope;
+    defer self.current_scope = self.current_scope.parent;
+    while (try self.parseStatement()) |statement| _ = try self.current_scope.addStatement(statement);
+}
+
+const EntryPoint = struct {
+    stage_info: ShaderStageInfo,
+    scope: Scope,
+
+    allocator: Allocator,
+    body: List(Statement),
+
+    pub fn new(self: *Parser, stage_info: ShaderStageInfo) EntryPoint {
+        return .{
+            .stage_info = stage_info,
+            .allocator = self.arena.allocator(),
+            .body = .empty,
+            .scope = .{
+                .getVarFn = &getVarFn,
+                .addStatementFn = &addStatementFn,
+                .parent = self.current_scope,
+            },
+        };
+    }
+    pub inline fn addStatement(scope: *Scope, statement: Statement) Error!*const Statement {
+        return try scope.addStatementFn(scope, statement);
+    }
+    fn addStatementFn(scope: *Scope, statement: Statement) Error!*const Statement {
+        const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);
+
+        try entry_point.body.append(entry_point.allocator, statement);
+        const ptr = &entry_point.body.items[entry_point.body.items.len - 1];
+
+        return ptr;
+    }
+    pub fn getVarFn(scope: *Scope, name: []const u8) Error!*const Variable {
+        // return for (scope.vars) |*v| {
+        //     if (util.strEql(v.name, name)) break v;
+        // } else Error.UndeclaredIdentifier;
+        _ = scope;
+        _ = name;
+        const v: Variable = undefined;
+        return &v;
+    }
+};
+
+const ShaderStageInfo = union(tp.ShaderStage) {
+    vertex,
+    fragment,
+    compute: [3]u32,
+};
 fn parseValue(self: *Parser, token: Token) Error!Value {
     _ = self;
     //true, false
     return switch (token) {
         .compint => |compint| .{ .type = .compint, .payload = .{ .wide = @bitCast(compint) } },
         .compfloat => |compfloat| .{ .type = .compfloat, .payload = .{ .wide = @bitCast(compfloat) } },
+        .type_literal => |tl| .{ .type = .type, .payload = .{ .type = tl } },
         else => Error.UnexpectedToken,
+    };
+}
+pub fn typeOf(self: *Parser, expr: Expression) ?tp.Type {
+    _ = self;
+    _ = expr;
+    return null;
+}
+pub fn asType(self: *Parser, expr: Expression) ?tp.Type {
+    _ = self;
+    return switch (expr) {
+        .val => |val| if (val.type == .type) val.payload.type else null,
+        else => null,
     };
 }
 
@@ -236,31 +349,25 @@ pub const BinOp = struct {
 
 pub const GlobalScope = struct {
     scope: Scope,
-    var_list: List(Variable),
     allocator: Allocator,
 
     pub fn new(allocator: Allocator) @This() {
-        var result: @This() = .{
+        return .{
             .allocator = allocator,
-            .var_list = .empty,
             .scope = .{
-                .addVarFn = &addVarFn,
                 .getVarFn = &getVarFn,
                 .referenceFn = &referenceFn,
             },
         };
-        result.scope.vars = result.var_list.items;
-        return result;
     }
-    pub fn addVarFn(scope: *Scope, variable: Variable) Error!void {
-        const global: *@This() = @fieldParentPtr("scope", scope);
-        try global.var_list.append(global.allocator, variable);
-        global.scope.vars = global.var_list.items;
-    }
-    pub fn getVarFn(scope: *Scope, name: []const u8) Error!*Variable {
-        return for (scope.vars) |*v| {
-            if (util.strEql(v.name, name)) break v;
-        } else Error.UndeclaredIdentifier;
+    pub fn getVarFn(scope: *Scope, name: []const u8) Error!*const Variable {
+        // return for (scope.vars) |*v| {
+        //     if (util.strEql(v.name, name)) break v;
+        // } else Error.UndeclaredIdentifier;
+        _ = scope;
+        _ = name;
+        const v: Variable = undefined;
+        return &v;
     }
     pub fn referenceFn(scope: *Scope, name: []const u8, ref_type: Scope.DeclReferenceType) Error!void {
         _ = &.{ name, ref_type, scope };
@@ -268,31 +375,54 @@ pub const GlobalScope = struct {
 };
 
 pub const Scope = struct {
-    addVarFn: *const fn (*Scope, Variable) Error!void,
-    getVarFn: *const fn (*Scope, []const u8) Error!*Variable,
-    referenceFn: *const fn (*Scope, []const u8, DeclReferenceType) Error!void,
+    addStatementFn: *const fn (*Scope, Statement) Error!*const Statement = undefined,
 
-    vars: []Variable = undefined,
+    getVarFn: *const fn (*Scope, []const u8) Error!*const Variable = undefined,
+    referenceFn: *const fn (*Scope, []const u8, DeclReferenceType) Error!void = undefined,
+
     parent: *Scope = undefined,
 
     pub const DeclReferenceType = enum { track, untrack };
 
-    pub fn addVar(self: *Scope, variable: Variable) Error!void {
-        try self.addVarFn(self, variable);
+    pub inline fn addStatement(self: *Scope, statement: Statement) Error!*const Statement {
+        return try self.addStatementFn(self, statement);
     }
 
-    pub fn getVar(self: *Scope, name: []const u8) Error!*Variable {
+    pub inline fn getVar(self: *Scope, name: []const u8) Error!*const Variable {
         return try self.getVarFn(self, name);
     }
 
-    pub fn reference(self: *Scope, name: []const u8, ref_type: DeclReferenceType) Error!void {
+    pub inline fn reference(self: *Scope, name: []const u8, ref_type: DeclReferenceType) Error!void {
         try self.referenceFn(self, name, ref_type);
     }
 };
 pub const Variable = struct {
-    qualifier: void,
+    qualifier: Qualifier,
     name: []const u8,
     type: tp.Type,
+};
+
+fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
+    _ = self;
+    return switch (token) {
+        .in => .{ .in = .smooth },
+        .out => .{ .out = .smooth },
+        .@"const" => .@"const",
+        .@"var" => .@"var",
+        .uniform => .uniform,
+        .property => .property,
+        .shared => .shared,
+        else => Error.UnexpectedToken,
+    };
+}
+pub const Qualifier = union(enum) {
+    @"const",
+    @"var",
+    shared,
+    uniform,
+    property,
+    in: bi.InterpolationQualifier,
+    out: bi.InterpolationQualifier,
 };
 
 pub const Value = struct {
@@ -303,7 +433,8 @@ pub const Value = struct {
 
 pub const ValuePayload = union {
     wide: u128,
-    any: *anyopaque,
+    type: tp.Type,
+    ptr: *const anyopaque,
 };
 
 const ShouldStopFn = fn (*Parser, Token) bool;
