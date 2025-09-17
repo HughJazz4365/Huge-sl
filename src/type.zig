@@ -6,6 +6,9 @@ pub const Type = union(enum) {
     type,
     bool,
 
+    //intermediate compile time types
+    tuple,
+    enum_literal,
     compint,
     compfloat,
 
@@ -19,10 +22,10 @@ pub const Type = union(enum) {
     image,
 
     @"enum",
-    enum_literal,
 
     func: void,
     entrypoint: ShaderStage,
+
     pub const format = @import("debug.zig").formatType;
 };
 

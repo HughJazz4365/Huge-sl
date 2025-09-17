@@ -25,6 +25,16 @@ pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
         .val => |v| try writer.print("{f}", .{v}),
         .bin_op => |bin_op| try writer.print("({f} {s} {f})", .{ bin_op.left, @tagName(bin_op.op), bin_op.right }),
         .u_op => |u_op| try writer.print("{s}{f}", .{ @tagName(u_op.op), u_op.target }),
+        .tuple => |tuple| {
+            try writer.print(".{{ ", .{});
+            for (tuple, 0..) |elem, i| {
+                try writer.print("{f}{s}", .{
+                    elem,
+                    if (i + 1 >= tuple.len) "" else ", ",
+                });
+            }
+            try writer.print(" }}", .{});
+        },
         inline else => |_, tag| try writer.print("{s}", .{@tagName(tag)}),
     }
 }

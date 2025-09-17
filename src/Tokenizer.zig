@@ -12,7 +12,11 @@ last: Token = .eof,
 start_ptr: [*]const u8,
 
 ///assumes that there will be no error
-pub fn skip(self: *Tokenizer) void {
+pub inline fn skipErr(self: *Tokenizer) Error!void {
+    _ = try self.next();
+}
+
+pub inline fn skip(self: *Tokenizer) void {
     _ = self.next() catch unreachable;
 }
 pub fn next(self: *Tokenizer) Error!Token {

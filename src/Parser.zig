@@ -51,11 +51,28 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
     var token = try self.tokenizer.next();
     while (token == .endl) token = try self.tokenizer.next();
 
-    const statement: ?Statement = try switch (token) {
+    const statement: ?Statement = switch (token) {
         .eof => null,
         .@"const", .@"var", .uniform, .property, .shared, .out, .in => try self.parseVariableDecl(token),
 
-        else => Error.UnexpectedToken,
+        else => blk: {
+            const target = try self.parseExpressionRecursive(assignmentShouldStop, false, 0);
+            const peek = try self.tokenizer.peek();
+            if (self.defaultShouldStop(peek) catch unreachable) break :blk Statement{ .ignore = target };
+
+            const modifier: ?BinaryOperator = if (peek == .bin_op) op: {
+                self.tokenizer.skip();
+                break :op peek.bin_op;
+            } else null;
+
+            self.tokenizer.skip(); //should always be '='
+
+            break :blk Statement{ .assignment = .{
+                .target = target,
+                .value = try self.parseExpression(defaultShouldStop),
+                .modifier = modifier,
+            } };
+        },
     };
     if (statement) |s| std.debug.print("[S]: {f}\n", .{s});
     return statement;
@@ -112,8 +129,8 @@ pub const Statement = union(enum) {
     pub const format = debug.formatStatement;
 };
 pub const Assignment = struct {
-    left: Expression,
-    right: Expression,
+    target: Expression,
+    value: Expression,
     modifier: ?BinaryOperator,
 };
 pub const VariableDecl = struct {
@@ -127,7 +144,7 @@ pub fn parseExpression(self: *Parser, should_stop: ShouldStopFn) Error!Expressio
 pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, should_consume_end: bool, last_bp: u8) Error!Expression {
     var left = try self.parseExpressionSide();
     var token = try self.tokenizer.peek();
-    while (!should_stop(self, token)) {
+    while (!try should_stop(self, token)) {
         if (token != .bin_op) return Error.UnexpectedToken;
         const op = token.bin_op;
         //go left
@@ -151,12 +168,22 @@ pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, should
     return left;
 }
 
-fn bracketShouldStop(self: *Parser, token: Token) bool {
+fn assignmentShouldStop(self: *Parser, token: Token) Error!bool {
+    const peek = try self.tokenizer.peek();
+    return token == .@"=" or token == .bin_op and peek == .@"=" or self.defaultShouldStop(token) catch unreachable;
+}
+
+fn bracketShouldStop(self: *Parser, token: Token) !bool {
     _ = self;
     return token == .@")";
 }
 
-fn defaultShouldStop(self: *Parser, token: Token) bool {
+fn tupleShouldStop(self: *Parser, token: Token) !bool {
+    _ = self;
+    return token == .@"}" or token == .@",";
+}
+
+fn defaultShouldStop(self: *Parser, token: Token) !bool {
     return token == .endl or token == .eof or (token == .@"}" and @intFromPtr(self.current_scope) != @intFromPtr(&self.global_scope.scope));
 }
 
@@ -174,8 +201,21 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
         },
         .@"(" => try self.parseExpression(bracketShouldStop),
         .@"." => switch (try self.tokenizer.next()) {
+            .@"{" => blk: {
+                //if '{' constructor( tuple of values not a struct constructor for now)
+                var list: List(Expression) = .empty;
+                var tkn = try self.tokenizer.peek();
+                while (tkn != .@"}") {
+                    const expr = try self.parseExpressionRecursive(tupleShouldStop, false, 0);
+                    try list.append(self.arena.allocator(), expr);
+                    if (try self.tokenizer.peek() == .@",") self.tokenizer.skip();
+                    tkn = try self.tokenizer.peek();
+                }
+                self.tokenizer.skip();
+                break :blk .{ .tuple = try list.toOwnedSlice(self.arena.allocator()) };
+            },
+            else => return Error.UnexpectedToken,
 
-            //if '{' constructor( tuple of values not a struct constructor for now)
             //if name enum literal
         },
         .entrypoint => try self.parseEntryPointTypeOrValue(),
@@ -280,7 +320,7 @@ fn parseValue(self: *Parser, token: Token) Error!Value {
         else => Error.UnexpectedToken,
     };
 }
-pub fn typeOf(self: *Parser, expr: Expression) ?tp.Type {
+pub fn typeOf(self: *Parser, expr: Expression) tp.Type {
     _ = self;
     _ = expr;
     return null;
@@ -306,6 +346,7 @@ pub const Expression = union(enum) {
     //   [expr] ['.'] [name]
     indexing: Indexing,
     //   [expr] ['['] [index] [']']
+    tuple: []Expression,
     @"for",
     @"while",
     @"if",
@@ -437,7 +478,7 @@ pub const ValuePayload = union {
     ptr: *const anyopaque,
 };
 
-const ShouldStopFn = fn (*Parser, Token) bool;
+const ShouldStopFn = fn (*Parser, Token) Error!bool;
 const List = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const BinaryOperator = Tokenizer.BinaryOperator;
