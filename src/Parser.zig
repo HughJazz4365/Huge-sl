@@ -23,7 +23,7 @@ const Error = error{
 
 pub fn testicle(self: *Parser) Error!void {
     while (try self.parseStatement()) |statement| {
-        _ = statement;
+        std.debug.print("[S]: {f}\n", .{statement});
     }
     // const expr = try self.parseExpression(defaultShouldStop);
     // std.debug.print("[E]: {f}\n", .{expr});
@@ -80,7 +80,6 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
             } };
         },
     };
-    if (statement) |s| std.debug.print("[S]: {f}\n", .{s});
     return statement;
     //1.if token == return => .return
     //2.if token == break => .break
@@ -151,7 +150,10 @@ pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, should
     var left = try self.parseExpressionSide();
     var token = try self.tokenizer.peek();
     while (!try should_stop(self, token)) {
-        if (token != .bin_op) return Error.UnexpectedToken;
+        if (token != .bin_op) {
+            std.debug.print("UT: {f}, left: {f}\n", .{ token, left });
+            return Error.UnexpectedToken;
+        }
 
         const op = token.bin_op;
         //go left
@@ -277,7 +279,7 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
     }
 }
 
-const EntryPoint = struct {
+pub const EntryPoint = struct {
     stage_info: ShaderStageInfo,
     scope: Scope,
 

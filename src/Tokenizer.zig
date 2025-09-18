@@ -5,9 +5,11 @@ const Tokenizer = @This();
 const Parser = @import("Parser.zig");
 
 pub const Error = error{InvalidInput};
-
-source: []const u8,
-last: Token = .eof,
+const State = struct {
+    source: []const u8,
+    last: Token = .eof,
+};
+state: State,
 
 start_ptr: [*]const u8,
 
@@ -19,37 +21,30 @@ pub inline fn skipErr(self: *Tokenizer) Error!void {
 pub inline fn skip(self: *Tokenizer) void {
     _ = self.next() catch unreachable;
 }
-pub fn next(self: *Tokenizer) Error!Token {
-    // inline for (comptime tp.Vector.allVectors()) |v| {
-    //     @compileLog(comptime v.literalComp());
-    // }
 
-    const p = try self.peekRaw();
-    self.last = p.token;
-    self.shift(p.len);
-    return p.token;
-}
 pub fn peekTimes(self: *Tokenizer, num: usize) Error!Token {
-    const cpy = self.source;
-    const cpy_last = self.last;
+    const save_state = self.state;
+    defer self.state = save_state;
 
-    defer {
-        self.source = cpy;
-        self.last = cpy_last;
-    }
     for (0..num -| 1) |_| try self.skipErr();
     const token = try self.peek();
 
     return token;
 }
 pub fn peek(self: *Tokenizer) Error!Token {
-    const cpy = self.source;
-    defer self.source = cpy;
+    const save_state = self.state;
+    defer self.state = save_state;
 
-    const token = (try self.peekRaw()).token;
-    return token;
+    return self.next();
 }
-fn peekRaw(self: *Tokenizer) Error!PeekRawResult {
+pub fn next(self: *Tokenizer) Error!Token {
+    const fat = try self.nextFat();
+    self.shift(fat.len);
+    self.state.last = fat.token;
+    return fat.token;
+}
+
+fn nextFat(self: *Tokenizer) Error!FatToken {
     const bytes = switch (self.nextBytes()) {
         .endl => return .{ .len = 0, .token = .endl },
         .eof => return .{ .len = 0, .token = .eof },
@@ -67,7 +62,7 @@ fn peekRaw(self: *Tokenizer) Error!PeekRawResult {
 
     const bin_op_match = util.matchToEnum(BinaryOperator, bytes);
     const u_op_match = util.matchToEnum(UnaryOperator, bytes);
-    switch (self.last) {
+    switch (self.state.last) {
         .identifier,
         .type_literal,
         .compfloat,
@@ -98,7 +93,8 @@ fn peekRaw(self: *Tokenizer) Error!PeekRawResult {
         .token = .{ .identifier = valid_identifier },
     };
 }
-fn getNumberLiteralRaw(bytes: []const u8) ?PeekRawResult {
+const FatToken = struct { len: usize, token: Token };
+fn getNumberLiteralRaw(bytes: []const u8) ?FatToken {
     const neg = bytes[0] == '-';
     var count: usize = @intFromBool(neg);
     var dot = false;
@@ -126,7 +122,7 @@ fn getNumberLiteralRaw(bytes: []const u8) ?PeekRawResult {
         } };
 }
 
-fn getTypeLiteralRaw(bytes: []const u8) ?PeekRawResult {
+fn getTypeLiteralRaw(bytes: []const u8) ?FatToken {
     inline for (.{ "void", "bool", "type", "compint", "compfloat" }) |s| {
         if (util.strExtract(bytes, s))
             return .{ .len = s.len, .token = .{ .type_literal = @unionInit(tp.Type, s, {}) } };
@@ -138,7 +134,6 @@ fn getTypeLiteralRaw(bytes: []const u8) ?PeekRawResult {
     }
     return null;
 }
-const PeekRawResult = struct { len: usize, token: Token };
 
 pub fn nextBytes(self: *Tokenizer) RawToken {
     const comment_symbol = "//"; /////////
@@ -147,15 +142,15 @@ pub fn nextBytes(self: *Tokenizer) RawToken {
     var in_comment = false;
     var count: usize = 0;
 
-    while (self.source.len > count) {
-        const char = self.source[count];
+    while (self.state.source.len > count) {
+        const char = self.state.source[count];
 
         const is_valid: std.meta.Tuple(&.{ bool, usize }) = blk: {
-            if (util.strStartsComp(self.source[count..], comment_symbol)) {
+            if (util.strStartsComp(self.state.source[count..], comment_symbol)) {
                 in_comment = true;
                 break :blk .{ false, comment_symbol.len };
             }
-            if (char == '\n' or util.strStartsComp(self.source[count..], "\r\n")) {
+            if (char == '\n' or util.strStartsComp(self.state.source[count..], "\r\n")) {
                 is_endl = true;
                 in_comment = false;
                 break :blk .{ false, if (char == '\n') 1 else 2 };
@@ -173,20 +168,23 @@ pub fn nextBytes(self: *Tokenizer) RawToken {
     return if (count == 0)
         if (is_endl) .endl else .eof
     else
-        .{ .valid = self.source[0..count] };
+        .{ .valid = self.state.source[0..count] };
 }
 fn isWhitespace(char: u8) bool {
     return char == ' ' or char == '\t';
 }
 
 inline fn shift(self: *Tokenizer, amount: usize) void {
-    self.source = self.source[amount..];
+    self.state.source = self.state.source[amount..];
 }
 const RawToken = union(enum) { eof, endl, valid: []const u8 };
 
 pub fn new(source: []const u8) Tokenizer {
     return .{
-        .source = source,
+        .state = .{
+            .source = source,
+            .last = .eof,
+        },
         .start_ptr = source.ptr,
     };
 }

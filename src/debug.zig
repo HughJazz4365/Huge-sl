@@ -50,6 +50,13 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
         .compint => try writer.print("{d}", .{@as(i128, @bitCast(value.payload.wide))}),
         .compfloat => try writer.print("{d}", .{@as(f128, @bitCast(value.payload.wide))}),
         // .number => |num| try writer.print("{d}"
+        .entrypoint => {
+            try writer.print("{f}{{\n", .{value.type});
+
+            const entry_point: *const Parser.EntryPoint = @ptrCast(@alignCast(value.payload.ptr));
+            for (entry_point.body.items) |statement| try writer.print("{f}\n", .{statement});
+            try writer.print("}}\n", .{});
+        },
         else => try writer.print("[{s}]", .{@tagName(value.type)}),
     }
 }

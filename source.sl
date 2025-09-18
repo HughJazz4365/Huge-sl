@@ -10,17 +10,6 @@ const main = entrypoint(.fragment){
 	// out_col = albedo.xyz1
 	out_col = .{albedo, 1}
 }
-
-//needed tokens:
-//_in, _out, _const, _var
-//entrypoint
-//indetifier
-//@":", @".", @"{}"
-//@"=", @"+", @"-", @"*"
-//float_literal, int_literal
-// vec3, vec4
-//swizzle
-
 //things to do there:
 //COMPTIME EXECUTION
 //[1 ]: var decl
