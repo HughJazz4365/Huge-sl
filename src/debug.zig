@@ -22,6 +22,11 @@ pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
 pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
     switch (t) {
         .entrypoint => |ep| try writer.print("entrypoint(.{s})", .{@tagName(ep)}),
+        .number => |n| try writer.print("{s}{d}", .{ n.type.prefix(), @intFromEnum(n.width) }),
+        .vector => |v| try writer.print("{s}vec{d}", .{
+            if (v.child.type == .float) "" else v.child.type.prefix(),
+            @intFromEnum(v.len),
+        }),
         else => try writer.print("{s}", .{@tagName(t)}),
     }
 }

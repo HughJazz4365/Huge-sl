@@ -128,9 +128,14 @@ fn getTypeLiteralRaw(bytes: []const u8) ?FatToken {
             return .{ .len = s.len, .token = .{ .type_literal = @unionInit(tp.Type, s, {}) } };
     }
     inline for (comptime tp.Vector.allVectors()) |v| {
-        const vec_literal = v.literalComp();
+        const vec_literal = comptime v.literalComp();
         if (util.strExtract(bytes, vec_literal))
             return .{ .len = vec_literal.len, .token = .{ .type_literal = .{ .vector = v } } };
+    }
+    inline for (comptime tp.Number.allNumbers()) |v| {
+        const num_literal = comptime v.literalComp();
+        if (util.strExtract(bytes, num_literal))
+            return .{ .len = num_literal.len, .token = .{ .type_literal = .{ .number = v } } };
     }
     return null;
 }

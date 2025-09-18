@@ -3,11 +3,10 @@ in normal : vec3 = -1.2^(2+8)
 const main = entrypoint(.fragment){
 	out out_col : vec4
 
-	const exposure = -1.2 ^ 2
+	const exposure: f32 = -1.2 ^ 2
 	var albedo = .{0.01 + 0.3, 0.1, 1.89 - 0.9}
 
 	albedo *= exposure
-	// out_col = albedo.xyz1
 	out_col = .{albedo, 1}
 }
 //things to do there:

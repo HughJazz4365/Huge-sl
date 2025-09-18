@@ -75,8 +75,39 @@ const VectorLen = enum(u8) { _2 = 2, _3 = 3, _4 = 4 };
 pub const Number = struct {
     type: NumberType,
     width: BitWidth,
+    pub fn allNumbers() []const Number {
+        comptime var slice: []const Number = &.{};
+        inline for (@typeInfo(NumberType).@"enum".fields) |nef| {
+            inline for (@typeInfo(BitWidth).@"enum".fields) |wef| {
+                const n: Number = .{ .type = @enumFromInt(nef.value), .width = @enumFromInt(wef.value) };
+                slice = slice ++ &[1]Number{n};
+            }
+        }
+        return slice;
+    }
+    pub fn literalComp(comptime num: Number) []const u8 {
+        comptime var literal: []const u8 = &.{};
+        literal = literal ++ comptime num.type.prefix() ++ switch (num.width) {
+            .byte => "8",
+            .short => "16",
+            .word => "32",
+            .long => "64",
+        };
+        return literal;
+    }
 };
-pub const NumberType = enum { float, int, uint };
+pub const NumberType = enum {
+    float,
+    int,
+    uint,
+    pub fn prefix(num_type: NumberType) []const u8 {
+        return switch (num_type) {
+            .float => "f",
+            .int => "i",
+            .uint => "u",
+        };
+    }
+};
 pub const BitWidth = enum(u8) { byte = 8, short = 16, word = 32, long = 64 };
 
 const Expression = Parser.Expression;

@@ -21,19 +21,19 @@ const Error = error{
     UndeclaredIdentifier,
 } || Tokenizer.Error;
 
-pub fn testicle(self: *Parser) Error!void {
-    while (try self.parseStatement()) |statement| {
-        std.debug.print("[S]: {f}\n", .{statement});
-    }
-    // const expr = try self.parseExpression(defaultShouldStop);
-    // std.debug.print("[E]: {f}\n", .{expr});
-}
-pub fn init(self: *Parser, allocator: Allocator, tokenizer: *Tokenizer) void {
+pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
+    var self: Parser = .{};
     self.allocator = allocator;
     self.tokenizer = tokenizer;
     self.arena = .init(allocator);
     self.global_scope = .new(self.arena.allocator());
     self.current_scope = &self.global_scope.scope;
+
+    while (try self.parseStatement()) |statement| {
+        try self.global_scope.addStatement(statement);
+        std.debug.print("{f}\n", .{statement});
+    }
+    return self;
 }
 pub fn deinit(self: *Parser) void {
     self.arena.deinit();
@@ -407,16 +407,28 @@ pub const GlobalScope = struct {
     scope: Scope,
     allocator: Allocator,
 
+    body: List(Statement) = .empty,
+
     pub fn new(allocator: Allocator) @This() {
         return .{
             .allocator = allocator,
             .scope = .{
                 .getVarFn = &getVarFn,
                 .referenceFn = &referenceFn,
+                .addStatementFn = &addStatementFn,
             },
         };
     }
-    pub fn getVarFn(scope: *Scope, name: []const u8) Error!*const Variable {
+    pub fn addStatement(self: *GlobalScope, statement: Statement) Error!void {
+        _ = try addStatementFn(&self.scope, statement);
+    }
+
+    fn addStatementFn(scope: *Scope, statement: Statement) Error!*const Statement {
+        const global_scope: *GlobalScope = @fieldParentPtr("scope", scope);
+        try global_scope.body.append(global_scope.allocator, statement);
+        return &global_scope.body.items[global_scope.body.items.len - 1];
+    }
+    fn getVarFn(scope: *Scope, name: []const u8) Error!*const Variable {
         // return for (scope.vars) |*v| {
         //     if (util.strEql(v.name, name)) break v;
         // } else Error.UndeclaredIdentifier;
@@ -425,7 +437,7 @@ pub const GlobalScope = struct {
         const v: Variable = undefined;
         return &v;
     }
-    pub fn referenceFn(scope: *Scope, name: []const u8, ref_type: Scope.DeclReferenceType) Error!void {
+    fn referenceFn(scope: *Scope, name: []const u8, ref_type: Scope.DeclReferenceType) Error!void {
         _ = &.{ name, ref_type, scope };
     }
 };
