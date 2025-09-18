@@ -7,7 +7,7 @@ pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
     switch (statement) {
         .var_decl => |var_decl| {
             try writer.print("{s} {s} : {f}", .{ @tagName(var_decl.variable.qualifier), var_decl.variable.name, var_decl.variable.type });
-            if (var_decl.value) |val| try writer.print(" = {f}", .{val});
+            if (var_decl.value) |value| try writer.print(" = {f}", .{value});
         },
         .assignment => |ass| try writer.print("{f} {s}= {f}", .{
             ass.target,
@@ -34,7 +34,7 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
 pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
     switch (expr) {
         .identifier => |id| try writer.print("{s}", .{id}),
-        .val => |v| try writer.print("{f}", .{v}),
+        .value => |v| try writer.print("{f}", .{v}),
         .bin_op => |bin_op| try writer.print("({f} {s} {f})", .{ bin_op.left, @tagName(bin_op.op), bin_op.right }),
         .u_op => |u_op| try writer.print("{s}{f}", .{ @tagName(u_op.op), u_op.target }),
         .tuple => |tuple| {

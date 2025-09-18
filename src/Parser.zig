@@ -14,11 +14,14 @@ arena: std.heap.ArenaAllocator = undefined,
 global_scope: GlobalScope = undefined,
 current_scope: *Scope = undefined,
 
-const Error = error{
+pub const Error = error{
     OutOfMemory,
 
     UnexpectedToken,
     UndeclaredIdentifier,
+
+    CannotImplicitlyCast,
+    NoTypeVariable,
 } || Tokenizer.Error;
 
 pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
@@ -95,7 +98,7 @@ fn parseVariableDecl(self: *Parser, token: Token) Error!Statement {
     const name_token = try self.tokenizer.next();
     if (name_token != .identifier) return Error.UnexpectedToken;
 
-    const t: ?tp.Type = blk: {
+    const @"type": ?Type = blk: {
         const next = try self.tokenizer.peek();
         if (next != .@":") break :blk null;
         self.tokenizer.skip();
@@ -104,17 +107,19 @@ fn parseVariableDecl(self: *Parser, token: Token) Error!Statement {
         break :blk self.asType(expr) orelse return Error.UnexpectedToken;
     };
 
-    const variable: Variable = .{
-        .qualifier = qualifier,
-        .name = name_token.identifier,
-        .type = t orelse .compint,
-    };
-
     const value: ?Expression = blk: {
         const next = try self.tokenizer.peek();
         if (next != .@"=") break :blk null;
         self.tokenizer.skip();
-        break :blk try self.parseExpression(defaultShouldStop);
+        var expr = try self.parseExpression(defaultShouldStop);
+        if (@"type") |tt| expr = try self.implicitCast(expr, tt);
+        break :blk expr;
+    };
+
+    const variable: Variable = .{
+        .qualifier = qualifier,
+        .name = name_token.identifier,
+        .type = @"type" orelse if (value) |v| self.typeOf(v) else return Error.NoTypeVariable,
     };
 
     return .{ .var_decl = .{
@@ -229,7 +234,7 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
         },
         .entrypoint => try self.parseEntryPointTypeOrValue(),
         // .compfloat, .compint => .@"if",
-        else => .{ .val = try self.parseValue(token) },
+        else => .{ .value = try self.parseValue(token) },
     };
     _ = &expr;
 
@@ -252,16 +257,16 @@ fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
     while (token != .@")") token = try self.tokenizer.next();
 
     const stage_info: ShaderStageInfo = .fragment;
-    const ep_type: tp.Type = .{ .entrypoint = std.meta.activeTag(stage_info) };
+    const ep_type: Type = .{ .entrypoint = std.meta.activeTag(stage_info) };
 
-    if (try self.tokenizer.peek() != .@"{") return .{ .val = .{ .type = .type, .payload = .{ .type = ep_type } } };
+    if (try self.tokenizer.peek() != .@"{") return .{ .value = .{ .type = .type, .payload = .{ .type = ep_type } } };
     self.tokenizer.skip();
 
     var entry_point: EntryPoint = .new(self, stage_info);
     try self.parseScope(&entry_point.scope);
 
     const ep_ptr = try self.createVal(entry_point);
-    return .{ .val = .{
+    return .{ .value = .{
         .type = ep_type,
         .payload = .{ .ptr = @ptrCast(@alignCast(ep_ptr)) },
     } };
@@ -335,15 +340,15 @@ fn parseValue(self: *Parser, token: Token) Error!Value {
         else => Error.UnexpectedToken,
     };
 }
-pub fn typeOf(self: *Parser, expr: Expression) tp.Type {
+pub fn typeOf(self: *Parser, expr: Expression) Type {
+    if (expr == .value) return expr.value.type;
     _ = self;
-    _ = expr;
-    return null;
+    return .compint;
 }
-pub fn asType(self: *Parser, expr: Expression) ?tp.Type {
+pub fn asType(self: *Parser, expr: Expression) ?Type {
     _ = self;
     return switch (expr) {
-        .val => |val| if (val.type == .type) val.payload.type else null,
+        .value => |value| if (value.type == .type) value.payload.type else null,
         else => null,
     };
 }
@@ -367,7 +372,7 @@ pub const Expression = union(enum) {
     @"if",
     @"switch",
 
-    val: Value, // D:
+    value: Value, // D:
     pub fn isMutable(self: Expression) bool {
         return switch (self) {
             .identifier => true,
@@ -467,7 +472,7 @@ pub const Scope = struct {
 pub const Variable = struct {
     qualifier: Qualifier,
     name: []const u8,
-    type: tp.Type,
+    type: Type,
 };
 
 fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
@@ -493,15 +498,30 @@ pub const Qualifier = union(enum) {
     out: bi.InterpolationQualifier,
 };
 
+pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expression {
+    const type_of = self.typeOf(expr);
+    if (std.meta.eql(type_of, @"type")) return expr;
+    switch (expr) {
+        .value => |value| {
+            if (@"type" == .compfloat) return if (value.type == .compint) .{ .value = .{
+                .type = .compfloat,
+                .payload = .{ .wide = @bitCast(@as(f128, @floatFromInt(@as(i128, @intCast(value.payload.wide))))) },
+            } } else Error.CannotImplicitlyCast;
+        },
+        else => {},
+    }
+    return expr;
+}
+
 pub const Value = struct {
-    type: tp.Type,
+    type: Type,
     payload: ValuePayload,
     pub const format = debug.formatValue;
 };
 
 pub const ValuePayload = union {
     wide: u128,
-    type: tp.Type,
+    type: Type,
     ptr: *const anyopaque,
 };
 
@@ -509,5 +529,6 @@ const ShouldStopFn = fn (*Parser, Token) Error!bool;
 const List = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const BinaryOperator = Tokenizer.BinaryOperator;
+const Type = tp.Type;
 const UnaryOperator = Tokenizer.UnaryOperator;
 pub const Token = Tokenizer.Token;
