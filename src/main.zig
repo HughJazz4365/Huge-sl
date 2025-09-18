@@ -13,8 +13,6 @@ pub fn main() !void {
 
     // const source = "const kek = 1 + -52.8 * 9\n";
     const source = alloc_writer.writer.buffered();
-
-    // std.debug.print("source:\n{s}", .{source});
     var tokenizer: Tokenizer = .new(source);
 
     var parser: Parser = .{};

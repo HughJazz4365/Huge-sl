@@ -29,6 +29,19 @@ pub fn next(self: *Tokenizer) Error!Token {
     self.shift(p.len);
     return p.token;
 }
+pub fn peekTimes(self: *Tokenizer, num: usize) Error!Token {
+    const cpy = self.source;
+    const cpy_last = self.last;
+
+    defer {
+        self.source = cpy;
+        self.last = cpy_last;
+    }
+    for (0..num -| 1) |_| try self.skipErr();
+    const token = try self.peek();
+
+    return token;
+}
 pub fn peek(self: *Tokenizer) Error!Token {
     const cpy = self.source;
     defer self.source = cpy;
@@ -137,13 +150,13 @@ pub fn nextBytes(self: *Tokenizer) RawToken {
     while (self.source.len > count) {
         const char = self.source[count];
 
-        const is_valid: std.meta.Tuple(&.{ bool, u32 }) = blk: {
+        const is_valid: std.meta.Tuple(&.{ bool, usize }) = blk: {
             if (util.strStartsComp(self.source[count..], comment_symbol)) {
                 in_comment = true;
                 break :blk .{ false, comment_symbol.len };
             }
             if (char == '\n' or util.strStartsComp(self.source[count..], "\r\n")) {
-                is_endl = !in_comment;
+                is_endl = true;
                 in_comment = false;
                 break :blk .{ false, if (char == '\n') 1 else 2 };
             }

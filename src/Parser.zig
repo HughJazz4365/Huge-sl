@@ -48,12 +48,18 @@ pub fn create(self: *Parser, T: type) !*T {
 }
 
 pub fn parseStatement(self: *Parser) Error!?Statement {
-    var token = try self.tokenizer.next();
-    while (token == .endl) token = try self.tokenizer.next();
+    var token = try self.tokenizer.peek();
+    while (token == .endl) {
+        self.tokenizer.skip();
+        token = try self.tokenizer.peek();
+    }
 
     const statement: ?Statement = switch (token) {
         .eof => null,
-        .@"const", .@"var", .uniform, .property, .shared, .out, .in => try self.parseVariableDecl(token),
+        .@"const", .@"var", .uniform, .property, .shared, .out, .in => blk: {
+            self.tokenizer.skip();
+            break :blk try self.parseVariableDecl(token);
+        },
 
         else => blk: {
             const target = try self.parseExpressionRecursive(assignmentShouldStop, false, 0);
@@ -146,6 +152,7 @@ pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, should
     var token = try self.tokenizer.peek();
     while (!try should_stop(self, token)) {
         if (token != .bin_op) return Error.UnexpectedToken;
+
         const op = token.bin_op;
         //go left
         if (Tokenizer.bindingPower(op) <= last_bp) break;
@@ -169,7 +176,7 @@ pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, should
 }
 
 fn assignmentShouldStop(self: *Parser, token: Token) Error!bool {
-    const peek = try self.tokenizer.peek();
+    const peek = try self.tokenizer.peekTimes(2);
     return token == .@"=" or token == .bin_op and peek == .@"=" or self.defaultShouldStop(token) catch unreachable;
 }
 
@@ -261,7 +268,13 @@ fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
 fn parseScope(self: *Parser, scope: *Scope) Error!void {
     self.current_scope = scope;
     defer self.current_scope = self.current_scope.parent;
-    while (try self.parseStatement()) |statement| _ = try self.current_scope.addStatement(statement);
+    while (try self.parseStatement()) |statement| {
+        _ = try self.current_scope.addStatement(statement);
+        if (try self.tokenizer.peek() == .@"}") {
+            self.tokenizer.skip();
+            break;
+        }
+    }
 }
 
 const EntryPoint = struct {
