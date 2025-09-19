@@ -7,6 +7,7 @@ pub const Type = union(enum) {
     bool,
 
     //intermediate compile time types
+    unknown,
     tuple,
     enum_literal,
     compint,
@@ -23,10 +24,14 @@ pub const Type = union(enum) {
 
     @"enum",
 
-    func: void,
+    function: FunctionType,
     entrypoint: ShaderStage,
 
     pub const format = @import("debug.zig").formatType;
+};
+pub const FunctionType = struct {
+    rtype: *Type,
+    args_types: []Type,
 };
 
 pub const ShaderStage = enum { vertex, fragment, compute };
@@ -75,6 +80,16 @@ const VectorLen = enum(u8) { _2 = 2, _3 = 3, _4 = 4 };
 pub const Number = struct {
     type: NumberType,
     width: BitWidth,
+
+    pub fn ToZig(comptime num: Number) type {
+        const width = @intFromEnum(num.width);
+        return @Type(
+            if (num.type == .float)
+                .{ .float = .{ .bits = width } }
+            else
+                .{ .int = .{ .bits = width, .signedness = if (num.type == .int) .signed else .unsigned } },
+        );
+    }
     pub fn allNumbers() []const Number {
         comptime var slice: []const Number = &.{};
         inline for (@typeInfo(NumberType).@"enum".fields) |nef| {

@@ -1,4 +1,4 @@
-in normal : vec3 = -1.2^(2+8)
+in normal : vec3 = -1.2*(2+8)
 
 const main = entrypoint(.fragment){
 	out out_col : vec4
@@ -9,6 +9,10 @@ const main = entrypoint(.fragment){
 	albedo *= exposure
 	out_col = .{albedo, 1}
 }
+
+// const double = fn(x) f32{
+// 	return x * 2
+// }
 //things to do there:
 //COMPTIME EXECUTION
 //[1 ]: var decl
