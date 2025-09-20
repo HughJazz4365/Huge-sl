@@ -103,7 +103,6 @@ pub const Number = struct {
     pub fn literalComp(comptime num: Number) []const u8 {
         comptime var literal: []const u8 = &.{};
         literal = literal ++ comptime num.type.prefix() ++ switch (num.width) {
-            .byte => "8",
             .short => "16",
             .word => "32",
             .long => "64",
@@ -123,6 +122,6 @@ pub const NumberType = enum {
         };
     }
 };
-pub const BitWidth = enum(u8) { byte = 8, short = 16, word = 32, long = 64 };
+pub const BitWidth = enum(u8) { short = 16, word = 32, long = 64 };
 
 const Expression = Parser.Expression;

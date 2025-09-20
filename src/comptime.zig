@@ -4,9 +4,24 @@ const Parser = @import("Parser.zig");
 
 const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(i128, -1)) } };
 pub fn simplify(self: *Parser, expr: Expression) Error!Expression {
+    // std.debug.print("Simp: {f}\n", .{expr});
     return switch (expr) {
         .bin_op => |bin_op| try doBinOp(self, bin_op),
+        .u_op => |u_op| try doUOp(self, u_op),
         else => expr,
+    };
+}
+
+fn doUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
+    _ = self;
+    if (u_op.op == .@"+") return u_op.target.*;
+    const initial: Expression = .{ .u_op = u_op };
+
+    const target = if (u_op.target.* != .value) return initial else u_op.target.value;
+    return switch (u_op.op) {
+        .@"-" => .{ .value = try mulValues(target, minusonecompint) },
+        .@"+" => initial,
+        // .@"-" => .{ .value = try addValues(left, try mulValues(right, minusonecompint)) },
     };
 }
 
@@ -19,15 +34,32 @@ fn doBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
     return switch (bin_op.op) {
         .@"+" => .{ .value = try addValues(left, right) },
         .@"-" => .{ .value = try addValues(left, try mulValues(right, minusonecompint)) },
-        else => initial,
+        .@"*" => .{ .value = try mulValues(left, right) },
+        .@"^" => .{ .value = try powValues(left, right) },
+        // else => initial,
     };
+}
+
+fn powValues(left: Value, right: Value) Error!Value {
+    const t, const a, const b = try implicitCastEqualizeValues(left, right, true);
+    const payload: Parser.ValuePayload = switch (t) {
+        .compint => .{ .wide = asWide(std.math.powi(i128, wideAs(i128, a.wide), wideAs(i128, b.wide)) catch return Error.NumericError) },
+        .compfloat => .{ .wide = asWide(@as(f128, @floatCast(std.math.pow(
+            f64,
+            @floatCast(wideAs(f128, a.wide)),
+            @floatCast(wideAs(f128, b.wide)),
+        )))) },
+        //number , vector
+        else => return Error.InvalidOperands,
+    };
+    return .{ .type = t, .payload = payload };
 }
 
 fn mulValues(left: Value, right: Value) Error!Value {
     const t, const a, const b = try implicitCastEqualizeValues(left, right, true);
     const payload: Parser.ValuePayload = switch (t) {
-        .compint => .{ .wide = @bitCast(@as(i128, @bitCast(a.wide)) * @as(i128, @bitCast(b.wide))) },
-        .compfloat => .{ .wide = @bitCast(@as(f128, @bitCast(a.wide)) * @as(f128, @bitCast(b.wide))) },
+        .compint => .{ .wide = asWide(wideAs(i128, a.wide) * wideAs(i128, b.wide)) },
+        .compfloat => .{ .wide = asWide(wideAs(f128, a.wide) * wideAs(f128, b.wide)) },
         //number , vector
         else => return Error.InvalidOperands,
     };
@@ -50,7 +82,7 @@ fn implicitCastEqualizeValues(a: Value, b: Value, allow_splat: bool) Error!Equal
     if (std.meta.eql(a.type, b.type)) return .{ a.type, a.payload, b.payload };
 
     //'first' comes first in Type union
-    var first, var second = blk: {
+    var first, const second = blk: {
         const a_tag_value = @intFromEnum(std.meta.activeTag(a.type));
         const b_tag_value = @intFromEnum(std.meta.activeTag(b.type));
         break :blk if (a_tag_value >= b_tag_value) [2]Value{ b, a } else [2]Value{ a, b };
@@ -69,22 +101,24 @@ pub fn implicitCastValue(value: Value, target: Type, allow_splat: bool) Error!Va
 
     return switch (target) {
         .compfloat => if (value.type == .compint)
-            .{ .type = .compfloat, .wide = @bitCast(@as(f128, @floatFromInt(@as(i128, @bitCast(value.payload.wide))))) }
+            .{ .type = .compfloat, .payload = .{ .wide = @bitCast(@as(f128, @floatFromInt(@as(i128, @bitCast(value.payload.wide))))) } }
         else
             Error.CannotImplicitlyCast,
-        .number => |number| switch (number.type) {
+        .number => |number| .{ .type = target, .payload = .{ .wide = try switch (number.type) {
             inline else => |t| switch (number.width) {
-                inline else => |w| blk: {
-                    const T = comptime (tp.Number{ .type = t, .width = w }).ToZig();
-                    switch (value.type) {
-                        .compint => break :blk numberCast(T, wideAs(i128, value.payload.wide)),
-                        .compfloat => {},
-                        else => {},
-                    }
-                    return Error.CannotImplicitlyCast;
+                inline else => |w| switch (value.type) {
+                    .compint => asWide(numberCast(
+                        comptime (tp.Number{ .type = t, .width = w }).ToZig(),
+                        wideAs(i128, value.payload.wide),
+                    )),
+                    .compfloat => asWide(numberCast(
+                        comptime (tp.Number{ .type = t, .width = w }).ToZig(),
+                        wideAs(f128, value.payload.wide),
+                    )),
+                    else => Error.CannotImplicitlyCast,
                 },
             },
-        },
+        } } },
         else => Error.CannotImplicitlyCast,
     };
 }
@@ -102,18 +136,20 @@ fn numberCast(T: type, value: anytype) T {
         else => @compileError(err),
     };
 }
-fn wideAs(T: type, wide: u128) T {
+inline fn wideAs(T: type, wide: u128) T {
     const s = @sizeOf(u128);
     if (@sizeOf(T) == s) return @bitCast(wide);
-    @compileError("SIZE WIDE AS");
-    // {
-    //     first.type = .compfloat;
-    //     first.payload = .{
-    //         .wide = @bitCast(@as(f128, @floatFromInt(@as(i128, @bitCast(first.payload))))),
-    //     };
+    const ptr: *const T = @ptrCast(@alignCast(&wide));
+    return ptr.*;
 }
 fn asWide(value: anytype) u128 {
+    var wide: u128 = 0;
     const T = @TypeOf(value);
+    @memcpy(
+        @as([*]u8, @ptrCast(@alignCast(&wide))),
+        @as([*]const u8, @ptrCast(@alignCast(&value)))[0..@sizeOf(T)],
+    );
+    return wide;
 }
 
 const EqualizeResult = std.meta.Tuple(&.{ Type, Parser.ValuePayload, Parser.ValuePayload });

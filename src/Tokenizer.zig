@@ -60,6 +60,9 @@ fn nextFat(self: *Tokenizer) Error!FatToken {
         };
     }
 
+    //before op s ??
+    if (getNumberLiteralRaw(bytes)) |l| return l;
+
     const bin_op_match = util.matchToEnum(BinaryOperator, bytes);
     const u_op_match = util.matchToEnum(UnaryOperator, bytes);
     switch (self.state.last) {
@@ -83,7 +86,6 @@ fn nextFat(self: *Tokenizer) Error!FatToken {
     }
 
     if (getTypeLiteralRaw(bytes)) |t| return t;
-    if (getNumberLiteralRaw(bytes)) |l| return l;
 
     // strip valid identifier
     const valid_identifier = try util.stripValidIdentifier(bytes);

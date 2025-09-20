@@ -4,7 +4,7 @@ const main = entrypoint(.fragment){
 	out out_col : vec4
 
 	const exposure: f32 = -1.2 ^ 2
-	var albedo = .{0.01 + 0.3, 0.1, 1.89 - 0.9}
+	var albedo = .{0.01 + 0.3, 0.1, 1.89 - 0.3}
 
 	albedo *= exposure
 	out_col = .{albedo, 1}

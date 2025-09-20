@@ -24,6 +24,8 @@ pub const Error = error{
     CannotImplicitlyCast,
     NoTypeVariable,
     InvalidOperands,
+
+    NumericError,
 } || Tokenizer.Error;
 
 pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
