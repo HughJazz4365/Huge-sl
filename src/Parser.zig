@@ -27,8 +27,10 @@ pub const Error = error{
 
     InvalidOperands,
     InvalidConstructor,
+    InvalidIndex,
 
     NumericError,
+    OutOfBoundsAccess,
 } || Tokenizer.Error;
 
 pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
@@ -584,7 +586,7 @@ pub const Function = struct {
 
 pub const Value = struct {
     type: Type,
-    payload: ValuePayload,
+    payload: ValuePayload = undefined,
     pub const format = debug.formatValue;
 };
 

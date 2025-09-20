@@ -10,6 +10,7 @@ pub fn compile(allocator: std.mem.Allocator, source: []const u8, out: ?*std.Io.W
     //     .child = @constCast(&tp.Type{ .number = .{ .width = .word, .type = .float } }),
     // } };
     // std.debug.print("size: {d}, {d}\n", .{ @"type".size(), @sizeOf([len]f32) });
+
     _ = out;
     var timer = try std.time.Timer.start();
 
@@ -18,8 +19,8 @@ pub fn compile(allocator: std.mem.Allocator, source: []const u8, out: ?*std.Io.W
     defer parser.deinit();
 
     const measure = timer.read();
-    _ = measure;
-    // std.debug.print("time {d} ms.\n", .{@as(f64, @floatFromInt(measure)) / 1_000_000});
+    // _ = measure;
+    std.debug.print("time {d} ms.\n", .{@as(f64, @floatFromInt(measure)) / 1_000_000});
 }
 
 pub fn compileFile(allocator: std.mem.Allocator, path: []const u8, out: ?*std.Io.Writer) !void {

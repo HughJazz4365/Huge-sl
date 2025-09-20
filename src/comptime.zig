@@ -8,10 +8,55 @@ pub fn refine(self: *Parser, expr: Expression) Error!Expression {
         .bin_op => |bin_op| try doBinOp(self, bin_op),
         .u_op => |u_op| try doUOp(self, u_op),
         .constructor => |constructor| try refineConstructor(self, constructor),
+        .indexing => |indexing| try refineIndexing(self, indexing),
         else => expr,
     };
 }
-pub fn refineConstructor(self: *Parser, constructor: Parser.Constructor) Error!Expression {
+
+fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
+    _ = self;
+    const initial: Expression = .{ .indexing = indexing };
+    if (!(indexing.index.* == .value and indexing.target.* == .value)) return initial;
+
+    const index_value = indexing.index.value;
+    const target_value = indexing.target.value;
+    const index: usize = switch (index_value.type) {
+        .compint => @intCast(wideAs(i128, index_value.payload.wide)),
+        .compfloat => castFloatNoRound(usize, wideAs(f128, index_value.payload.wide)) catch return Error.InvalidIndex,
+        .number => |number| switch (number.width) {
+            inline else => |width| @intCast(wideAs(
+                (Type{ .number = .{ .width = width, .type = .uint } }).ToZig(),
+                index_value.payload.wide,
+            )),
+        },
+        else => return Error.InvalidIndex,
+    };
+
+    const structure = target_value.type.constructorStructure();
+    std.debug.print("cstype: {f}, cslen: {d}\n", .{ structure.component, structure.len });
+    if (structure.len <= index) return Error.OutOfBoundsAccess;
+
+    const component_size = structure.component.size();
+    var ptr: [*]const u8 = @ptrCast(target_value.payload.ptr);
+    ptr += component_size * index;
+    return .{ .value = .{
+        .type = structure.component,
+        .payload = switch (structure.component) {
+            .number, .compint, .compfloat => blk: {
+                var wide: u128 = 0;
+                @memcpy(@as([*]u8, @ptrCast(&wide)), ptr[0..component_size]);
+                break :blk .{ .wide = wide };
+            },
+            else => .{ .ptr = ptr },
+        },
+    } };
+}
+
+fn castFloatNoRound(T: type, float: anytype) error{NotAWholeNumber}!T {
+    if (@floor(float) != float) return error.NotAWholeNumber;
+    return @intFromFloat(float);
+}
+fn refineConstructor(self: *Parser, constructor: Parser.Constructor) Error!Expression {
     const initial: Expression = .{ .constructor = constructor };
     if (constructor.type == .unknown) return initial;
 
@@ -62,7 +107,7 @@ fn constructValue(self: *Parser, constructor: Parser.Constructor) Error!Expressi
                             vector_value[i] = elem;
                         }
                         const ptr = try self.createVal(vector_value);
-                        std.debug.print("{d}\n", .{vector_value});
+                        // std.debug.print("{d}\n", .{vector_value});
                         break :blk .{ .value = .{ .type = @"type", .payload = .{ .ptr = @ptrCast(@alignCast(ptr)) } } };
                     },
                 },
