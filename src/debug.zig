@@ -50,6 +50,7 @@ pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
             try writer.print(" }}", .{});
         },
         .cast => |cast| try writer.print("{f}{{ {f} }}", .{ cast.type, cast.expr.* }),
+        .indexing => |indexing| try writer.print("{f}[{f}]", .{ indexing.target, indexing.index }),
         inline else => |_, tag| try writer.print("{s}", .{@tagName(tag)}),
     }
 }
@@ -67,9 +68,13 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
         },
         .number => |number| switch (number.type) {
             inline else => |@"type"| switch (number.width) {
-                inline else => |width| try writer.print("{d}", .{
+                inline else => |width| try writer.print("[{f}]|{d}|", .{
+                    value.type,
                     ct.wideAs((tp.Number{ .type = @"type", .width = width }).ToZig(), value.payload.wide),
                 }),
+                // inline else => |width| try writer.print("{d}", .{
+                //     ct.wideAs((tp.Number{ .type = @"type", .width = width }).ToZig(), value.payload.wide),
+                // }),
             },
         },
         else => try writer.print("[{s}]", .{@tagName(value.type)}),

@@ -33,11 +33,21 @@ pub const Type = union(enum) {
             else => true,
         };
     }
+    pub fn size(self: Type) usize {
+        return switch (self) {
+            .number => |number| @intFromEnum(number.width) >> 3,
+            .vector => |vector| (Type.size(.{ .number = vector.child }) * @intFromEnum(vector.len) + 15) / 16 * 16,
+            .array => |array| array.child.size() * array.len,
+            .matrix => |matrix| Type.size(.{ .vector = matrix.column_type }) * @intFromEnum(matrix.len),
+            .bool => 1,
+            else => 0,
+        };
+    }
     pub fn constructorStructure(self: Type) ConstructorStructure {
         return switch (self) {
-            .vector => |vector| .{ .component = vector.child, .len = @intFromEnum(vector.len) },
-            .array => |array| .{ .component = array.child, .len = @intFromEnum(array.len) },
-            .matrix => |matrix| .{ .component = Type{ .vector = matrix.column_type }, .len = @intFromEnum(matrix.len) },
+            .vector => |vector| .{ .component = .{ .number = vector.child }, .len = @intFromEnum(vector.len) },
+            .array => |array| .{ .component = array.child.*, .len = array.len },
+            .matrix => |matrix| .{ .component = .{ .vector = matrix.column_type }, .len = @intFromEnum(matrix.len) },
             else => .{ .component = self },
         };
     }

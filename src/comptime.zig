@@ -3,13 +3,78 @@ const tp = @import("type.zig");
 const Parser = @import("Parser.zig");
 
 const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(i128, -1)) } };
-pub fn simplify(self: *Parser, expr: Expression) Error!Expression {
+pub fn refine(self: *Parser, expr: Expression) Error!Expression {
     return switch (expr) {
         .bin_op => |bin_op| try doBinOp(self, bin_op),
         .u_op => |u_op| try doUOp(self, u_op),
+        .constructor => |constructor| try refineConstructor(self, constructor),
         else => expr,
     };
 }
+pub fn refineConstructor(self: *Parser, constructor: Parser.Constructor) Error!Expression {
+    const initial: Expression = .{ .constructor = constructor };
+    if (constructor.type == .unknown) return initial;
+
+    const target_structure = constructor.type.constructorStructure();
+    if (target_structure.len <= 1) return Error.InvalidConstructor;
+
+    const slice = if (constructor.components.len == target_structure.len)
+        constructor.components
+    else
+        try self.arena.allocator().alloc(Expression, target_structure.len);
+
+    var filled_count: usize = 0;
+    for (constructor.components) |source_component| {
+        if (filled_count >= slice.len) return Error.InvalidConstructor;
+        slice[filled_count] = self.implicitCast(source_component, target_structure.component) catch {
+            // if (component_structure.len <= 1) return Error.CannotImplicitlyCast;
+            var elem_iter = try ElementIterator.new(self, source_component);
+            while (try elem_iter.next(self)) |elem| {
+                if (filled_count >= slice.len) return Error.InvalidConstructor;
+                slice[filled_count] = try self.implicitCast(elem, target_structure.component);
+                filled_count += 1;
+            }
+            continue;
+        };
+
+        filled_count += 1;
+        continue;
+    }
+    return try constructValue(self, .{ .type = constructor.type, .components = slice });
+}
+
+fn constructValue(self: *Parser, constructor: Parser.Constructor) Error!Expression {
+    _ = self;
+    return .{ .constructor = constructor };
+}
+const ElementIterator = struct {
+    expr: *Expression,
+    index: usize = 0,
+
+    pub fn next(self: *ElementIterator, parser: *Parser) Error!?Expression {
+        const @"type" = parser.typeOf(self.expr.*);
+
+        if (self.expr.* == .constructor and self.expr.constructor.type == .unknown) {
+            if (self.index >= self.expr.constructor.components.len) return null;
+            defer self.index += 1;
+            return self.expr.constructor.components[self.index];
+        } else {
+            const structure = @"type".constructorStructure();
+            if (self.index >= structure.len) return null;
+            const ptr = try parser.createVal(Expression{ .value = .{
+                .type = .compint,
+                .payload = .{ .wide = asWide(self.index) },
+            } });
+            self.index += 1;
+            return try refine(parser, .{ .indexing = .{ .target = self.expr, .index = ptr } });
+        }
+    }
+    pub inline fn new(parser: *Parser, expr: Expression) Error!ElementIterator {
+        const @"type" = parser.typeOf(expr);
+        if (!(@"type" == .array or @"type" == .vector or (@"type" == .unknown and expr == .constructor))) return Error.CannotImplicitlyCast;
+        return .{ .expr = try parser.createVal(expr) };
+    }
+};
 
 fn doUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
     _ = self;
@@ -76,6 +141,19 @@ fn addValues(left: Value, right: Value) Error!Value {
     return .{ .type = t, .payload = payload };
 }
 
+pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expression {
+    const type_of = self.typeOf(expr);
+    if (std.meta.eql(type_of, @"type")) return expr;
+    return switch (expr) {
+        .value => |value| .{ .value = try implicitCastValue(value, @"type", true) },
+        .constructor => |constructor| try refineConstructor(self, if (constructor.type == .unknown)
+            .{ .components = constructor.components, .type = @"type" }
+        else
+            return Error.CannotImplicitlyCast),
+        // .constructor => |constructor| try self.implicitCastConstructor(constructor, @"type"),
+        else => expr,
+    };
+}
 fn implicitCastEqualizeValues(a: Value, b: Value, allow_splat: bool) Error!EqualizeResult {
     _ = allow_splat;
     if (std.meta.eql(a.type, b.type)) return .{ a.type, a.payload, b.payload };
@@ -102,7 +180,6 @@ fn implicitCastEqualizeValues(a: Value, b: Value, allow_splat: bool) Error!Equal
 
 pub fn implicitCastValue(value: Value, target: Type, allow_splat: bool) Error!Value {
     _ = allow_splat;
-    // std.debug.print("val : {f}, type: {f}\n", .{ value, target });
     if (std.meta.eql(value.type, target)) return value;
 
     return switch (target) {
@@ -110,6 +187,7 @@ pub fn implicitCastValue(value: Value, target: Type, allow_splat: bool) Error!Va
             .{ .type = .compfloat, .payload = .{ .wide = @bitCast(@as(f128, @floatFromInt(@as(i128, @bitCast(value.payload.wide))))) } }
         else
             Error.CannotImplicitlyCast,
+        //@PREVENT ROUNDING COMPTIME FLOATS WHEN CASING TO INTEGER
         .number => |number| .{ .type = target, .payload = .{ .wide = try switch (number.type) {
             inline else => |t| switch (number.width) {
                 inline else => |w| switch (value.type) {

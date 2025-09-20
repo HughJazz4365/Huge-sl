@@ -1,5 +1,6 @@
 const std = @import("std");
 const Tokenizer = @import("Tokenizer.zig");
+const tp = @import("type.zig");
 const Parser = @import("Parser.zig");
 
 pub fn compile(allocator: std.mem.Allocator, source: []const u8, out: ?*std.Io.Writer) !void {
