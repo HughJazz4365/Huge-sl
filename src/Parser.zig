@@ -22,7 +22,9 @@ pub const Error = error{
     UndeclaredIdentifier,
 
     CannotImplicitlyCast,
+    CannotInferType,
     NoTypeVariable,
+
     InvalidOperands,
 
     NumericError,
@@ -102,9 +104,9 @@ fn parseVariableDecl(self: *Parser, token: Token) Error!Statement {
     const name_token = try self.tokenizer.next();
     if (name_token != .identifier) return Error.UnexpectedToken;
 
-    const @"type": ?Type = blk: {
+    var @"type": Type = blk: {
         const next = try self.tokenizer.peek();
-        if (next != .@":") break :blk null;
+        if (next != .@":") break :blk .unknown;
         self.tokenizer.skip();
 
         const expr = try self.parseExpressionSide();
@@ -116,14 +118,23 @@ fn parseVariableDecl(self: *Parser, token: Token) Error!Statement {
         if (next != .@"=") break :blk null;
         self.tokenizer.skip();
         var expr = try self.parseExpression(defaultShouldStop);
-        if (@"type") |tt| expr = try self.implicitCast(expr, tt);
+        if (@"type" != .unknown)
+            expr = try self.implicitCast(expr, @"type")
+        else
+            @"type" = self.typeOf(expr);
+
+        if (!@"type".isComplete()) {
+            expr = try self.makeExprCompleteType(expr);
+            @"type" = self.typeOf(expr);
+            if (!@"type".isComplete()) return Error.CannotInferType;
+        }
         break :blk expr;
     };
 
     const variable: Variable = .{
         .qualifier = qualifier,
         .name = name_token.identifier,
-        .type = @"type" orelse if (value) |v| try self.typeOf(v) else return Error.NoTypeVariable,
+        .type = @"type",
     };
 
     return .{ .var_decl = .{
@@ -132,6 +143,10 @@ fn parseVariableDecl(self: *Parser, token: Token) Error!Statement {
     } };
 }
 
+fn makeExprCompleteType(self: *Parser, expr: Expression) Error!Expression {
+    _ = self;
+    return expr;
+}
 pub const Statement = union(enum) {
     var_decl: VariableDecl,
     //   [qualifier] [name] {:} {type expr} {=} {value expr}
@@ -349,10 +364,13 @@ fn parseValue(self: *Parser, token: Token) Error!Value {
         else => Error.UnexpectedToken,
     };
 }
-pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
-    if (expr == .value) return expr.value.type;
+pub fn typeOf(self: *Parser, expr: Expression) Type {
     _ = self;
-    return .compint;
+    return switch (expr) {
+        .value => |value| value.type,
+        .constructor => |constructor| constructor.type,
+        else => .compint,
+    };
 }
 pub fn asType(self: *Parser, expr: Expression) ?Type {
     _ = self;

@@ -8,7 +8,6 @@ pub const Type = union(enum) {
 
     //intermediate compile time types
     unknown,
-    tuple,
     enum_literal,
     compint,
     compfloat,
@@ -28,6 +27,12 @@ pub const Type = union(enum) {
     entrypoint: ShaderStage,
 
     pub const format = @import("debug.zig").formatType;
+    pub fn isComplete(self: Type) bool {
+        return switch (self) {
+            .unknown, .enum_literal => false,
+            else => true,
+        };
+    }
 };
 pub const FunctionType = struct {
     rtype: *Type,

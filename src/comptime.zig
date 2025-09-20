@@ -4,7 +4,6 @@ const Parser = @import("Parser.zig");
 
 const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(i128, -1)) } };
 pub fn simplify(self: *Parser, expr: Expression) Error!Expression {
-    // std.debug.print("Simp: {f}\n", .{expr});
     return switch (expr) {
         .bin_op => |bin_op| try doBinOp(self, bin_op),
         .u_op => |u_op| try doUOp(self, u_op),
@@ -82,9 +81,11 @@ fn implicitCastEqualizeValues(a: Value, b: Value, allow_splat: bool) Error!Equal
     if (std.meta.eql(a.type, b.type)) return .{ a.type, a.payload, b.payload };
 
     //'first' comes first in Type union
+    var reordered = false;
     var first, const second = blk: {
         const a_tag_value = @intFromEnum(std.meta.activeTag(a.type));
         const b_tag_value = @intFromEnum(std.meta.activeTag(b.type));
+        if (a_tag_value >= b_tag_value) reordered = true;
         break :blk if (a_tag_value >= b_tag_value) [2]Value{ b, a } else [2]Value{ a, b };
     };
 
@@ -92,7 +93,11 @@ fn implicitCastEqualizeValues(a: Value, b: Value, allow_splat: bool) Error!Equal
         .compfloat, .number => first = try implicitCastValue(first, second.type, false),
         else => return Error.InvalidOperands,
     }
-    return .{ second.type, first.payload, second.payload };
+
+    return if (reordered)
+        .{ second.type, second.payload, first.payload }
+    else
+        .{ second.type, first.payload, second.payload };
 }
 
 pub fn implicitCastValue(value: Value, target: Type, allow_splat: bool) Error!Value {
