@@ -34,6 +34,7 @@ pub const Type = union(enum) {
         };
     }
 };
+
 pub const FunctionType = struct {
     rtype: *Type,
     args_types: []Type,
