@@ -44,8 +44,33 @@ pub fn refineConstructor(self: *Parser, constructor: Parser.Constructor) Error!E
 }
 
 fn constructValue(self: *Parser, constructor: Parser.Constructor) Error!Expression {
-    _ = self;
-    return .{ .constructor = constructor };
+    const initial: Expression = .{ .constructor = constructor };
+    // if (constructor.value != .vector) return Error.InvalidConstructor;
+    return switch (constructor.type) {
+        .vector => |vector| switch (vector.len) {
+            inline else => |len| switch (vector.child.width) {
+                inline else => |width| switch (vector.child.type) {
+                    inline else => |num_type| blk: {
+                        const @"type": Type = .{ .vector = .{ .len = len, .child = .{ .width = width, .type = num_type } } };
+                        const T = @"type".ToZig();
+                        const C = @typeInfo(T).vector.child;
+                        var vector_value: T = undefined;
+                        for (0..@intFromEnum(len)) |i| {
+                            const component = constructor.components[i];
+                            if (component != .value) return initial;
+                            const elem = wideAs(C, component.value.payload.wide);
+                            vector_value[i] = elem;
+                        }
+                        const ptr = try self.createVal(vector_value);
+                        std.debug.print("{d}\n", .{vector_value});
+                        break :blk .{ .value = .{ .type = @"type", .payload = .{ .ptr = @ptrCast(@alignCast(ptr)) } } };
+                    },
+                },
+            },
+        },
+
+        else => initial,
+    };
 }
 const ElementIterator = struct {
     expr: *Expression,

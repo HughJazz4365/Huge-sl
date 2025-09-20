@@ -77,6 +77,16 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
                 // }),
             },
         },
+        .vector => |vector| switch (vector.len) {
+            inline else => |len| switch (vector.child.width) {
+                inline else => |width| switch (vector.child.type) {
+                    inline else => |num_type| std.debug.print("|{f}|{d}", .{
+                        value.type,
+                        @as(*const (tp.Vector{ .len = len, .child = .{ .width = width, .type = num_type } }).ToZig(), @ptrCast(@alignCast(value.payload.ptr))).*,
+                    }),
+                },
+            },
+        },
         else => try writer.print("[{s}]", .{@tagName(value.type)}),
     }
 }

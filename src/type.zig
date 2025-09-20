@@ -27,6 +27,12 @@ pub const Type = union(enum) {
     entrypoint: ShaderStage,
 
     pub const format = @import("debug.zig").formatType;
+
+    pub fn ToZig(comptime @"type": Type) type {
+        return switch (@"type") {
+            inline else => |value| if (@hasDecl(@TypeOf(value), "ToZig")) value.ToZig() else @compileError("cant convert type to zig"),
+        };
+    }
     pub fn isComplete(self: Type) bool {
         return switch (self) {
             .unknown, .enum_literal => false,
@@ -71,11 +77,17 @@ pub const Matrix = struct {
 pub const Array = struct {
     child: *Type,
     len: u32,
+    pub fn ToZig(comptime arr: Array) type {
+        return [arr.len](arr.child.*).ToZig();
+    }
 };
 
 pub const Vector = struct {
     child: Number,
     len: VectorLen,
+    pub fn ToZig(comptime vec: Vector) type {
+        return @Vector(@intCast(@intFromEnum(vec.len)), vec.child.ToZig());
+    }
     pub fn literalComp(comptime vec: Vector) []const u8 {
         if (vec.child.width != .word) @compileError(std.fmt.comptimePrint(
             "no builtin literal for vector with child bitwidth of {d}",

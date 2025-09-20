@@ -4,6 +4,12 @@ const tp = @import("type.zig");
 const Parser = @import("Parser.zig");
 
 pub fn compile(allocator: std.mem.Allocator, source: []const u8, out: ?*std.Io.Writer) !void {
+    // const len = 19;
+    // const @"type": tp.Type = .{ .array = .{
+    //     .len = len,
+    //     .child = @constCast(&tp.Type{ .number = .{ .width = .word, .type = .float } }),
+    // } };
+    // std.debug.print("size: {d}, {d}\n", .{ @"type".size(), @sizeOf([len]f32) });
     _ = out;
     var timer = try std.time.Timer.start();
 
