@@ -102,6 +102,7 @@ fn implicitCastEqualizeValues(a: Value, b: Value, allow_splat: bool) Error!Equal
 
 pub fn implicitCastValue(value: Value, target: Type, allow_splat: bool) Error!Value {
     _ = allow_splat;
+    // std.debug.print("val : {f}, type: {f}\n", .{ value, target });
     if (std.meta.eql(value.type, target)) return value;
 
     return switch (target) {
@@ -141,13 +142,13 @@ fn numberCast(T: type, value: anytype) T {
         else => @compileError(err),
     };
 }
-inline fn wideAs(T: type, wide: u128) T {
+pub inline fn wideAs(T: type, wide: u128) T {
     const s = @sizeOf(u128);
     if (@sizeOf(T) == s) return @bitCast(wide);
     const ptr: *const T = @ptrCast(@alignCast(&wide));
     return ptr.*;
 }
-fn asWide(value: anytype) u128 {
+pub fn asWide(value: anytype) u128 {
     var wide: u128 = 0;
     const T = @TypeOf(value);
     @memcpy(

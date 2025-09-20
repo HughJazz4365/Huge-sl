@@ -26,6 +26,7 @@ pub const Error = error{
     NoTypeVariable,
 
     InvalidOperands,
+    InvalidConstructor,
 
     NumericError,
 } || Tokenizer.Error;
@@ -239,25 +240,8 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
         },
         .@"(" => try self.parseExpression(bracketShouldStop),
         .@"." => switch (try self.tokenizer.next()) {
-            .@"{" => blk: {
-                //if '{' constructor( tuple of values not a struct constructor for now)
-                var list: List(Expression) = .empty;
-                var tkn = try self.tokenizer.peek();
-                while (tkn != .@"}") {
-                    const expr = try self.parseExpressionRecursive(constructorShouldStop, false, 0);
-                    try list.append(self.arena.allocator(), expr);
-                    if (try self.tokenizer.peek() == .@",") self.tokenizer.skip();
-                    tkn = try self.tokenizer.peek();
-                }
-                self.tokenizer.skip();
-                break :blk .{ .constructor = .{
-                    .type = .unknown,
-                    .components = try list.toOwnedSlice(self.arena.allocator()),
-                } };
-            },
+            .@"{" => try self.parseCastOrConstructor(.unknown),
             else => return Error.UnexpectedToken,
-
-            //if name enum literal
         },
         // .@"fn" => try self.parseFunctionOrType(),
         .entrypoint => try self.parseEntryPointTypeOrValue(),
@@ -279,6 +263,27 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
     return expr;
 }
 
+fn parseCastOrConstructor(self: *Parser, @"type": Type) Error!Expression {
+    var list: List(Expression) = try .initCapacity(self.arena.allocator(), 1);
+
+    var token = try self.tokenizer.peek();
+    while (token != .@"}") {
+        const expr = try self.parseExpressionRecursive(constructorShouldStop, false, 0);
+        try list.append(self.arena.allocator(), expr);
+        if (try self.tokenizer.peek() == .@",") self.tokenizer.skip();
+        token = try self.tokenizer.peek();
+    }
+    self.tokenizer.skip();
+
+    if (list.items.len == 0) return Error.InvalidConstructor;
+    //check if its a valid constructor
+    //if(@"type" != .unknown)
+
+    return if (list.items.len == 1) .{ .cast = .{
+        .type = @"type",
+        .expr = @ptrCast(list.items.ptr),
+    } } else .{ .constructor = .{ .type = @"type", .components = list.items } };
+}
 fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
     if (try self.tokenizer.next() != .@"(") return Error.UnexpectedToken;
     var token = try self.tokenizer.next();
@@ -392,6 +397,7 @@ pub const Expression = union(enum) {
     //   [expr] ['.'] [name]
     indexing: Indexing,
     //   [expr] ['['] [index] [']']
+    cast: Cast,
     constructor: Constructor,
     @"for",
     @"while",
@@ -410,11 +416,14 @@ pub const Expression = union(enum) {
     }
     pub const format = debug.formatExpression;
 };
+pub const Cast = struct {
+    type: Type,
+    expr: *Expression,
+};
 pub const Constructor = struct {
     type: Type,
     components: []Expression,
 };
-
 pub const Indexing = struct {
     target: *Expression,
     index: *Expression,
@@ -526,20 +535,32 @@ pub const Qualifier = union(enum) {
     out: bi.InterpolationQualifier,
 };
 
+pub fn explicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expression {
+    return try self.implicitCast(expr, @"type");
+}
 pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expression {
     const type_of = self.typeOf(expr);
     if (std.meta.eql(type_of, @"type")) return expr;
-    switch (expr) {
-        .value => |value| {
-            if (@"type" == .compfloat) return if (value.type == .compint) .{ .value = .{
-                .type = .compfloat,
-                .payload = .{ .wide = @bitCast(@as(f128, @floatFromInt(@as(i128, @intCast(value.payload.wide))))) },
-            } } else Error.CannotImplicitlyCast;
-        },
-        else => {},
-    }
-    return expr;
+    return switch (expr) {
+        .value => |value| .{ .value = try ct.implicitCastValue(value, @"type", true) },
+        // .constructor => |constructor| try self.implicitCastConstructor(constructor, @"type"),
+        else => expr,
+    };
 }
+// fn implicitCastConstructor(self: *Parser, constructor: Constructor, @"type": Type) Error!Expression {
+//     if (constructor.type == @"type") return .{ .constructor = constructor };
+//     if (constructor.type != .unknown) return Error.CannotImplicitlyCast;
+
+//     const target_structure = @"type".constructorStructure();
+//     if (constructor.components.len) return Error.CannotImplicitlyCast;
+
+//     const slice = if (constructor.components.len == target_structure.len)
+//         constructor.components
+//     else
+//         try self.arena.allocator().alloc(Expression, target_structure.len);
+
+//     return .{ .constructor = .{ .type = @"type", .components = constructor.components } };
+// }
 // pub fn parseFunctionOrType(self: *Parser) Error!Expression {
 //     const arg_types: List(Type) = .empty;
 //     const arg_names: List([]const u8) = .empty;

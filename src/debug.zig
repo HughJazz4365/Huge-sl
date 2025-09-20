@@ -1,5 +1,6 @@
 const std = @import("std");
 const tp = @import("type.zig");
+const ct = @import("comptime.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
 
@@ -48,6 +49,7 @@ pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
             }
             try writer.print(" }}", .{});
         },
+        .cast => |cast| try writer.print("{f}{{ {f} }}", .{ cast.type, cast.expr.* }),
         inline else => |_, tag| try writer.print("{s}", .{@tagName(tag)}),
     }
 }
@@ -62,6 +64,13 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
             const entry_point: *const Parser.EntryPoint = @ptrCast(@alignCast(value.payload.ptr));
             for (entry_point.body.items) |statement| try writer.print("{f}\n", .{statement});
             try writer.print("}}\n", .{});
+        },
+        .number => |number| switch (number.type) {
+            inline else => |@"type"| switch (number.width) {
+                inline else => |width| try writer.print("{d}", .{
+                    ct.wideAs((tp.Number{ .type = @"type", .width = width }).ToZig(), value.payload.wide),
+                }),
+            },
         },
         else => try writer.print("[{s}]", .{@tagName(value.type)}),
     }

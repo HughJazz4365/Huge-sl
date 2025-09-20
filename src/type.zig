@@ -33,6 +33,18 @@ pub const Type = union(enum) {
             else => true,
         };
     }
+    pub fn constructorStructure(self: Type) ConstructorStructure {
+        return switch (self) {
+            .vector => |vector| .{ .component = vector.child, .len = @intFromEnum(vector.len) },
+            .array => |array| .{ .component = array.child, .len = @intFromEnum(array.len) },
+            .matrix => |matrix| .{ .component = Type{ .vector = matrix.column_type }, .len = @intFromEnum(matrix.len) },
+            else => .{ .component = self },
+        };
+    }
+};
+pub const ConstructorStructure = struct {
+    component: Type,
+    len: u32 = 1,
 };
 
 pub const FunctionType = struct {
@@ -43,8 +55,8 @@ pub const FunctionType = struct {
 pub const ShaderStage = enum { vertex, fragment, compute };
 
 pub const Matrix = struct {
-    rows: VectorLen,
-    column: Vector,
+    len: VectorLen,
+    column_type: Vector,
 };
 pub const Array = struct {
     child: *Type,

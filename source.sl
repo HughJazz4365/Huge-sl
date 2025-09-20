@@ -1,4 +1,4 @@
-in normal : vec3 = -1.2*(2+8)
+in normal : vec3 = .{-1.2*(2+8)}
 
 const main = entrypoint(.fragment){
 	out out_col : vec4
@@ -7,7 +7,8 @@ const main = entrypoint(.fragment){
 	var albedo: vec4 = .{0.01 + 0.3, 0.1, 1.89 - 0.3}
 
 	albedo *= exposure
-	out_col = .{albedo, 1}
+	out_col = .{albedo}
+	// out_col = .{albedo, 1}
 }
 
 // const double = fn(x) f32{
