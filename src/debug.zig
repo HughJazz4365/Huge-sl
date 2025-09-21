@@ -15,6 +15,10 @@ pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
             ass.value,
         }),
 
+        .@"return" => |@"return"| {
+            try writer.print("return", .{});
+            if (@"return") |r| try writer.print(" {f}", .{r});
+        },
         else => try writer.print("[{s}]", .{@tagName(statement)}),
     }
 }

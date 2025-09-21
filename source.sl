@@ -8,6 +8,7 @@ const main = entrypoint(.fragment){
 
 	albedo *= .{exposure}
 	out_col = .{albedo, 1}
+	return
 }
 
 // const double = fn(x) f32{

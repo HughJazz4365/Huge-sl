@@ -69,37 +69,25 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
         token = try self.tokenizer.peek();
     }
 
-    const statement: ?Statement = switch (token) {
+    return switch (token) {
         .eof => null,
         .@"const", .@"var", .uniform, .property, .shared, .out, .in => blk: {
             self.tokenizer.skip();
             break :blk try self.parseVariableDecl(token);
         },
 
-        else => blk: {
-            const target = try self.parseExpressionRecursive(assignmentShouldStop, false, 0);
+        .@"return" => blk: {
+            self.tokenizer.skip();
             const peek = try self.tokenizer.peek();
-            if (self.defaultShouldStop(peek) catch unreachable) break :blk Statement{ .ignore = target };
-            if (!try self.isExprMutable(target)) return Error.MutatingImmutableVariable;
-
-            const modifier: ?BinaryOperator = if (peek == .bin_op) op: {
-                self.tokenizer.skip();
-                break :op peek.bin_op;
-            } else null;
-            self.tokenizer.skip(); //will always be '=' since we checked for it in 'shouldStop'
-
-            const value = try self.implicitCast(
-                try self.parseExpression(defaultShouldStop),
-                self.typeOf(target),
-            );
-            break :blk Statement{ .assignment = .{
-                .target = target,
-                .value = value,
-                .modifier = modifier,
-            } };
+            if (self.defaultShouldStop(peek) catch unreachable) {
+                if (peek != .@"}") self.tokenizer.skip();
+                break :blk .{ .@"return" = null };
+            }
+            break :blk .{ .@"return" = try self.parseExpression(defaultShouldStop) };
         },
+
+        else => try self.parseAssignmentOrIgnore(),
     };
-    return statement;
     //1.if token == return => .return
     //2.if token == break => .break
     //3.try parsing qualifier, if can => continue to parse var_decl
@@ -107,6 +95,28 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
     //its an assignment and we parse the assigned value
     //else expr is .ignored
 
+}
+fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
+    const target = try self.parseExpressionRecursive(assignmentShouldStop, false, 0);
+    const peek = try self.tokenizer.peek();
+    if (self.defaultShouldStop(peek) catch unreachable) return .{ .ignore = target };
+    if (!try self.isExprMutable(target)) return Error.MutatingImmutableVariable;
+
+    const modifier: ?BinaryOperator = if (peek == .bin_op) op: {
+        self.tokenizer.skip();
+        break :op peek.bin_op;
+    } else null;
+    self.tokenizer.skip(); //will always be '=' since we checked for it in 'shouldStop'
+
+    const value = try self.implicitCast(
+        try self.parseExpression(defaultShouldStop),
+        self.typeOf(target),
+    );
+    return .{ .assignment = .{
+        .target = target,
+        .value = value,
+        .modifier = modifier,
+    } };
 }
 fn parseVariableDecl(self: *Parser, token: Token) Error!Statement {
     const qualifier = try self.parseQualifier(token);
