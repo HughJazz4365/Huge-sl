@@ -19,12 +19,14 @@ pub const Error = error{
     OutOfMemory,
 
     UnexpectedToken,
-    UndeclaredIdentifier,
+
+    UndeclaredVariable,
+    NoValueConstant,
+    MutatingImmutableVariable,
 
     CannotImplicitlyCast,
     CannotExplicitlyCast,
     CannotInferType,
-    NoTypeVariable,
 
     InvalidOperands,
     InvalidConstructor,
@@ -78,6 +80,7 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
             const target = try self.parseExpressionRecursive(assignmentShouldStop, false, 0);
             const peek = try self.tokenizer.peek();
             if (self.defaultShouldStop(peek) catch unreachable) break :blk Statement{ .ignore = target };
+            if (!try self.isExprMutable(target)) return Error.MutatingImmutableVariable;
 
             const modifier: ?BinaryOperator = if (peek == .bin_op) op: {
                 self.tokenizer.skip();
@@ -137,16 +140,13 @@ fn parseVariableDecl(self: *Parser, token: Token) Error!Statement {
         }
         break :blk expr;
     };
+    if (value == null and !qualifier.isMutable()) return Error.NoValueConstant;
 
-    const variable: Variable = .{
+    return .{ .var_decl = .{
         .qualifier = qualifier,
         .name = name_token.identifier,
         .type = @"type",
-    };
-
-    return .{ .var_decl = .{
-        .variable = variable,
-        .value = value,
+        .value = if (value) |v| v else Expression{ .value = .{ .type = .unknown } },
     } };
 }
 
@@ -170,8 +170,18 @@ pub const Assignment = struct {
     modifier: ?BinaryOperator,
 };
 pub const VariableDecl = struct {
-    variable: Variable,
-    value: ?Expression,
+    qualifier: Qualifier,
+    name: []const u8,
+    type: Type,
+    value: Expression,
+
+    pub fn variableReference(self: *VariableDecl) VariableReference {
+        return .{
+            .is_mutable = self.qualifier.isMutable(),
+            .type = self.type,
+            .value = &self.value,
+        };
+    }
 };
 
 pub fn parseExpression(self: *Parser, should_stop: ShouldStopFn) Error!Expression {
@@ -345,7 +355,7 @@ pub const EntryPoint = struct {
             .allocator = self.arena.allocator(),
             .body = .empty,
             .scope = .{
-                .getVarFn = &getVarFn,
+                .getVariableReferenceFn = &getVariableReferenceFn,
                 .addStatementFn = &addStatementFn,
                 .parent = self.current_scope,
             },
@@ -358,14 +368,12 @@ pub const EntryPoint = struct {
         const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);
         try entry_point.body.append(entry_point.allocator, statement);
     }
-    pub fn getVarFn(scope: *Scope, name: []const u8) Error!Variable {
-        // return for (scope.vars) |*v| {
-        //     if (util.strEql(v.name, name)) break v;
-        // } else Error.UndeclaredIdentifier;
-        _ = scope;
-        _ = name;
-        const v: Variable = undefined;
-        return v;
+    pub fn getVariableReferenceFn(scope: *Scope, name: []const u8) Error!VariableReference {
+        const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);
+        return for (entry_point.body.items) |*statement| {
+            if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
+                break statement.var_decl.variableReference();
+        } else try scope.parent.getVariableReferece(name);
     }
 };
 
@@ -421,17 +429,15 @@ pub const Expression = union(enum) {
     @"switch",
 
     value: Value,
-    pub fn isMutable(self: Expression) bool {
-        return switch (self) {
-            .identifier => true,
-            .indexing => true,
-            .member_access => true,
-            .swizzle => true,
-            else => false,
-        };
-    }
     pub const format = debug.formatExpression;
 };
+pub fn isExprMutable(self: *Parser, expr: Expression) Error!bool {
+    return switch (expr) {
+        .identifier => |identifier| (try self.current_scope.getVariableReferece(identifier)).is_mutable,
+        .indexing => |indexing| try self.isExprMutable(indexing.target.*),
+        else => false,
+    };
+}
 pub const Cast = struct {
     type: Type,
     expr: *Expression,
@@ -472,8 +478,8 @@ pub const GlobalScope = struct {
         return .{
             .allocator = allocator,
             .scope = .{
-                .getVarFn = &getVarFn,
-                .referenceFn = &referenceFn,
+                .getVariableReferenceFn = &getVariableReferenceFn,
+                .trackReferenceFn = &trackReferenceFn,
                 .addStatementFn = &addStatementFn,
             },
         };
@@ -486,25 +492,22 @@ pub const GlobalScope = struct {
         const global_scope: *GlobalScope = @fieldParentPtr("scope", scope);
         try global_scope.body.append(global_scope.allocator, statement);
     }
-    fn getVarFn(scope: *Scope, name: []const u8) Error!Variable {
-        // return for (scope.vars) |*v| {
-        //     if (util.strEql(v.name, name)) break v;
-        // } else Error.UndeclaredIdentifier;
-        _ = scope;
-        _ = name;
-        const v: Variable = undefined;
-        return v;
+    fn getVariableReferenceFn(scope: *Scope, name: []const u8) Error!VariableReference {
+        const global_scope: *GlobalScope = @fieldParentPtr("scope", scope);
+        return for (global_scope.body.items) |*statement| {
+            if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
+                break statement.var_decl.variableReference();
+        } else Error.UndeclaredVariable;
     }
-    fn referenceFn(scope: *Scope, name: []const u8, ref_type: Scope.DeclReferenceType) Error!void {
+    fn trackReferenceFn(scope: *Scope, name: []const u8, ref_type: Scope.DeclReferenceType) Error!void {
         _ = &.{ name, ref_type, scope };
     }
 };
 
 pub const Scope = struct {
     addStatementFn: *const fn (*Scope, Statement) Error!void = undefined,
-
-    getVarFn: *const fn (*Scope, []const u8) Error!Variable = undefined,
-    referenceFn: *const fn (*Scope, []const u8, DeclReferenceType) Error!void = undefined,
+    getVariableReferenceFn: *const fn (*Scope, []const u8) Error!VariableReference = undefined,
+    trackReferenceFn: *const fn (*Scope, []const u8, DeclReferenceType) Error!void = undefined,
 
     parent: *Scope = undefined,
 
@@ -514,18 +517,21 @@ pub const Scope = struct {
         try self.addStatementFn(self, statement);
     }
 
-    pub inline fn getVar(self: *Scope, name: []const u8) Error!Variable {
-        return try self.getVarFn(self, name);
+    pub inline fn getVariableReferece(self: *Scope, name: []const u8) Error!VariableReference {
+        return try self.getVariableReferenceFn(self, name);
     }
 
     pub inline fn reference(self: *Scope, name: []const u8, ref_type: DeclReferenceType) Error!void {
-        try self.referenceFn(self, name, ref_type);
+        try self.trackReferenceFn(self, name, ref_type);
     }
 };
-pub const Variable = struct {
-    qualifier: Qualifier,
-    name: []const u8,
+pub const VariableReference = struct {
+    is_mutable: bool,
     type: Type,
+    value: *Expression,
+    pub fn isComptime(self: VariableReference) bool {
+        return !self.is_mutable and self.value.* == .value;
+    }
 };
 
 fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
@@ -549,6 +555,12 @@ pub const Qualifier = union(enum) {
     property,
     in: bi.InterpolationQualifier,
     out: bi.InterpolationQualifier,
+    pub fn isMutable(self: Qualifier) bool {
+        return switch (self) {
+            .@"const", .in, .uniform, .property => false,
+            else => true,
+        };
+    }
 };
 
 pub const implicitCast = ct.implicitCast;

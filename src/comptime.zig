@@ -10,8 +10,13 @@ pub fn refine(self: *Parser, expr: Expression) Error!Expression {
         .constructor => |constructor| try refineConstructor(self, constructor),
         .cast => |cast| try refineCast(self, cast),
         .indexing => |indexing| try refineIndexing(self, indexing),
+        .identifier => |identifier| try refineIdentifier(self, identifier),
         else => expr,
     };
+}
+inline fn refineIdentifier(self: *Parser, identifier: []const u8) Error!Expression {
+    const var_ref = try self.current_scope.getVariableReferece(identifier);
+    return if (var_ref.isComptime()) var_ref.value.* else .{ .identifier = identifier };
 }
 
 fn refineCast(self: *Parser, cast: Parser.Cast) Error!Expression {

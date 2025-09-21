@@ -7,8 +7,7 @@ const Parser = @import("Parser.zig");
 pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
     switch (statement) {
         .var_decl => |var_decl| {
-            try writer.print("{s} {s} : {f}", .{ @tagName(var_decl.variable.qualifier), var_decl.variable.name, var_decl.variable.type });
-            if (var_decl.value) |value| try writer.print(" = {f}", .{value});
+            try writer.print("{s} {s} : {f} = {f}", .{ @tagName(var_decl.qualifier), var_decl.name, var_decl.type, var_decl.value });
         },
         .assignment => |ass| try writer.print("{f} {s}= {f}", .{
             ass.target,
@@ -87,6 +86,7 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
                 },
             },
         },
+        .unknown => try writer.print("[?]", .{}),
         else => try writer.print("[{s}]", .{@tagName(value.type)}),
     }
 }
