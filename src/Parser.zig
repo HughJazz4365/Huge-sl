@@ -22,6 +22,7 @@ pub const Error = error{
     UndeclaredIdentifier,
 
     CannotImplicitlyCast,
+    CannotExplicitlyCast,
     CannotInferType,
     NoTypeVariable,
 
@@ -82,12 +83,15 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
                 self.tokenizer.skip();
                 break :op peek.bin_op;
             } else null;
+            self.tokenizer.skip(); //will always be '=' since we checked for it in 'shouldStop'
 
-            self.tokenizer.skip(); //should always be '='
-
+            const value = try self.implicitCast(
+                try self.parseExpression(defaultShouldStop),
+                self.typeOf(target),
+            );
             break :blk Statement{ .assignment = .{
                 .target = target,
-                .value = try self.parseExpression(defaultShouldStop),
+                .value = value,
                 .modifier = modifier,
             } };
         },
@@ -385,7 +389,8 @@ pub fn typeOf(self: *Parser, expr: Expression) Type {
     return switch (expr) {
         .value => |value| value.type,
         .constructor => |constructor| constructor.type,
-        else => .compint,
+        .cast => |cast| cast.type,
+        else => .unknown,
     };
 }
 pub fn asType(self: *Parser, expr: Expression) ?Type {
@@ -546,9 +551,6 @@ pub const Qualifier = union(enum) {
     out: bi.InterpolationQualifier,
 };
 
-pub fn explicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expression {
-    return try self.implicitCast(expr, @"type");
-}
 pub const implicitCast = ct.implicitCast;
 
 // pub fn parseFunctionOrType(self: *Parser) Error!Expression {

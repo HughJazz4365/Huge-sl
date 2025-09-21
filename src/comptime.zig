@@ -8,11 +8,60 @@ pub fn refine(self: *Parser, expr: Expression) Error!Expression {
         .bin_op => |bin_op| try doBinOp(self, bin_op),
         .u_op => |u_op| try doUOp(self, u_op),
         .constructor => |constructor| try refineConstructor(self, constructor),
+        .cast => |cast| try refineCast(self, cast),
         .indexing => |indexing| try refineIndexing(self, indexing),
         else => expr,
     };
 }
 
+fn refineCast(self: *Parser, cast: Parser.Cast) Error!Expression {
+    const initial: Expression = .{ .cast = cast };
+    if (cast.type == .unknown) return initial;
+
+    return (self.implicitCast(cast.expr.*, cast.type)) catch {
+        const type_of = self.typeOf(cast.expr.*);
+        if (!isExplicitlyCastable(type_of, cast.type)) return Error.CannotExplicitlyCast;
+
+        if (cast.type == .vector and type_of.depth() == 0)
+            return try splatCast(self, cast.expr, cast.type);
+
+        // std.debug.print(
+        //     "{f} => {f}, couldnt implicitly cast must explicit cast\ntypedepth: {d}\ncastable: {}\n",
+        //     .{
+        //         type_of,
+        //         cast.type,
+        //         cast.type.depth(),
+        //         isExplicitlyCastable(type_of, cast.type),
+        //     },
+        // );
+
+        return initial;
+    };
+}
+fn isExplicitlyCastable(from: Type, to: Type) bool {
+    return switch (to) {
+        .number, .compint, .compfloat, .bool, .@"enum" => to == .number or to == .compint or to == .compfloat or to == .bool or to == .@"enum",
+        .vector => |vector| switch (from) {
+            .vector => |fromvec| fromvec.len == vector.len,
+            .array => |array| array.len == @intFromEnum(vector.len),
+            .number, .compint, .compfloat, .bool, .@"enum" => true,
+            else => false,
+        },
+        .array => |array| from == .vector and array.len == @intFromEnum(from.vector.len),
+        else => false,
+    };
+}
+fn splatCast(self: *Parser, expr_ptr: *Expression, @"type": Type) Error!Expression {
+    const structure = @"type".constructorStructure();
+    const len = structure.len;
+    const component = try refine(self, .{ .cast = .{
+        .type = structure.component,
+        .expr = expr_ptr,
+    } });
+    const slice = try self.arena.allocator().alloc(Expression, len);
+    for (slice) |*c| c.* = component;
+    return try refine(self, .{ .constructor = .{ .type = @"type", .components = slice } });
+}
 fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
     _ = self;
     const initial: Expression = .{ .indexing = indexing };
@@ -33,7 +82,7 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
     };
 
     const structure = target_value.type.constructorStructure();
-    std.debug.print("cstype: {f}, cslen: {d}\n", .{ structure.component, structure.len });
+    // std.debug.print("cstype: {f}, cslen: {d}\n", .{ structure.component, structure.len });
     if (structure.len <= index) return Error.OutOfBoundsAccess;
 
     const component_size = structure.component.size();
@@ -214,16 +263,24 @@ fn addValues(left: Value, right: Value) Error!Value {
 pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expression {
     const type_of = self.typeOf(expr);
     if (std.meta.eql(type_of, @"type")) return expr;
-    return switch (expr) {
+    const result: Expression = switch (expr) {
         .value => |value| .{ .value = try implicitCastValue(value, @"type", true) },
         .constructor => |constructor| try refineConstructor(self, if (constructor.type == .unknown)
             .{ .components = constructor.components, .type = @"type" }
         else
             return Error.CannotImplicitlyCast),
-        // .constructor => |constructor| try self.implicitCastConstructor(constructor, @"type"),
         else => expr,
+        .cast => |cast| try implicitCastCast(self, cast, @"type"),
     };
+    return if (std.meta.eql(self.typeOf(result), @"type")) result else Error.CannotImplicitlyCast;
 }
+fn implicitCastCast(self: *Parser, cast: Parser.Cast, @"type": Type) Error!Expression {
+    const initial: Expression = .{ .cast = cast };
+    if (cast.type != .unknown)
+        return if (std.meta.eql(cast.type, @"type")) initial else Error.CannotImplicitlyCast;
+    return try refine(self, Expression{ .cast = .{ .type = @"type", .expr = cast.expr } });
+}
+
 fn implicitCastEqualizeValues(a: Value, b: Value, allow_splat: bool) Error!EqualizeResult {
     _ = allow_splat;
     if (std.meta.eql(a.type, b.type)) return .{ a.type, a.payload, b.payload };

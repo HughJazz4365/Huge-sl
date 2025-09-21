@@ -39,6 +39,15 @@ pub const Type = union(enum) {
             else => true,
         };
     }
+
+    pub fn depth(self: Type) u32 {
+        return switch (self) {
+            .array => |array| 1 + array.child.depth(),
+            .vector => 1,
+            .matrix => 2,
+            else => 0,
+        };
+    }
     pub fn size(self: Type) usize {
         return switch (self) {
             .number => |number| @intFromEnum(number.width) >> 3,
