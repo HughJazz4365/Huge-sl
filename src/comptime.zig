@@ -24,22 +24,11 @@ fn refineCast(self: *Parser, cast: Parser.Cast) Error!Expression {
     if (cast.type == .unknown) return initial;
 
     return (self.implicitCast(cast.expr.*, cast.type)) catch {
-        const type_of = self.typeOf(cast.expr.*);
+        const type_of = try self.typeOf(cast.expr.*);
         if (!isExplicitlyCastable(type_of, cast.type)) return Error.CannotExplicitlyCast;
 
         if (cast.type == .vector and type_of.depth() == 0)
             return try splatCast(self, cast.expr, cast.type);
-
-        // std.debug.print(
-        //     "{f} => {f}, couldnt implicitly cast must explicit cast\ntypedepth: {d}\ncastable: {}\n",
-        //     .{
-        //         type_of,
-        //         cast.type,
-        //         cast.type.depth(),
-        //         isExplicitlyCastable(type_of, cast.type),
-        //     },
-        // );
-
         return initial;
     };
 }
@@ -68,8 +57,26 @@ fn splatCast(self: *Parser, expr_ptr: *Expression, @"type": Type) Error!Expressi
     return try refine(self, .{ .constructor = .{ .type = @"type", .components = slice } });
 }
 fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
-    _ = self;
     const initial: Expression = .{ .indexing = indexing };
+    if ((indexing.index.* == .value and indexing.target.* == .bin_op) and
+        (indexing.target.bin_op.left.* == .value or indexing.target.bin_op.right.* == .value))
+    {
+        //if index is comptime and one of operads is comptime
+        //(a * b)[i] => (a[i] * b[i])
+        const create_left = try self.createVal(try refine(self, Expression{ .indexing = .{
+            .index = indexing.index,
+            .target = indexing.target.bin_op.left,
+        } }));
+        const create_right = try self.createVal(try refine(self, Expression{ .indexing = .{
+            .index = indexing.index,
+            .target = indexing.target.bin_op.right,
+        } }));
+        return try refine(self, .{ .bin_op = .{
+            .left = create_left,
+            .right = create_right,
+            .op = indexing.target.bin_op.op,
+        } });
+    }
     if (!(indexing.index.* == .value and indexing.target.* == .value)) return initial;
 
     const index_value = indexing.index.value;
@@ -87,7 +94,6 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
     };
 
     const structure = target_value.type.constructorStructure();
-    // std.debug.print("cstype: {f}, cslen: {d}\n", .{ structure.component, structure.len });
     if (structure.len <= index) return Error.OutOfBoundsAccess;
 
     const component_size = structure.component.size();
@@ -161,7 +167,6 @@ fn constructValue(self: *Parser, constructor: Parser.Constructor) Error!Expressi
                             vector_value[i] = elem;
                         }
                         const ptr = try self.createVal(vector_value);
-                        // std.debug.print("{d}\n", .{vector_value});
                         break :blk .{ .value = .{ .type = @"type", .payload = .{ .ptr = @ptrCast(@alignCast(ptr)) } } };
                     },
                 },
@@ -176,7 +181,7 @@ const ElementIterator = struct {
     index: usize = 0,
 
     pub fn next(self: *ElementIterator, parser: *Parser) Error!?Expression {
-        const @"type" = parser.typeOf(self.expr.*);
+        const @"type" = try parser.typeOf(self.expr.*);
 
         if (self.expr.* == .constructor and self.expr.constructor.type == .unknown) {
             if (self.index >= self.expr.constructor.components.len) return null;
@@ -194,42 +199,70 @@ const ElementIterator = struct {
         }
     }
     pub inline fn new(parser: *Parser, expr: Expression) Error!ElementIterator {
-        const @"type" = parser.typeOf(expr);
+        const @"type" = try parser.typeOf(expr);
         if (!(@"type" == .array or @"type" == .vector or (@"type" == .unknown and expr == .constructor))) return Error.CannotImplicitlyCast;
         return .{ .expr = try parser.createVal(expr) };
     }
 };
 
 fn doUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
-    _ = self;
     if (u_op.op == .@"+") return u_op.target.*;
     const initial: Expression = .{ .u_op = u_op };
 
     const target = if (u_op.target.* != .value) return initial else u_op.target.value;
     return switch (u_op.op) {
-        .@"-" => .{ .value = try mulValues(target, minusonecompint) },
+        .@"-" => .{ .value = try mulValues(self, target, minusonecompint) },
         .@"+" => initial,
         // .@"-" => .{ .value = try addValues(left, try mulValues(right, minusonecompint)) },
     };
 }
 
 fn doBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
-    _ = self;
     const initial: Expression = .{ .bin_op = bin_op };
+
+    const left_type = try self.typeOf(bin_op.left.*);
+    const right_type = try self.typeOf(bin_op.right.*);
+
+    if (left_type == .unknown and right_type != .unknown) {
+        bin_op.left.* = self.implicitCast(bin_op.left.*, right_type) catch return initial;
+    } else if (right_type == .unknown and left_type != .unknown)
+        bin_op.right.* = self.implicitCast(bin_op.right.*, left_type) catch return initial;
+
+    blk: {
+        return doBinOpSplat(self, bin_op) catch break :blk;
+    }
 
     const left = if (bin_op.left.* != .value) return initial else bin_op.left.value;
     const right = if (bin_op.right.* != .value) return initial else bin_op.right.value;
     return switch (bin_op.op) {
+        // return switch (bin_op.op) {
         .@"+" => .{ .value = try addValues(left, right) },
-        .@"-" => .{ .value = try addValues(left, try mulValues(right, minusonecompint)) },
-        .@"*" => .{ .value = try mulValues(left, right) },
+        .@"-" => .{ .value = try addValues(left, try mulValues(self, right, minusonecompint)) },
+        .@"*" => .{ .value = try mulValues(self, left, right) },
         .@"^" => .{ .value = try powValues(left, right) },
         // else => initial,
     };
 }
+fn doBinOpSplat(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
+    const initial: Expression = .{ .bin_op = bin_op };
+
+    const left_type = try self.typeOf(bin_op.left.*);
+    const right_type = try self.typeOf(bin_op.right.*);
+
+    if (left_type == .vector and right_type.depth() == 0) {
+        const left_child_type: Type = .{ .number = left_type.vector.child };
+        const casted = self.implicitCast(bin_op.right.*, left_child_type) catch return initial;
+        const copy_right = try self.createVal(casted);
+        bin_op.right.* = try refine(self, .{ .cast = .{
+            .type = left_type,
+            .expr = copy_right,
+        } });
+        return try refine(self, initial);
+    } else return Error.CannotImplicitlyCast;
+}
 
 fn powValues(left: Value, right: Value) Error!Value {
-    const t, const a, const b = try implicitCastEqualizeValues(left, right, true);
+    const t, const a, const b = try implicitCastEqualizeValues(left, right);
     const payload: Parser.ValuePayload = switch (t) {
         .compint => .{ .wide = asWide(std.math.powi(i128, wideAs(i128, a.wide), wideAs(i128, b.wide)) catch return Error.NumericError) },
         .compfloat => .{ .wide = asWide(@as(f128, @floatCast(std.math.pow(
@@ -243,18 +276,31 @@ fn powValues(left: Value, right: Value) Error!Value {
     return .{ .type = t, .payload = payload };
 }
 
-fn mulValues(left: Value, right: Value) Error!Value {
-    const t, const a, const b = try implicitCastEqualizeValues(left, right, true);
+fn mulValues(self: *Parser, left: Value, right: Value) Error!Value {
+    const t, const a, const b = try implicitCastEqualizeValues(left, right);
     const payload: Parser.ValuePayload = switch (t) {
         .compint => .{ .wide = asWide(wideAs(i128, a.wide) * wideAs(i128, b.wide)) },
         .compfloat => .{ .wide = asWide(wideAs(f128, a.wide) * wideAs(f128, b.wide)) },
         //number , vector
+        .vector => |vector| switch (vector.len) {
+            inline else => |len| switch (vector.child.type) {
+                inline else => |num_type| switch (vector.child.width) {
+                    inline else => |width| blk: {
+                        const V = (tp.Vector{ .len = len, .child = .{ .type = num_type, .width = width } }).ToZig();
+                        const a_ptr: *V = @ptrCast(@alignCast(@constCast(a.ptr)));
+                        const b_ptr: *const V = @ptrCast(@alignCast(b.ptr));
+
+                        break :blk .{ .ptr = @ptrCast(@alignCast(try self.createVal(a_ptr.* * b_ptr.*))) };
+                    },
+                },
+            },
+        },
         else => return Error.InvalidOperands,
     };
     return .{ .type = t, .payload = payload };
 }
 fn addValues(left: Value, right: Value) Error!Value {
-    const t, const a, const b = try implicitCastEqualizeValues(left, right, false);
+    const t, const a, const b = try implicitCastEqualizeValues(left, right);
 
     const payload: Parser.ValuePayload = switch (t) {
         .compint => .{ .wide = @bitCast(@as(i128, @bitCast(a.wide)) + @as(i128, @bitCast(b.wide))) },
@@ -266,10 +312,10 @@ fn addValues(left: Value, right: Value) Error!Value {
 }
 
 pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expression {
-    const type_of = self.typeOf(expr);
+    const type_of = try self.typeOf(expr);
     if (std.meta.eql(type_of, @"type")) return expr;
     const result: Expression = switch (expr) {
-        .value => |value| .{ .value = try implicitCastValue(value, @"type", true) },
+        .value => |value| .{ .value = try implicitCastValue(value, @"type") },
         .constructor => |constructor| try refineConstructor(self, if (constructor.type == .unknown)
             .{ .components = constructor.components, .type = @"type" }
         else
@@ -277,7 +323,7 @@ pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expres
         else => expr,
         .cast => |cast| try implicitCastCast(self, cast, @"type"),
     };
-    return if (std.meta.eql(self.typeOf(result), @"type")) result else Error.CannotImplicitlyCast;
+    return if (std.meta.eql(try self.typeOf(result), @"type")) result else Error.CannotImplicitlyCast;
 }
 fn implicitCastCast(self: *Parser, cast: Parser.Cast, @"type": Type) Error!Expression {
     const initial: Expression = .{ .cast = cast };
@@ -286,8 +332,7 @@ fn implicitCastCast(self: *Parser, cast: Parser.Cast, @"type": Type) Error!Expre
     return try refine(self, Expression{ .cast = .{ .type = @"type", .expr = cast.expr } });
 }
 
-fn implicitCastEqualizeValues(a: Value, b: Value, allow_splat: bool) Error!EqualizeResult {
-    _ = allow_splat;
+fn implicitCastEqualizeValues(a: Value, b: Value) Error!EqualizeResult {
     if (std.meta.eql(a.type, b.type)) return .{ a.type, a.payload, b.payload };
 
     //'first' comes first in Type union
@@ -300,7 +345,7 @@ fn implicitCastEqualizeValues(a: Value, b: Value, allow_splat: bool) Error!Equal
     };
 
     switch (second.type) {
-        .compfloat, .number => first = try implicitCastValue(first, second.type, false),
+        .compfloat, .number => first = try implicitCastValue(first, second.type),
         else => return Error.InvalidOperands,
     }
 
@@ -310,8 +355,7 @@ fn implicitCastEqualizeValues(a: Value, b: Value, allow_splat: bool) Error!Equal
         .{ second.type, first.payload, second.payload };
 }
 
-pub fn implicitCastValue(value: Value, target: Type, allow_splat: bool) Error!Value {
-    _ = allow_splat;
+pub fn implicitCastValue(value: Value, target: Type) Error!Value {
     if (std.meta.eql(value.type, target)) return value;
 
     return switch (target) {

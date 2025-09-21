@@ -23,6 +23,7 @@ pub const Error = error{
     UndeclaredVariable,
     NoValueConstant,
     MutatingImmutableVariable,
+    StageInputCantHaveInitialValue,
 
     CannotImplicitlyCast,
     CannotExplicitlyCast,
@@ -108,14 +109,20 @@ fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
     } else null;
     self.tokenizer.skip(); //will always be '=' since we checked for it in 'shouldStop'
 
-    const value = try self.implicitCast(
-        try self.parseExpression(defaultShouldStop),
-        self.typeOf(target),
-    );
+    var value = try self.refine(try self.parseExpression(defaultShouldStop));
+
+    if (modifier) |mod| {
+        const create_value = try self.createVal(value);
+        value = try self.refine(.{ .bin_op = .{
+            .left = try self.createVal(target),
+            .right = create_value,
+            .op = mod,
+        } });
+    }
+    value = try self.implicitCast(value, try self.typeOf(target));
     return .{ .assignment = .{
         .target = target,
         .value = value,
-        .modifier = modifier,
     } };
 }
 fn parseVariableDecl(self: *Parser, token: Token) Error!Statement {
@@ -141,16 +148,17 @@ fn parseVariableDecl(self: *Parser, token: Token) Error!Statement {
         if (@"type" != .unknown)
             expr = try self.implicitCast(expr, @"type")
         else
-            @"type" = self.typeOf(expr);
+            @"type" = try self.typeOf(expr);
 
         if (!@"type".isComplete()) {
             expr = try self.makeExprCompleteType(expr);
-            @"type" = self.typeOf(expr);
+            @"type" = try self.typeOf(expr);
             if (!@"type".isComplete()) return Error.CannotInferType;
         }
         break :blk expr;
     };
-    if (value == null and !qualifier.isMutable()) return Error.NoValueConstant;
+    if (value == null and qualifier == .@"const") return Error.NoValueConstant;
+    if (value != null and qualifier == .in) return Error.StageInputCantHaveInitialValue;
 
     return .{ .var_decl = .{
         .qualifier = qualifier,
@@ -177,7 +185,6 @@ pub const Statement = union(enum) {
 pub const Assignment = struct {
     target: Expression,
     value: Expression,
-    modifier: ?BinaryOperator,
 };
 pub const VariableDecl = struct {
     qualifier: Qualifier,
@@ -198,7 +205,7 @@ pub fn parseExpression(self: *Parser, should_stop: ShouldStopFn) Error!Expressio
     return try self.parseExpressionRecursive(should_stop, true, 0);
 }
 pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, should_consume_end: bool, last_bp: u8) Error!Expression {
-    var left = try self.simplify(try self.parseExpressionSide());
+    var left = try self.refine(try self.parseExpressionSide());
     var token = try self.tokenizer.peek();
     while (!try should_stop(self, token)) {
         if (token != .bin_op) {
@@ -212,10 +219,10 @@ pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, should
 
         self.tokenizer.skip();
 
-        const right = try self.simplify(try self.parseExpressionRecursive(should_stop, false, Tokenizer.bindingPower(op)));
+        const right = try self.refine(try self.parseExpressionRecursive(should_stop, false, Tokenizer.bindingPower(op)));
         const add_left = try self.createVal(left);
         //go right
-        left = try self.simplify(.{ .bin_op = .{
+        left = try self.refine(.{ .bin_op = .{
             .left = add_left,
             .right = try self.createVal(right),
             .op = op,
@@ -305,7 +312,7 @@ fn parseCastOrConstructor(self: *Parser, @"type": Type) Error!Expression {
 
     var token = try self.tokenizer.peek();
     while (token != .@"}") {
-        const expr = try self.simplify(try self.parseExpressionRecursive(constructorShouldStop, false, 0));
+        const expr = try self.refine(try self.parseExpressionRecursive(constructorShouldStop, false, 0));
         try list.append(self.arena.allocator(), expr);
         if (try self.tokenizer.peek() == .@",") self.tokenizer.skip();
         token = try self.tokenizer.peek();
@@ -402,13 +409,24 @@ fn parseValue(self: *Parser, token: Token) Error!Value {
         else => Error.UnexpectedToken,
     };
 }
-pub fn typeOf(self: *Parser, expr: Expression) Type {
-    _ = self;
+pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
     return switch (expr) {
         .value => |value| value.type,
         .constructor => |constructor| constructor.type,
         .cast => |cast| cast.type,
+        .identifier => |identifier| (try self.current_scope.getVariableReferece(identifier)).type,
+        .bin_op => |bin_op| try self.typeOfBinOp(bin_op),
+        .indexing => |indexing| (try self.typeOf(indexing.target.*)).constructorStructure().component,
         else => .unknown,
+    };
+}
+fn typeOfBinOp(self: *Parser, bin_op: BinOp) Error!Type {
+    return switch (bin_op.op) {
+        .@"+", .@"-", .@"*", .@"^" => blk: {
+            const left_type = try self.typeOf(bin_op.left.*);
+            const right_type = try self.typeOf(bin_op.right.*);
+            break :blk if (std.meta.eql(left_type, right_type)) left_type else .unknown;
+        },
     };
 }
 pub fn asType(self: *Parser, expr: Expression) ?Type {
@@ -431,8 +449,13 @@ pub const Expression = union(enum) {
     //   [expr] ['.'] [name]
     indexing: Indexing,
     //   [expr] ['['] [index] [']']
+
+    //type fields should be Exprssession for both of those
+    //ex. @TypeOf([dependent on generic or smth]){value}// cast to @TypeOf(...)
     cast: Cast,
     constructor: Constructor,
+
+    //unified loop syntax?
     @"for",
     @"while",
     @"if",
@@ -624,7 +647,7 @@ const ShouldStopFn = fn (*Parser, Token) Error!bool;
 const List = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const BinaryOperator = Tokenizer.BinaryOperator;
-const simplify = ct.refine;
+const refine = ct.refine;
 const Type = tp.Type;
 const UnaryOperator = Tokenizer.UnaryOperator;
 pub const Token = Tokenizer.Token;

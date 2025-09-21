@@ -9,9 +9,8 @@ pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
         .var_decl => |var_decl| {
             try writer.print("{s} {s} : {f} = {f}", .{ @tagName(var_decl.qualifier), var_decl.name, var_decl.type, var_decl.value });
         },
-        .assignment => |ass| try writer.print("{f} {s}= {f}", .{
+        .assignment => |ass| try writer.print("{f} = {f}", .{
             ass.target,
-            if (ass.modifier) |m| @tagName(m) else "",
             ass.value,
         }),
 
