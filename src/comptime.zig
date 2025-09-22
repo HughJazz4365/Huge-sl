@@ -5,8 +5,8 @@ const Parser = @import("Parser.zig");
 const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(i128, -1)) } };
 pub fn refine(self: *Parser, expr: Expression) Error!Expression {
     return switch (expr) {
-        .bin_op => |bin_op| try doBinOp(self, bin_op),
-        .u_op => |u_op| try doUOp(self, u_op),
+        .bin_op => |bin_op| try refineBinOp(self, bin_op),
+        .u_op => |u_op| try refineUOp(self, u_op),
         .constructor => |constructor| try refineConstructor(self, constructor),
         .cast => |cast| try refineCast(self, cast),
         .indexing => |indexing| try refineIndexing(self, indexing),
@@ -58,25 +58,26 @@ fn splatCast(self: *Parser, expr_ptr: *Expression, @"type": Type) Error!Expressi
 }
 fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
     const initial: Expression = .{ .indexing = indexing };
-    if ((indexing.index.* == .value and indexing.target.* == .bin_op) and
-        (indexing.target.bin_op.left.* == .value or indexing.target.bin_op.right.* == .value))
-    {
-        //if index is comptime and one of operads is comptime
-        //(a * b)[i] => (a[i] * b[i])
-        const create_left = try self.createVal(try refine(self, Expression{ .indexing = .{
-            .index = indexing.index,
-            .target = indexing.target.bin_op.left,
-        } }));
-        const create_right = try self.createVal(try refine(self, Expression{ .indexing = .{
-            .index = indexing.index,
-            .target = indexing.target.bin_op.right,
-        } }));
-        return try refine(self, .{ .bin_op = .{
-            .left = create_left,
-            .right = create_right,
-            .op = indexing.target.bin_op.op,
-        } });
-    }
+    _ = self;
+    // if ((indexing.index.* == .value and indexing.target.* == .bin_op) and
+    //     (indexing.target.bin_op.left.* == .value or indexing.target.bin_op.right.* == .value))
+    // {
+    //     //if index is comptime and one of operads is comptime
+    //     //(a * b)[i] => (a[i] * b[i])
+    //     const create_left = try self.createVal(try refine(self, Expression{ .indexing = .{
+    //         .index = indexing.index,
+    //         .target = indexing.target.bin_op.left,
+    //     } }));
+    //     const create_right = try self.createVal(try refine(self, Expression{ .indexing = .{
+    //         .index = indexing.index,
+    //         .target = indexing.target.bin_op.right,
+    //     } }));
+    //     return try refine(self, .{ .bin_op = .{
+    //         .left = create_left,
+    //         .right = create_right,
+    //         .op = indexing.target.bin_op.op,
+    //     } });
+    // }
     if (!(indexing.index.* == .value and indexing.target.* == .value)) return initial;
 
     const index_value = indexing.index.value;
@@ -133,7 +134,17 @@ fn refineConstructor(self: *Parser, constructor: Parser.Constructor) Error!Expre
         if (filled_count >= slice.len) return Error.InvalidConstructor;
         slice[filled_count] = self.implicitCast(source_component, target_structure.component) catch {
             // if (component_structure.len <= 1) return Error.CannotImplicitlyCast;
-            var elem_iter = try ElementIterator.new(self, source_component);
+            const splitted_component: Expression = if (source_component == .value) source_component else blk: {
+                const name = try self.createIntermediateValueName();
+                try self.addStatement(.{ .var_decl = .{
+                    .qualifier = .@"const",
+                    .name = name,
+                    .type = try self.typeOf(source_component),
+                    .value = source_component,
+                } });
+                break :blk .{ .identifier = name };
+            };
+            var elem_iter = try ElementIterator.new(self, splitted_component);
             while (try elem_iter.next(self)) |elem| {
                 if (filled_count >= slice.len) return Error.InvalidConstructor;
                 slice[filled_count] = try self.implicitCast(elem, target_structure.component);
@@ -145,6 +156,7 @@ fn refineConstructor(self: *Parser, constructor: Parser.Constructor) Error!Expre
         filled_count += 1;
         continue;
     }
+    if (filled_count != target_structure.len) return Error.InvalidConstructor;
     return try constructValue(self, .{ .type = constructor.type, .components = slice });
 }
 
@@ -205,7 +217,7 @@ const ElementIterator = struct {
     }
 };
 
-fn doUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
+fn refineUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
     if (u_op.op == .@"+") return u_op.target.*;
     const initial: Expression = .{ .u_op = u_op };
 
@@ -217,7 +229,7 @@ fn doUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
     };
 }
 
-fn doBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
+fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
     const initial: Expression = .{ .bin_op = bin_op };
 
     const left_type = try self.typeOf(bin_op.left.*);

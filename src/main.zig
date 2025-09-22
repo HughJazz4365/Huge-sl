@@ -2,8 +2,17 @@ const std = @import("std");
 const sl = @import("sl");
 
 pub fn main() !void {
+    var buf: [128]u8 = undefined;
+    var out_writer = std.fs.File.stdout().writer(&buf);
+
+    var timer = try std.time.Timer.start();
+
     const path = "source.sl";
-    try sl.compileFile(std.heap.page_allocator, path, null);
+    try sl.compileFile(std.heap.page_allocator, path, &out_writer.interface);
+
+    const measure = timer.read();
+    // _ = measure;
+    std.debug.print("time {d} ms.\n", .{@as(f64, @floatFromInt(measure)) / 1_000_000});
 }
 pub fn kek() !void {
     const out_file = try std.fs.cwd().openFile("out.spv", .{ .mode = .read_write });
@@ -18,8 +27,12 @@ pub fn kek() !void {
 
     const source = alloc_writer.writer.buffered();
 
-    var writer = out_file.writer(&buf);
-    // var writer = std.fs.File.stdout().writer(&buf);
+    // var out_writer = out_file.writer(&buf);
+    var out_writer = std.fs.File.stdout().writer(&buf);
 
-    try sl.compile(std.heap.page_allocator, source, &writer.interface);
+    var timer = try std.time.Timer.start();
+    try sl.compile(std.heap.page_allocator, source, &out_writer.interface);
+    const measure = timer.read();
+    // _ = measure;
+    std.debug.print("time {d} ms.\n", .{@as(f64, @floatFromInt(measure)) / 1_000_000});
 }

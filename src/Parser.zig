@@ -15,6 +15,8 @@ arena: std.heap.ArenaAllocator = undefined,
 global_scope: GlobalScope = undefined,
 current_scope: *Scope = undefined,
 
+intermediate_value_index: u32 = 0,
+
 pub const Error = error{
     OutOfMemory,
 
@@ -54,6 +56,16 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
 pub fn deinit(self: *Parser) void {
     self.arena.deinit();
 }
+pub fn createIntermediateValueName(self: *Parser) Error![]u8 {
+    const prefix = "IV";
+    const slice = try self.arena.allocator().alloc(u8, prefix.len + 4);
+    @memcpy(slice[0..prefix.len], prefix);
+    const byteptr: [*]const u8 = @ptrCast(@alignCast(&self.intermediate_value_index));
+    inline for (0..4) |i| slice[slice.len - (4 - i)] = byteptr[i];
+    self.intermediate_value_index += 1;
+    return slice;
+}
+
 pub fn createVal(self: *Parser, value: anytype) !*@TypeOf(value) {
     const ptr = try self.create(@TypeOf(value));
     ptr.* = value;
@@ -63,6 +75,9 @@ pub fn create(self: *Parser, T: type) !*T {
     return try self.arena.allocator().create(T);
 }
 
+pub inline fn addStatement(self: *Parser, statement: Statement) Error!void {
+    try self.current_scope.addStatement(statement);
+}
 pub fn parseStatement(self: *Parser) Error!?Statement {
     var token = try self.tokenizer.peek();
     while (token == .endl) {
@@ -351,7 +366,7 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
     self.current_scope = scope;
     defer self.current_scope = self.current_scope.parent;
     while (try self.parseStatement()) |statement| {
-        _ = try self.current_scope.addStatement(statement);
+        try self.addStatement(statement);
         if (try self.tokenizer.peek() == .@"}") {
             self.tokenizer.skip();
             break;

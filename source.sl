@@ -7,7 +7,6 @@ const main = entrypoint(.fragment){
 	var albedo: vec3 = vec3{0.01 + 0.3, 3.3, 1.76 - 0.25}} 
 
 	out_col = .{albedo * exposure, 1}
-	return
 }
 
 // const double = fn(x) f32{
