@@ -1,5 +1,6 @@
 const std = @import("std");
 const sl = @import("sl");
+const shaderc = @import("shaderc.zig");
 
 pub fn main() !void {
     var buf: [128]u8 = undefined;
@@ -14,6 +15,14 @@ pub fn main() !void {
     const measure = timer.read();
     // _ = measure;
     std.debug.print("time {d} ms.\n", .{@as(f64, @floatFromInt(measure)) / 1_000_000});
+
+    std.debug.print("dissasembly:\n{s}\n", .{try shaderc.glslSpirvDissasembly(
+        "test.glsl",
+        .vertex,
+        "main",
+        true,
+        // false,
+    )});
 }
 pub fn kek() !void {
     const out_file = try std.fs.cwd().openFile("out.spv", .{ .mode = .read_write });
