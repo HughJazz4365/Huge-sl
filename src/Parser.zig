@@ -37,6 +37,8 @@ pub const Error = error{
 
     NumericError,
     OutOfBoundsAccess,
+    RecursionNotSupported,
+    NegativePower, //a ^ (- |r|)
 } || Tokenizer.Error;
 
 pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {

@@ -1,0 +1,3 @@
+const main = entrypoint(.fragment){
+	out col = vec4{1}
+}

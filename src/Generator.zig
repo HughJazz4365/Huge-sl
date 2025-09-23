@@ -17,6 +17,13 @@ pub fn new(parser: *Parser, allocator: Allocator, output: *Writer) Generator {
 }
 pub fn generate(self: *Generator) Error!void {
     // try self.output.print("WRITE: {d}\n", .{52});
+    //algorithm:
+    //go through global scope statements
+    //if its a var decl of type entrypoint generate code for it
+
+    //generate for entry point:
+    //when encounter a new type add it to the used_types list
+    //when encounter a new function generate an output for it
     try self.output.flush();
 }
 

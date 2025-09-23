@@ -7,7 +7,8 @@ pub fn main() !void {
 
     var timer = try std.time.Timer.start();
 
-    const path = "source.sl";
+    const path = "test.hgsl";
+    // const path = "source.hgsl";
     try sl.compileFile(std.heap.page_allocator, path, &out_writer.interface);
 
     const measure = timer.read();
