@@ -48,10 +48,11 @@ fn isExplicitlyCastable(from: Type, to: Type) bool {
 fn splatCast(self: *Parser, expr_ptr: *Expression, @"type": Type) Error!Expression {
     const structure = @"type".constructorStructure();
     const len = structure.len;
-    const component = try refine(self, .{ .cast = .{
+    const component = try self.turnIntoIntermediateVariableIfNeeded(try refine(self, .{ .cast = .{
         .type = structure.component,
         .expr = expr_ptr,
-    } });
+    } }));
+
     const slice = try self.arena.allocator().alloc(Expression, len);
     for (slice) |*c| c.* = component;
     return try refine(self, .{ .constructor = .{ .type = @"type", .components = slice } });
@@ -134,16 +135,7 @@ fn refineConstructor(self: *Parser, constructor: Parser.Constructor) Error!Expre
         if (filled_count >= slice.len) return Error.InvalidConstructor;
         slice[filled_count] = self.implicitCast(source_component, target_structure.component) catch {
             // if (component_structure.len <= 1) return Error.CannotImplicitlyCast;
-            const splitted_component: Expression = if (source_component == .value) source_component else blk: {
-                const name = try self.createIntermediateValueName();
-                try self.addStatement(.{ .var_decl = .{
-                    .qualifier = .@"const",
-                    .name = name,
-                    .type = try self.typeOf(source_component),
-                    .value = source_component,
-                } });
-                break :blk .{ .identifier = name };
-            };
+            const splitted_component = try self.turnIntoIntermediateVariableIfNeeded(source_component);
             var elem_iter = try ElementIterator.new(self, splitted_component);
             while (try elem_iter.next(self)) |elem| {
                 if (filled_count >= slice.len) return Error.InvalidConstructor;

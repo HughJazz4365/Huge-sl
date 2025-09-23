@@ -56,7 +56,19 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
 pub fn deinit(self: *Parser) void {
     self.arena.deinit();
 }
-pub fn createIntermediateValueName(self: *Parser) Error![]u8 {
+pub fn turnIntoIntermediateVariableIfNeeded(self: *Parser, expr: Expression) Error!Expression {
+    if (!expr.shouldTurnIntoIntermediate()) return expr;
+
+    const name = try self.createIntermediateVariableName();
+    try self.addStatement(.{ .var_decl = .{
+        .qualifier = .@"const",
+        .name = name,
+        .type = try self.typeOf(expr),
+        .value = expr,
+    } });
+    return .{ .identifier = name };
+}
+pub fn createIntermediateVariableName(self: *Parser) Error![]u8 {
     const prefix = "IV";
     const slice = try self.arena.allocator().alloc(u8, prefix.len + 4);
     @memcpy(slice[0..prefix.len], prefix);
@@ -478,6 +490,12 @@ pub const Expression = union(enum) {
 
     value: Value,
     pub const format = debug.formatExpression;
+    pub fn shouldTurnIntoIntermediate(self: Expression) bool {
+        return switch (self) {
+            .value, .identifier => false,
+            else => true,
+        };
+    }
 };
 pub fn isExprMutable(self: *Parser, expr: Expression) Error!bool {
     return switch (expr) {
