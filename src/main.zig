@@ -10,8 +10,10 @@ pub fn main() !void {
 
     const path = "test.hgsl";
     // const path = "source.hgsl";
-    try sl.compileFile(std.heap.page_allocator, path, &out_writer.interface);
 
+    const compiled = try sl.compileFile(std.heap.page_allocator, path);
+    try out_writer.interface.print("compiled: {any}\n", .{compiled});
+    try out_writer.interface.flush();
     const measure = timer.read();
     // _ = measure;
     std.debug.print("time {d} ms.\n", .{@as(f64, @floatFromInt(measure)) / 1_000_000});

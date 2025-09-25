@@ -5,28 +5,43 @@ const Parser = @import("Parser.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const Generator = @This();
 
-const Error = error{} || Writer.Error;
+const Error = error{
+    OutOfMemory,
+} || Writer.Error;
 allocator: Allocator,
+arena: Allocator,
 parser: *Parser,
-output: *Writer,
+result: List(u32) = .empty,
 
-types: List(Type) = undefined,
-//order of things:
-//1. capabilities => flag struct
-//2. extensions => flag struct
-//3. memory model
-//4. decorations, entry point => list
-//5. types => list
-//6. body => buf
+id: u32 = 0,
 
-pub fn new(parser: *Parser, allocator: Allocator, output: *Writer) Generator {
-    return .{
-        .parser = parser,
-        .allocator = allocator,
-        .output = output,
-    };
-}
-pub fn generate(self: *Generator) Error!void {
+capabilities: Capabilities = .{}, //flag struct
+extensions: Extensions = .{}, //flag struct
+types: List(TypeEntry) = .empty,
+decorations: List(Decoration) = .empty,
+instructions: List(u32) = .empty,
+
+constants: List(Constant) = .empty,
+constants_composite: List(ConstantComposite) = .empty,
+//store constants somehow
+// List(u32)?
+
+//memory model
+
+pub fn generate(self: *Generator) Error![]u32 {
+    const magic_number: u32 = 0x07230203;
+    const spirv_version_major: u8 = 1;
+    const spirv_version_minor: u8 = 6;
+    const version_word = @as(u32, spirv_version_major) << 16 | @as(u32, spirv_version_minor) << 8;
+
+    const generator_magic: u32 = 0;
+
+    try self.result.appendSlice(
+        self.arena,
+        &[_]u32{ magic_number, version_word, generator_magic, 0, 0 },
+    );
+    defer self.result.items[3] = self.id;
+
     // try self.output.print("WRITE: {d}\n", .{52});
     //algorithm:
     //go through global scope statements
@@ -35,8 +50,25 @@ pub fn generate(self: *Generator) Error!void {
     //generate for entry point:
     //when encounter a new type add it to the used_types list
     //when encounter a new function generate an output for it
-    try self.output.flush();
+    const result = try self.allocator.alloc(u32, self.result.items.len);
+    @memcpy(result, self.result.items);
+    return result;
 }
+pub inline fn newid(self: *Generator) u32 {
+    defer self.id += 1;
+    return self.id;
+}
+
+const Constant = struct { id: u32, value: u32, type: Type };
+const ConstantComposite = struct { id: u32, components: []u32, type: Type };
+const TypeEntry = struct { type: Type, id: u32 };
+const Decoration = struct {};
+const Capabilities = packed struct {
+    shader: bool = true,
+};
+const Extensions = packed struct {
+    glslstd: bool = true,
+};
 
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
