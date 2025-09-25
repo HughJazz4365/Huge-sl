@@ -233,7 +233,16 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
         bin_op.right.* = self.implicitCast(bin_op.right.*, left_type) catch return initial;
 
     blk: {
-        return doBinOpSplat(self, bin_op) catch break :blk;
+        if (left_type == .vector and right_type.depth() == 0) {
+            const left_child_type: Type = .{ .number = left_type.vector.child };
+            const casted = self.implicitCast(bin_op.right.*, left_child_type) catch return initial;
+            const copy_right = try self.createVal(casted);
+            bin_op.right.* = try refine(self, .{ .cast = .{
+                .type = left_type,
+                .expr = copy_right,
+            } });
+            return refine(self, initial) catch break :blk;
+        }
     }
 
     const left = if (bin_op.left.* != .value) return initial else bin_op.left.value;
@@ -246,23 +255,6 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
         .@"^" => .{ .value = try powValues(left, right) },
         // else => initial,
     };
-}
-fn doBinOpSplat(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
-    const initial: Expression = .{ .bin_op = bin_op };
-
-    const left_type = try self.typeOf(bin_op.left.*);
-    const right_type = try self.typeOf(bin_op.right.*);
-
-    if (left_type == .vector and right_type.depth() == 0) {
-        const left_child_type: Type = .{ .number = left_type.vector.child };
-        const casted = self.implicitCast(bin_op.right.*, left_child_type) catch return initial;
-        const copy_right = try self.createVal(casted);
-        bin_op.right.* = try refine(self, .{ .cast = .{
-            .type = left_type,
-            .expr = copy_right,
-        } });
-        return try refine(self, initial);
-    } else return Error.CannotImplicitlyCast;
 }
 
 fn powValues(left: Value, right: Value) Error!Value {

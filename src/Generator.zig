@@ -42,14 +42,18 @@ pub fn generate(self: *Generator) Error![]u32 {
     );
     defer self.result.items[3] = self.id;
 
-    // try self.output.print("WRITE: {d}\n", .{52});
-    //algorithm:
-    //go through global scope statements
-    //if its a var decl of type entrypoint generate code for it
+    for (self.parser.global_scope.body.items) |statement| {
+        _ = statement;
+        // try self.output.print("WRITE: {d}\n", .{52});
+        //algorithm:
+        //go through global scope statements
+        //if its a var decl of type entrypoint generate code for it
 
-    //generate for entry point:
-    //when encounter a new type add it to the used_types list
-    //when encounter a new function generate an output for it
+        //generate for entry point:
+        //when encounter a new type add it to the used_types list
+        //when encounter a new function generate an output for it
+    }
+
     const result = try self.allocator.alloc(u32, self.result.items.len);
     @memcpy(result, self.result.items);
     return result;
