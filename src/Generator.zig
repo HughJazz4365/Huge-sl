@@ -62,6 +62,11 @@ pub inline fn newid(self: *Generator) u32 {
     defer self.id += 1;
     return self.id;
 }
+const EntryPoint = struct {
+    id: u32,
+    stage_info: ShaderStageInfo,
+    io: []u32,
+};
 
 const Constant = struct { id: u32, value: u32, type: Type };
 const ConstantComposite = struct { id: u32, components: []u32, type: Type };
@@ -78,3 +83,4 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const List = std.ArrayList;
 const Type = tp.Type;
+const ShaderStageInfo = Parser.ShaderStageInfo;

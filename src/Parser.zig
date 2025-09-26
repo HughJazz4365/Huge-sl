@@ -423,7 +423,7 @@ pub const EntryPoint = struct {
     }
 };
 
-const ShaderStageInfo = union(tp.ShaderStage) {
+pub const ShaderStageInfo = union(tp.ShaderStage) {
     vertex,
     fragment,
     compute: [3]u32,
