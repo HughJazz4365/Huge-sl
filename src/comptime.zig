@@ -309,7 +309,7 @@ fn addValues(left: Value, right: Value) Error!Value {
 
 pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expression {
     const type_of = try self.typeOf(expr);
-    if (std.meta.eql(type_of, @"type")) return expr;
+    if (type_of.eql(@"type")) return expr;
     const result: Expression = switch (expr) {
         .value => |value| .{ .value = try implicitCastValue(value, @"type") },
         .constructor => |constructor| try refineConstructor(self, if (constructor.type == .unknown)
@@ -319,17 +319,17 @@ pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expres
         else => expr,
         .cast => |cast| try implicitCastCast(self, cast, @"type"),
     };
-    return if (std.meta.eql(try self.typeOf(result), @"type")) result else Error.CannotImplicitlyCast;
+    return if (@"type".eql(try self.typeOf(result))) result else Error.CannotImplicitlyCast;
 }
 fn implicitCastCast(self: *Parser, cast: Parser.Cast, @"type": Type) Error!Expression {
     const initial: Expression = .{ .cast = cast };
     if (cast.type != .unknown)
-        return if (std.meta.eql(cast.type, @"type")) initial else Error.CannotImplicitlyCast;
+        return if (cast.type.eql(@"type")) initial else Error.CannotImplicitlyCast;
     return try refine(self, Expression{ .cast = .{ .type = @"type", .expr = cast.expr } });
 }
 
 fn implicitCastEqualizeValues(a: Value, b: Value) Error!EqualizeResult {
-    if (std.meta.eql(a.type, b.type)) return .{ a.type, a.payload, b.payload };
+    if (a.type.eql(b.type)) return .{ a.type, a.payload, b.payload };
 
     //'first' comes first in Type union
     var reordered = false;
@@ -352,7 +352,7 @@ fn implicitCastEqualizeValues(a: Value, b: Value) Error!EqualizeResult {
 }
 
 pub fn implicitCastValue(value: Value, target: Type) Error!Value {
-    if (std.meta.eql(value.type, target)) return value;
+    if (value.type.eql(target)) return value;
 
     return switch (target) {
         .compfloat => if (value.type == .compint)

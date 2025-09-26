@@ -17,12 +17,11 @@ id: u32 = 0,
 
 capabilities: Capabilities = .{}, //flag struct
 extensions: Extensions = .{}, //flag struct
-types: List(TypeEntry) = .empty,
 decorations: List(Decoration) = .empty,
 instructions: List(u32) = .empty,
 
-constants: List(Constant) = .empty,
-constants_composite: List(ConstantComposite) = .empty,
+types: List(TypeOff) = .empty,
+constants: List(TypeOff) = .empty,
 //store constants somehow
 // List(u32)?
 
@@ -42,21 +41,39 @@ pub fn generate(self: *Generator) Error![]u32 {
     );
     defer self.result.items[3] = self.id;
 
-    for (self.parser.global_scope.body.items) |statement| {
-        _ = statement;
-        // try self.output.print("WRITE: {d}\n", .{52});
-        //algorithm:
-        //go through global scope statements
-        //if its a var decl of type entrypoint generate code for it
+    for (self.parser.global_scope.body.items) |statement|
+        switch (statement) {
+            .var_decl => |var_decl| try self.generateVarDecl(var_decl),
+            else => {},
+        };
+    // try self.output.print("WRITE: {d}\n", .{52});
+    //algorithm:
+    //go through global scope statements
+    //if its a var decl of type entrypoint generate code for it
 
-        //generate for entry point:
-        //when encounter a new type add it to the used_types list
-        //when encounter a new function generate an output for it
-    }
+    //generate for entry point:
+    //when encounter a new type add it to the used_types list
+    //when encounter a new function generate an output for it
 
     const result = try self.allocator.alloc(u32, self.result.items.len);
     @memcpy(result, self.result.items);
     return result;
+}
+fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
+    _ = self;
+    if (var_decl.qualifier == .@"const") {
+
+        //gen constant (easyy
+        return;
+    }
+}
+fn getTypeID(self: *Generator, @"type": Type) Error!u32 {
+    for (self.types.items) |t| {
+        if (@"type".eql(t.type)) return self.instructions[t.offset];
+    }
+    const new_id = self.newid();
+    //add op type whatever instruction
+    return new_id;
 }
 pub inline fn newid(self: *Generator) u32 {
     defer self.id += 1;
@@ -68,9 +85,7 @@ const EntryPoint = struct {
     io: []u32,
 };
 
-const Constant = struct { id: u32, value: u32, type: Type };
-const ConstantComposite = struct { id: u32, components: []u32, type: Type };
-const TypeEntry = struct { type: Type, id: u32 };
+const TypeOff = struct { offset: usize, type: Type };
 const Decoration = struct {};
 const Capabilities = packed struct {
     shader: bool = true,

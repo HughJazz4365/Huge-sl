@@ -28,6 +28,9 @@ pub const Type = union(enum) {
 
     pub const format = @import("debug.zig").formatType;
 
+    pub fn eql(a: Type, b: Type) bool {
+        return std.meta.eql(a, b);
+    }
     pub fn ToZig(comptime @"type": Type) type {
         return switch (@"type") {
             inline else => |value| if (@hasDecl(@TypeOf(value), "ToZig")) value.ToZig() else @compileError("cant convert type to zig"),

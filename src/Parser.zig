@@ -454,7 +454,7 @@ fn typeOfBinOp(self: *Parser, bin_op: BinOp) Error!Type {
         .@"+", .@"-", .@"*", .@"^" => blk: {
             const left_type = try self.typeOf(bin_op.left.*);
             const right_type = try self.typeOf(bin_op.right.*);
-            break :blk if (std.meta.eql(left_type, right_type)) left_type else .unknown;
+            break :blk if (left_type.eql(right_type)) left_type else .unknown;
         },
     };
 }
