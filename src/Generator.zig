@@ -20,11 +20,8 @@ extensions: Extensions = .{}, //flag struct
 decorations: List(Decoration) = .empty,
 instructions: List(u32) = .empty,
 
-types: List(TypeOff) = .empty,
-constants: List(TypeOff) = .empty,
-//store constants somehow
-// List(u32)?
-
+types: List(TypeEntry) = .empty,
+constants: List(usize) = .empty,
 //memory model
 
 pub fn generate(self: *Generator) Error![]u32 {
@@ -60,21 +57,26 @@ pub fn generate(self: *Generator) Error![]u32 {
     return result;
 }
 fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
-    _ = self;
     if (var_decl.qualifier == .@"const") {
 
         //gen constant (easyy
         return;
     }
 }
-fn getTypeID(self: *Generator, @"type": Type) Error!u32 {
-    for (self.types.items) |t| {
+fn genOpConstant(self: *Generator, value: Parser.Value) Error!void {
+    const type_id = try self.typeID(value.type);
+}
+fn typeID(self: *Generator, @"type": Type) Error!u32 {
+    for (self.types.items) |t|
         if (@"type".eql(t.type)) return self.instructions[t.offset];
-    }
     const new_id = self.newid();
-    //add op type whatever instruction
+    try self.types.append(self.arena, .{ .type = @"type", .id = new_id });
     return new_id;
 }
+inline fn opWord(count: u16, comptime op_code: u16) u32 {
+    return @as(u32, count) << 16 | @as(u32, op_code);
+}
+
 pub inline fn newid(self: *Generator) u32 {
     defer self.id += 1;
     return self.id;
@@ -85,7 +87,7 @@ const EntryPoint = struct {
     io: []u32,
 };
 
-const TypeOff = struct { offset: usize, type: Type };
+const TypeEntry = struct { type: Type, id: u32 };
 const Decoration = struct {};
 const Capabilities = packed struct {
     shader: bool = true,
@@ -97,5 +99,11 @@ const Extensions = packed struct {
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const List = std.ArrayList;
-const Type = tp.Type;
+// const Type = tp.Type;
+const Type = struct {
+    bool,
+    void,
+};
+//need a new 'type' type
+// to account for pointer stuff
 const ShaderStageInfo = Parser.ShaderStageInfo;
