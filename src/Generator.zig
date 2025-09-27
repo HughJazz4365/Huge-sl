@@ -57,6 +57,7 @@ pub fn generate(self: *Generator) Error![]u32 {
     return result;
 }
 fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
+    _ = self;
     if (var_decl.qualifier == .@"const") {
 
         //gen constant (easyy
@@ -65,6 +66,7 @@ fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
 }
 fn genOpConstant(self: *Generator, value: Parser.Value) Error!void {
     const type_id = try self.typeID(value.type);
+    _ = type_id;
 }
 fn typeID(self: *Generator, @"type": Type) Error!u32 {
     for (self.types.items) |t|
@@ -100,9 +102,41 @@ const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const List = std.ArrayList;
 // const Type = tp.Type;
-const Type = struct {
+const Type = union(enum) {
     bool,
     void,
+
+    int: void,
+    float: void,
+
+    vector: void,
+    matrix: void,
+
+    array: void,
+
+    image: void,
+    //sampled_image???
+
+    ptr: PointerType,
+};
+const PointerType = struct { type: *Type, storage_class: StorageClass };
+
+const StorageClass = enum(u32) {
+    function = 7,
+
+    uniform_constant = 0,
+    uniform = 2,
+    push_constant = 9,
+
+    input = 1,
+    output = 3,
+
+    workgroup = 4,
+    cross_workgroup = 5,
+
+    atomic_counter = 10,
+    image = 11,
+    storage_buffer = 12,
 };
 //need a new 'type' type
 // to account for pointer stuff
