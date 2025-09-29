@@ -18,6 +18,7 @@ pub fn main() !void {
     // _ = measure;
     std.debug.print("time {d} ms.\n", .{@as(f64, @floatFromInt(measure)) / 1_000_000});
 
+    // if (false)
     std.debug.print("dissasembly:\n{s}\n", .{try shaderc.glslSpirvDissasembly(
         "test.glsl",
         .vertex,

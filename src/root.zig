@@ -2,14 +2,14 @@ const std = @import("std");
 const Tokenizer = @import("Tokenizer.zig");
 const tp = @import("type.zig");
 const Parser = @import("Parser.zig");
-const Generator = @import("Generator.zig");
+const SpirvGen = @import("spirvgen.zig");
 
 pub fn compile(allocator: std.mem.Allocator, source: []const u8) ![]u32 {
     var tokenizer: Tokenizer = .new(source);
     var parser: Parser = try .parse(allocator, &tokenizer);
     defer parser.deinit();
 
-    var generator: Generator = .{
+    var generator: SpirvGen = .{
         .parser = &parser,
         .arena = parser.arena.allocator(),
         .allocator = allocator,

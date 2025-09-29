@@ -1,5 +1,4 @@
 const std = @import("std");
-const tp = @import("type.zig");
 const util = @import("util.zig");
 const Parser = @import("Parser.zig");
 const Tokenizer = @import("Tokenizer.zig");
@@ -7,6 +6,8 @@ const Generator = @This();
 
 const Error = error{
     OutOfMemory,
+
+    InvalidSpirvType,
 } || Writer.Error;
 allocator: Allocator,
 arena: Allocator,
@@ -56,27 +57,54 @@ pub fn generate(self: *Generator) Error![]u32 {
     @memcpy(result, self.result.items);
     return result;
 }
+
+// fn generateFunction(self: *Generator, var_decl: Parser.VariableDecl) Error!void {}
 fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
-    _ = self;
+    //we gotta create VARIABLES for constants too
+    // if can store in intermediate then do it
+    // how to determine that
+
+    _ = try self.getParserType(var_decl.type);
     if (var_decl.qualifier == .@"const") {
 
         //gen constant (easyy
         return;
     }
 }
-fn genOpConstant(self: *Generator, value: Parser.Value) Error!void {
-    const type_id = try self.typeID(value.type);
+fn getConstantID(self: *Generator, value: Parser.Value) Error!u32 {
+    const type_id = try self.getTypeID(value.type);
     _ = type_id;
 }
-fn typeID(self: *Generator, @"type": Type) Error!u32 {
+fn getTypeID(self: *Generator, @"type": Type) Error!u32 {
     for (self.types.items) |t|
-        if (@"type".eql(t.type)) return self.instructions[t.offset];
+        if (@"type".eql(t.type)) return t.id;
     const new_id = self.newid();
     try self.types.append(self.arena, .{ .type = @"type", .id = new_id });
     return new_id;
 }
-inline fn opWord(count: u16, comptime op_code: u16) u32 {
-    return @as(u32, count) << 16 | @as(u32, op_code);
+fn getParserType(self: *Generator, ptype: Parser.Type) Error!u32 {
+    const @"type": Type = switch (ptype) {
+        .number => |number| switch (number.type) {
+            .float => .{ .float = .{ .width = @intFromEnum(number.width) } },
+            inline else => |tag| .{ .int = .{
+                .width = @intFromEnum(number.width),
+                .signed = tag == .int,
+            } },
+        },
+        .vector => |vector| .{ .vector = .{
+            .component_type_id = try self.getParserType(.{ .number = vector.child }),
+            .len = @intFromEnum(vector.len),
+        } },
+
+        // else => return Error.InvalidSpirvType,
+        else => .void,
+    };
+    std.debug.print("from: {f}, to: {any}\n", .{ ptype, @"type" });
+    return try self.getTypeID(@"type");
+}
+
+inline fn opWord(count: u16, op_code: u16) u32 {
+    return (@as(u32, count) << 16) | @as(u32, op_code);
 }
 
 pub inline fn newid(self: *Generator) u32 {
@@ -101,25 +129,43 @@ const Extensions = packed struct {
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 const List = std.ArrayList;
-// const Type = tp.Type;
+
 const Type = union(enum) {
     bool,
     void,
 
-    int: void,
-    float: void,
+    int: IntType,
+    float: FloatType,
 
-    vector: void,
-    matrix: void,
+    vector: VectorType,
+    matrix: MatrixType,
 
-    array: void,
+    array: ArrayType,
 
     image: void,
     //sampled_image???
 
     ptr: PointerType,
+    function: FunctionType,
+    pub fn eql(a: Type, b: Type) bool {
+        return if (std.meta.activeTag(a) != std.meta.activeTag(b)) false else switch (a) {
+            .int => a.int.width == b.int.width and b.int.signed == b.int.signed,
+            .float => a.float.width == b.float.width,
+            .vector => a.vector.component_type_id == b.vector.component_type_id and a.vector.len == b.vector.len,
+            else => std.meta.eql(a, b),
+        };
+    }
 };
-const PointerType = struct { type: *Type, storage_class: StorageClass };
+const IntType = struct { width: u32, signed: bool };
+const FloatType = struct { width: u32 };
+
+const VectorType = struct { component_type_id: u32, len: u32 };
+const MatrixType = struct { column_type_id: u32, count: u32 };
+
+const ArrayType = struct { elem_type_id: u32, len: u32 };
+
+const PointerType = struct { type_id: u32, storage_class: StorageClass };
+const FunctionType = struct { rtype_id: u32, arg_type_ids: []u32 };
 
 const StorageClass = enum(u32) {
     function = 7,
@@ -141,3 +187,4 @@ const StorageClass = enum(u32) {
 //need a new 'type' type
 // to account for pointer stuff
 const ShaderStageInfo = Parser.ShaderStageInfo;
+const Expression = Parser.Expression;
