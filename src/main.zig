@@ -23,8 +23,8 @@ pub fn main() !void {
         "test.glsl",
         .vertex,
         "main",
-        // true,
-        false,
+        true,
+        // false,
     )});
     std.debug.print("s: {d}\n", .{@sizeOf(struct { v: @Vector(3, f32), f: f32 })});
 }

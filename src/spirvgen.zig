@@ -12,17 +12,18 @@ const Error = error{
 allocator: Allocator,
 arena: Allocator,
 parser: *Parser,
-result: List(u32) = .empty,
 
-id: u32 = 0,
+local_id: u32 = 0,
 
+// spirv module structure
 capabilities: Capabilities = .{}, //flag struct
 extensions: Extensions = .{}, //flag struct
-decorations: List(Decoration) = .empty,
-instructions: List(u32) = .empty,
 
+decorations: List(Decoration) = .empty,
 types: List(TypeEntry) = .empty,
-constants: List(usize) = .empty,
+global_variables: List(GlobalVar) = .empty,
+instructions: List(Instruction) = .empty,
+
 //memory model
 
 pub fn generate(self: *Generator) Error![]u32 {
@@ -32,18 +33,19 @@ pub fn generate(self: *Generator) Error![]u32 {
     const version_word = @as(u32, spirv_version_major) << 16 | @as(u32, spirv_version_minor) << 8;
 
     const generator_magic: u32 = 0;
+    _ = .{ self, magic_number, version_word, generator_magic };
 
-    try self.result.appendSlice(
-        self.arena,
-        &[_]u32{ magic_number, version_word, generator_magic, 0, 0 },
-    );
-    defer self.result.items[3] = self.id;
+    // try self.result.appendSlice(
+    // self.arena,
+    // &[_]u32{ magic_number, version_word, generator_magic, 0, 0 },
+    // );
+    // defer self.result.items[3] = self.id;
 
-    for (self.parser.global_scope.body.items) |statement|
-        switch (statement) {
-            .var_decl => |var_decl| try self.generateVarDecl(var_decl),
-            else => {},
-        };
+    // for (self.parser.global_scope.body.items) |statement|
+    // switch (statement) {
+    // .var_decl => |var_decl| try self.generateVarDecl(var_decl),
+    // else => {},
+    // };
     // try self.output.print("WRITE: {d}\n", .{52});
     //algorithm:
     //go through global scope statements
@@ -53,8 +55,9 @@ pub fn generate(self: *Generator) Error![]u32 {
     //when encounter a new type add it to the used_types list
     //when encounter a new function generate an output for it
 
-    const result = try self.allocator.alloc(u32, self.result.items.len);
-    @memcpy(result, self.result.items);
+    // const result = try self.allocator.alloc(u32, self.result.items.len);
+    const result: []u32 = @constCast(&[0]u32{});
+    // @memcpy(result, self.result.items);
     return result;
 }
 
@@ -111,6 +114,75 @@ pub inline fn newid(self: *Generator) u32 {
     defer self.id += 1;
     return self.id;
 }
+
+const GlobalVar = struct {
+    type_id: u32,
+    id: u32,
+    mut: bool,
+    extra: union {
+        storage_class: StorageClass,
+        value: union {
+            single: u32,
+            many: []u32,
+        },
+    },
+};
+// 1 to 1 translatable to spirv instruction
+// needed to preserve id order
+const Instruction = union(enum) {
+    function: OpFunction,
+    label: u32,
+    store: OpStore,
+    return_void,
+    function_end,
+
+    add_same: GenericBinOp,
+    sub_same: GenericBinOp,
+    mul_same: GenericBinOp,
+    vec_x_scalar, //...
+    mat_x_vec,
+    vec_x_mat,
+    mat_x_mat,
+    mat_x_scalar,
+
+    variable: void,
+    // OpFunction %void None %3
+    //          %5 = OpLabel
+    //               OpStore %9 %11
+    //               OpReturn
+    //               OpFunctio
+};
+// const OpFunction
+const OpFunction = struct {
+    result_type: u32,
+    result: u32,
+    function_control: FunctionControl,
+    function_type: u32,
+};
+const FunctionControl = enum(u32) {
+    none = 0,
+    @"inline" = 1,
+    dontinline = 2,
+    pure = 3,
+    @"const" = 4,
+};
+const OpStore = struct {
+    pointer: TempID,
+    value: TempID,
+    memory_operands: []u32 = @constCast(&.{}),
+};
+const GenericBinOp = struct {
+    type: u32,
+    result: u32,
+    a: TempID,
+    b: TempID,
+};
+const TempID = struct {
+    type: TempIDType,
+    id: u32,
+};
+const TempIDType = union(enum) { global, func };
+
 const EntryPoint = struct {
     id: u32,
     stage_info: ShaderStageInfo,
@@ -151,7 +223,7 @@ const Type = union(enum) {
         return if (std.meta.activeTag(a) != std.meta.activeTag(b)) false else switch (a) {
             .int => a.int.width == b.int.width and b.int.signed == b.int.signed,
             .float => a.float.width == b.float.width,
-            .vector => a.vector.component_type_id == b.vector.component_type_id and a.vector.len == b.vector.len,
+            .vector => a.vector.component_type == b.vector.component_type and a.vector.len == b.vector.len,
             else => std.meta.eql(a, b),
         };
     }
@@ -159,13 +231,13 @@ const Type = union(enum) {
 const IntType = struct { width: u32, signed: bool };
 const FloatType = struct { width: u32 };
 
-const VectorType = struct { component_type_id: u32, len: u32 };
-const MatrixType = struct { column_type_id: u32, count: u32 };
+const VectorType = struct { component_type: u32, len: u32 };
+const MatrixType = struct { column_type: u32, count: u32 };
 
-const ArrayType = struct { elem_type_id: u32, len: u32 };
+const ArrayType = struct { elem_type: u32, len: u32 };
 
-const PointerType = struct { type_id: u32, storage_class: StorageClass };
-const FunctionType = struct { rtype_id: u32, arg_type_ids: []u32 };
+const PointerType = struct { type: u32, storage_class: StorageClass };
+const FunctionType = struct { rtype: u32, arg_types: []u32 };
 
 const StorageClass = enum(u32) {
     function = 7,
