@@ -18,6 +18,7 @@ local_id: u32 = 0,
 // spirv module structure
 capabilities: Capabilities = .{}, //flag struct
 extensions: Extensions = .{}, //flag struct
+entry_points: List(EntryPoint) = .empty,
 
 decorations: List(Decoration) = .empty,
 types: List(TypeEntry) = .empty,
@@ -35,6 +36,12 @@ pub fn generate(self: *Generator) Error![]u32 {
     const generator_magic: u32 = 0;
     _ = .{ self, magic_number, version_word, generator_magic };
 
+    for (self.parser.global_scope.body.items) |statement| {
+        switch (statement) {
+            .var_decl => |var_decl| std.debug.print("{s} vd: {d}\n", .{ var_decl.name, var_decl.reference_count }),
+            else => @panic("einienne"),
+        }
+    }
     // try self.result.appendSlice(
     // self.arena,
     // &[_]u32{ magic_number, version_word, generator_magic, 0, 0 },
@@ -62,10 +69,13 @@ pub fn generate(self: *Generator) Error![]u32 {
 }
 
 // fn generateFunction(self: *Generator, var_decl: Parser.VariableDecl) Error!void {}
-fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
-    //we gotta create VARIABLES for constants too
-    // if can store in intermediate then do it
-    // how to determine that
+inline fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
+    if (var_decl.type == .entrypoint)
+        return try self.generateEntryPoint(
+            var_decl.name,
+            @ptrCast(@alignCast(var_decl.value.value.payload.ptr)),
+        );
+    //functions and entrypoints are so different
 
     _ = try self.getParserType(var_decl.type);
     if (var_decl.qualifier == .@"const") {
@@ -74,6 +84,10 @@ fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
         return;
     }
 }
+inline fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.EntryPoint) Error!void {
+    _ = .{ self, name, entry_point };
+}
+
 fn getConstantID(self: *Generator, value: Parser.Value) Error!u32 {
     const type_id = try self.getTypeID(value.type);
     _ = type_id;
@@ -238,6 +252,22 @@ const ArrayType = struct { elem_type: u32, len: u32 };
 
 const PointerType = struct { type: u32, storage_class: StorageClass };
 const FunctionType = struct { rtype: u32, arg_types: []u32 };
+
+const EntryPointInstruction = struct {
+    // exec model,
+    execution_model: ExecutionModel,
+    id: u32,
+    name: []const u8,
+    interfaces: List(u32) = .empty,
+};
+const ExecutionModel = enum(u32) {
+    vertex = 0,
+    tesselation_control = 1,
+    tesselation_evaluation = 2,
+    geometry = 3,
+    fragment = 4,
+    compute = 5,
+};
 
 const StorageClass = enum(u32) {
     function = 7,

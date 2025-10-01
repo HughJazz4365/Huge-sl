@@ -4,7 +4,7 @@ const Parser = @import("Parser.zig");
 
 const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(i128, -1)) } };
 pub fn refine(self: *Parser, expr: Expression) Error!Expression {
-    return switch (expr) {
+    const result = switch (expr) {
         .bin_op => |bin_op| try refineBinOp(self, bin_op),
         .u_op => |u_op| try refineUOp(self, u_op),
         .constructor => |constructor| try refineConstructor(self, constructor),
@@ -13,6 +13,8 @@ pub fn refine(self: *Parser, expr: Expression) Error!Expression {
         .identifier => |identifier| try refineIdentifier(self, identifier),
         else => expr,
     };
+    if (expr == .identifier and result == .identifier) try self.current_scope.trackReference(result.identifier, .track);
+    return result;
 }
 inline fn refineIdentifier(self: *Parser, identifier: []const u8) Error!Expression {
     const var_ref = try self.current_scope.getVariableReferece(identifier);

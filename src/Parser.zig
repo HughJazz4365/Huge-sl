@@ -220,6 +220,7 @@ pub const VariableDecl = struct {
     name: []const u8,
     type: Type,
     value: Expression,
+    reference_count: u32 = 1,
 
     pub fn variableReference(self: *VariableDecl) VariableReference {
         return .{
@@ -403,6 +404,7 @@ pub const EntryPoint = struct {
             .scope = .{
                 .getVariableReferenceFn = &getVariableReferenceFn,
                 .addStatementFn = &addStatementFn,
+                .trackReferenceFn = &trackReferenceFn,
                 .parent = self.current_scope,
             },
         };
@@ -420,6 +422,16 @@ pub const EntryPoint = struct {
             if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
                 break statement.var_decl.variableReference();
         } else try scope.parent.getVariableReferece(name);
+    }
+    fn trackReferenceFn(scope: *Scope, name: []const u8, ref_type: Scope.DeclReferenceType) Error!void {
+        const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);
+        for (entry_point.body.items) |*statement| {
+            if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name)) {
+                statement.var_decl.reference_count = if (ref_type == .track) statement.var_decl.reference_count + 1 else statement.var_decl.reference_count -| 1;
+                return;
+            }
+        }
+        try scope.parent.trackReference(name, ref_type);
     }
 };
 
@@ -568,7 +580,14 @@ pub const GlobalScope = struct {
         } else Error.UndeclaredVariable;
     }
     fn trackReferenceFn(scope: *Scope, name: []const u8, ref_type: Scope.DeclReferenceType) Error!void {
-        _ = &.{ name, ref_type, scope };
+        const global_scope: *GlobalScope = @fieldParentPtr("scope", scope);
+        for (global_scope.body.items) |*statement| {
+            if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name)) {
+                statement.var_decl.reference_count = if (ref_type == .track) statement.var_decl.reference_count + 1 else statement.var_decl.reference_count -| 1;
+                return;
+            }
+        }
+        return Error.UndeclaredVariable;
     }
 };
 
@@ -589,7 +608,7 @@ pub const Scope = struct {
         return try self.getVariableReferenceFn(self, name);
     }
 
-    pub inline fn reference(self: *Scope, name: []const u8, ref_type: DeclReferenceType) Error!void {
+    pub inline fn trackReference(self: *Scope, name: []const u8, ref_type: DeclReferenceType) Error!void {
         try self.trackReferenceFn(self, name, ref_type);
     }
 };
@@ -684,5 +703,6 @@ const Allocator = std.mem.Allocator;
 const BinaryOperator = Tokenizer.BinaryOperator;
 pub const refine = ct.refine;
 pub const Type = tp.Type;
+pub const FunctionType = tp.FunctionType;
 const UnaryOperator = Tokenizer.UnaryOperator;
 pub const Token = Tokenizer.Token;
