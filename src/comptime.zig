@@ -1,5 +1,6 @@
 const std = @import("std");
 const tp = @import("type.zig");
+const util = @import("util.zig");
 const Parser = @import("Parser.zig");
 
 const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(i128, -1)) } };
@@ -89,10 +90,10 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
     const index_value = indexing.index.value;
     const target_value = indexing.target.value;
     const index: usize = switch (index_value.type) {
-        .compint => @intCast(wideAs(i128, index_value.payload.wide)),
-        .compfloat => castFloatNoRound(usize, wideAs(f128, index_value.payload.wide)) catch return Error.InvalidIndex,
+        .compint => @intCast(util.extract(i128, index_value.payload.wide)),
+        .compfloat => castFloatNoRound(usize, util.extract(f128, index_value.payload.wide)) catch return Error.InvalidIndex,
         .number => |number| switch (number.width) {
-            inline else => |width| @intCast(wideAs(
+            inline else => |width| @intCast(util.extract(
                 (Type{ .number = .{ .width = width, .type = .uint } }).ToZig(),
                 index_value.payload.wide,
             )),
@@ -172,7 +173,7 @@ fn constructValue(self: *Parser, constructor: Parser.Constructor) Error!Expressi
                         for (0..@intFromEnum(len)) |i| {
                             const component = constructor.components[i];
                             if (component != .value) return initial;
-                            const elem = wideAs(C, component.value.payload.wide);
+                            const elem = util.extract(C, component.value.payload.wide);
                             vector_value[i] = elem;
                         }
                         const ptr = try self.createVal(vector_value);
@@ -201,7 +202,7 @@ const ElementIterator = struct {
             if (self.index >= structure.len) return null;
             const ptr = try parser.createVal(Expression{ .value = .{
                 .type = .compint,
-                .payload = .{ .wide = asWide(self.index) },
+                .payload = .{ .wide = util.fit(u128, self.index) },
             } });
             self.index += 1;
             return try refine(parser, .{ .indexing = .{ .target = self.expr, .index = ptr } });
@@ -265,11 +266,11 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
 fn powValues(left: Value, right: Value) Error!Value {
     const t, const a, const b = try implicitCastEqualizeValues(left, right);
     const payload: Parser.ValuePayload = switch (t) {
-        .compint => .{ .wide = asWide(std.math.powi(i128, wideAs(i128, a.wide), wideAs(i128, b.wide)) catch return Error.NumericError) },
-        .compfloat => .{ .wide = asWide(@as(f128, @floatCast(std.math.pow(
+        .compint => .{ .wide = util.fit(u128, std.math.powi(i128, util.extract(i128, a.wide), util.extract(i128, b.wide)) catch return Error.NumericError) },
+        .compfloat => .{ .wide = util.fit(u128, @as(f128, @floatCast(std.math.pow(
             f64,
-            @floatCast(wideAs(f128, a.wide)),
-            @floatCast(wideAs(f128, b.wide)),
+            @floatCast(util.extract(f128, a.wide)),
+            @floatCast(util.extract(f128, b.wide)),
         )))) },
         //number , vector
         else => return Error.InvalidOperands,
@@ -280,8 +281,8 @@ fn powValues(left: Value, right: Value) Error!Value {
 fn mulValues(self: *Parser, left: Value, right: Value) Error!Value {
     const t, const a, const b = try implicitCastEqualizeValues(left, right);
     const payload: Parser.ValuePayload = switch (t) {
-        .compint => .{ .wide = asWide(wideAs(i128, a.wide) * wideAs(i128, b.wide)) },
-        .compfloat => .{ .wide = asWide(wideAs(f128, a.wide) * wideAs(f128, b.wide)) },
+        .compint => .{ .wide = util.fit(u128, util.extract(i128, a.wide) * util.extract(i128, b.wide)) },
+        .compfloat => .{ .wide = util.fit(u128, util.extract(f128, a.wide) * util.extract(f128, b.wide)) },
         //number , vector
         .vector => |vector| switch (vector.len) {
             inline else => |len| switch (vector.child.type) {
@@ -368,13 +369,13 @@ pub fn implicitCastValue(value: Value, target: Type) Error!Value {
         .number => |number| .{ .type = target, .payload = .{ .wide = try switch (number.type) {
             inline else => |t| switch (number.width) {
                 inline else => |w| switch (value.type) {
-                    .compint => asWide(numberCast(
+                    .compint => util.fit(u128, numberCast(
                         comptime (tp.Number{ .type = t, .width = w }).ToZig(),
-                        wideAs(i128, value.payload.wide),
+                        util.extract(i128, value.payload.wide),
                     )),
-                    .compfloat => asWide(numberCast(
+                    .compfloat => util.fit(u128, numberCast(
                         comptime (tp.Number{ .type = t, .width = w }).ToZig(),
-                        wideAs(f128, value.payload.wide),
+                        util.extract(f128, value.payload.wide),
                     )),
                     else => Error.CannotImplicitlyCast,
                 },
@@ -396,21 +397,6 @@ fn numberCast(T: type, value: anytype) T {
         .int => if (from_tinfo == .int) @intCast(value) else @intFromFloat(value),
         else => @compileError(err),
     };
-}
-pub inline fn wideAs(T: type, wide: u128) T {
-    const s = @sizeOf(u128);
-    if (@sizeOf(T) == s) return @bitCast(wide);
-    const ptr: *const T = @ptrCast(@alignCast(&wide));
-    return ptr.*;
-}
-pub fn asWide(value: anytype) u128 {
-    var wide: u128 = 0;
-    const T = @TypeOf(value);
-    @memcpy(
-        @as([*]u8, @ptrCast(@alignCast(&wide))),
-        @as([*]const u8, @ptrCast(@alignCast(&value)))[0..@sizeOf(T)],
-    );
-    return wide;
 }
 
 const EqualizeResult = std.meta.Tuple(&.{ Type, Parser.ValuePayload, Parser.ValuePayload });

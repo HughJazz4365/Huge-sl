@@ -1,6 +1,6 @@
 const std = @import("std");
 const tp = @import("type.zig");
-const ct = @import("comptime.zig");
+const util = @import("util.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
 
@@ -72,7 +72,7 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
             inline else => |@"type"| switch (number.width) {
                 inline else => |width| try writer.print("[{f}]|{d}|", .{
                     value.type,
-                    ct.wideAs((tp.Number{ .type = @"type", .width = width }).ToZig(), value.payload.wide),
+                    util.extract((tp.Number{ .type = @"type", .width = width }).ToZig(), value.payload.wide),
                 }),
                 // inline else => |width| try writer.print("{d}", .{
                 //     ct.wideAs((tp.Number{ .type = @"type", .width = width }).ToZig(), value.payload.wide),

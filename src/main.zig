@@ -18,14 +18,14 @@ pub fn main() !void {
     // _ = measure;
     std.debug.print("time {d} ms.\n", .{@as(f64, @floatFromInt(measure)) / 1_000_000});
 
-    // if (false)
-    std.debug.print("dissasembly:\n{s}\n", .{try shaderc.glslSpirvDissasembly(
-        "test.glsl",
-        .vertex,
-        "main",
-        true,
-        // false,
-    )});
+    if (false)
+        std.debug.print("dissasembly:\n{s}\n", .{try shaderc.glslSpirvDissasembly(
+            "test.glsl",
+            .vertex,
+            "main",
+            true,
+            // false,
+        )});
     std.debug.print("s: {d}\n", .{@sizeOf(struct { v: @Vector(3, f32), f: f32 })});
 }
 pub fn kek() !void {
