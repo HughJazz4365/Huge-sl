@@ -8,6 +8,8 @@ const Error = error{
     OutOfMemory,
 
     InvalidSpirvType,
+
+    GenError,
 } || Writer.Error;
 allocator: Allocator,
 arena: Allocator,
@@ -69,22 +71,43 @@ pub fn generate(self: *Generator) Error![]u32 {
 }
 
 // fn generateFunction(self: *Generator, var_decl: Parser.VariableDecl) Error!void {}
-inline fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
+fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
     if (var_decl.type == .entrypoint)
         return try self.generateEntryPoint(
             var_decl.name,
             @ptrCast(@alignCast(var_decl.value.value.payload.ptr)),
         );
-    //functions and entrypoints are so different
+    //functions and entrypoints are handled separately
 
-    _ = try self.getParserType(var_decl.type);
-    if (var_decl.qualifier == .@"const") {
+    //skip variables of incomplete types
+    _ = self.castParserType(var_decl.type) catch |err| if (err == Error.InvalidSpirvType) return else return err;
 
-        //gen constant (easyy
-        return;
-    }
+    const value = try self.generateExpressionID(var_decl.value);
 }
-inline fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.EntryPoint) Error!void {
+fn generateExpressionID(self: *Generator, expr: Expression) Error!TempID {
+    return switch (expr) {
+        .value => |value| try self.generateValueID(value),
+        else => Error.GenError,
+    };
+}
+fn generateValueID(self: *Generator, value: Parser.Value) Error!TempID {
+    const @"type" = self.castParserType(value.type) catch unreachable;
+    const type_id = try self.getTypeID(@"type");
+    return switch (value.type) {
+        .number => |number| self.global_variables.append(self.arena, .{
+            .type_id = type_id,
+            .mut = false,
+            .data = .{ .value = blk: {
+                if (number.width == .long) break :blk .{ .many = @ptrCast(@alignCast(@constCast(&value.payload.wide))) };
+                var storage : u32 = 0;
+                std.mem.nativeToLittle(comptime T: type, x: T)
+            } },
+        }),
+
+        else => unreachable,
+    };
+}
+fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.EntryPoint) Error!void {
     _ = .{ self, name, entry_point };
 }
 
@@ -99,41 +122,37 @@ fn getTypeID(self: *Generator, @"type": Type) Error!u32 {
     try self.types.append(self.arena, .{ .type = @"type", .id = new_id });
     return new_id;
 }
-fn getParserType(self: *Generator, ptype: Parser.Type) Error!u32 {
-    const @"type": Type = switch (ptype) {
+fn castParserType(self: *Generator, ptype: Parser.Type) Error!Type {
+    return switch (ptype) {
         .number => |number| switch (number.type) {
             .float => .{ .float = .{ .width = @intFromEnum(number.width) } },
-            inline else => |tag| .{ .int = .{
+            else => |tag| .{ .int = .{
                 .width = @intFromEnum(number.width),
                 .signed = tag == .int,
             } },
         },
         .vector => |vector| .{ .vector = .{
-            .component_type_id = try self.getParserType(.{ .number = vector.child }),
+            .component_type_id = self.getTypeID(try self.castParserType(.{ .number = vector.child })),
             .len = @intFromEnum(vector.len),
         } },
-
-        // else => return Error.InvalidSpirvType,
-        else => .void,
+        .void => .void,
+        else => return Error.InvalidSpirvType,
     };
-    std.debug.print("from: {f}, to: {any}\n", .{ ptype, @"type" });
-    return try self.getTypeID(@"type");
 }
 
-inline fn opWord(count: u16, op_code: u16) u32 {
+fn opWord(count: u16, op_code: u16) u32 {
     return (@as(u32, count) << 16) | @as(u32, op_code);
 }
 
-pub inline fn newid(self: *Generator) u32 {
+pub fn newid(self: *Generator) u32 {
     defer self.id += 1;
     return self.id;
 }
 
 const GlobalVar = struct {
     type_id: u32,
-    id: u32,
     mut: bool,
-    extra: union {
+    data: union {
         storage_class: StorageClass,
         value: union {
             single: u32,
@@ -176,7 +195,7 @@ const OpFunction = struct {
 const FunctionControl = enum(u32) {
     none = 0,
     @"inline" = 1,
-    dontinline = 2,
+    dont = 2,
     pure = 3,
     @"const" = 4,
 };

@@ -13,7 +13,10 @@ pub fn refine(self: *Parser, expr: Expression) Error!Expression {
         .identifier => |identifier| try refineIdentifier(self, identifier),
         else => expr,
     };
-    if (expr == .identifier and result == .identifier) try self.current_scope.trackReference(result.identifier, .track);
+    if (expr == .identifier and result == .identifier) {
+        std.debug.print("exprref: {f}\n", .{result});
+        try self.current_scope.trackReference(result.identifier, .track);
+    }
     return result;
 }
 inline fn refineIdentifier(self: *Parser, identifier: []const u8) Error!Expression {

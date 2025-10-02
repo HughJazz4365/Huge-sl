@@ -1,4 +1,4 @@
-const somevar = vec3{0.1}
+const brightness = 0.8
 const main = entrypoint(.fragment){
-	out col = vec4{1}
+	out col = vec4{vec3{brightness}, 1}
 }

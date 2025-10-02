@@ -220,7 +220,7 @@ pub const VariableDecl = struct {
     name: []const u8,
     type: Type,
     value: Expression,
-    reference_count: u32 = 1,
+    reference_count: u32 = 0,
 
     pub fn variableReference(self: *VariableDecl) VariableReference {
         return .{
@@ -609,7 +609,9 @@ pub const Scope = struct {
     }
 
     pub inline fn trackReference(self: *Scope, name: []const u8, ref_type: DeclReferenceType) Error!void {
+        // std.debug.print("TRACKREF\n", .{});
         try self.trackReferenceFn(self, name, ref_type);
+        // @panic("RIaiornstoirns");
     }
 };
 pub const VariableReference = struct {
