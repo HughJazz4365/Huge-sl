@@ -26,7 +26,6 @@ pub fn main() !void {
             true,
             // false,
         )});
-    std.debug.print("s: {d}\n", .{@sizeOf(struct { v: @Vector(3, f32), f: f32 })});
 }
 pub fn kek() !void {
     const out_file = try std.fs.cwd().openFile("out.spv", .{ .mode = .read_write });

@@ -27,7 +27,7 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
         .entrypoint => |ep| try writer.print("entrypoint(.{s})", .{@tagName(ep)}),
         .number => |n| try writer.print("{s}{d}", .{ n.type.prefix(), @intFromEnum(n.width) }),
         .vector => |v| try writer.print("{s}vec{d}", .{
-            if (v.child.type == .float) "" else v.child.type.prefix(),
+            if (v.component.type == .float) "" else v.component.type.prefix(),
             @intFromEnum(v.len),
         }),
         .unknown => try writer.print("[?]", .{}),
@@ -80,11 +80,11 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
             },
         },
         .vector => |vector| switch (vector.len) {
-            inline else => |len| switch (vector.child.width) {
-                inline else => |width| switch (vector.child.type) {
+            inline else => |len| switch (vector.component.width) {
+                inline else => |width| switch (vector.component.type) {
                     inline else => |num_type| std.debug.print("|{f}|{d}", .{
                         value.type,
-                        @as(*const (tp.Vector{ .len = len, .child = .{ .width = width, .type = num_type } }).ToZig(), @ptrCast(@alignCast(value.payload.ptr))).*,
+                        @as(*const (tp.Vector{ .len = len, .component = .{ .width = width, .type = num_type } }).ToZig(), @ptrCast(@alignCast(value.payload.ptr))).*,
                     }),
                 },
             },

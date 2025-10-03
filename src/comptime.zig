@@ -163,10 +163,10 @@ fn constructValue(self: *Parser, constructor: Parser.Constructor) Error!Expressi
     // if (constructor.value != .vector) return Error.InvalidConstructor;
     return switch (constructor.type) {
         .vector => |vector| switch (vector.len) {
-            inline else => |len| switch (vector.child.width) {
-                inline else => |width| switch (vector.child.type) {
+            inline else => |len| switch (vector.component.width) {
+                inline else => |width| switch (vector.component.type) {
                     inline else => |num_type| blk: {
-                        const @"type": Type = .{ .vector = .{ .len = len, .child = .{ .width = width, .type = num_type } } };
+                        const @"type": Type = .{ .vector = .{ .len = len, .component = .{ .width = width, .type = num_type } } };
                         const T = @"type".ToZig();
                         const C = @typeInfo(T).vector.child;
                         var vector_value: T = undefined;
@@ -240,7 +240,7 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
 
     blk: {
         if (left_type == .vector and right_type.depth() == 0) {
-            const left_child_type: Type = .{ .number = left_type.vector.child };
+            const left_child_type: Type = .{ .number = left_type.vector.component };
             const casted = self.implicitCast(bin_op.right.*, left_child_type) catch return initial;
             const copy_right = try self.createVal(casted);
             bin_op.right.* = try refine(self, .{ .cast = .{
@@ -285,10 +285,10 @@ fn mulValues(self: *Parser, left: Value, right: Value) Error!Value {
         .compfloat => .{ .wide = util.fit(u128, util.extract(f128, a.wide) * util.extract(f128, b.wide)) },
         //number , vector
         .vector => |vector| switch (vector.len) {
-            inline else => |len| switch (vector.child.type) {
-                inline else => |num_type| switch (vector.child.width) {
+            inline else => |len| switch (vector.component.type) {
+                inline else => |num_type| switch (vector.component.width) {
                     inline else => |width| blk: {
-                        const V = (tp.Vector{ .len = len, .child = .{ .type = num_type, .width = width } }).ToZig();
+                        const V = (tp.Vector{ .len = len, .component = .{ .type = num_type, .width = width } }).ToZig();
                         const a_ptr: *V = @ptrCast(@alignCast(@constCast(a.ptr)));
                         const b_ptr: *const V = @ptrCast(@alignCast(b.ptr));
 

@@ -54,7 +54,7 @@ pub const Type = union(enum) {
     pub fn size(self: Type) usize {
         return switch (self) {
             .number => |number| @intFromEnum(number.width) >> 3,
-            .vector => |vector| (Type.size(.{ .number = vector.child }) * @intFromEnum(vector.len) + 15) / 16 * 16,
+            .vector => |vector| (Type.size(.{ .number = vector.component }) * @intFromEnum(vector.len) + 15) / 16 * 16,
             .array => |array| array.child.size() * array.len,
             .matrix => |matrix| Type.size(.{ .vector = matrix.column_type }) * @intFromEnum(matrix.len),
             .bool => 1,
@@ -63,7 +63,7 @@ pub const Type = union(enum) {
     }
     pub fn constructorStructure(self: Type) ConstructorStructure {
         return switch (self) {
-            .vector => |vector| .{ .component = .{ .number = vector.child }, .len = @intFromEnum(vector.len) },
+            .vector => |vector| .{ .component = .{ .number = vector.component }, .len = @intFromEnum(vector.len) },
             .array => |array| .{ .component = array.child.*, .len = array.len },
             .matrix => |matrix| .{ .component = .{ .vector = matrix.column_type }, .len = @intFromEnum(matrix.len) },
             else => .{ .component = self },
@@ -95,18 +95,18 @@ pub const Array = struct {
 };
 
 pub const Vector = struct {
-    child: Number,
+    component: Number,
     len: VectorLen,
     pub fn ToZig(comptime vec: Vector) type {
-        return @Vector(@intCast(@intFromEnum(vec.len)), vec.child.ToZig());
+        return @Vector(@intCast(@intFromEnum(vec.len)), vec.component.ToZig());
     }
     pub fn literalComp(comptime vec: Vector) []const u8 {
-        if (vec.child.width != .word) @compileError(std.fmt.comptimePrint(
+        if (vec.component.width != .word) @compileError(std.fmt.comptimePrint(
             "no builtin literal for vector with child bitwidth of {d}",
-            .{vec.child.width},
+            .{vec.component.width},
         ));
 
-        const prefix = switch (vec.child.type) {
+        const prefix = switch (vec.component.type) {
             .float => "",
             .int => "i",
             .uint => "u",
@@ -118,7 +118,7 @@ pub const Vector = struct {
         inline for (@typeInfo(NumberType).@"enum".fields) |nef| {
             inline for (@typeInfo(VectorLen).@"enum".fields) |lef| {
                 const v: Vector = .{
-                    .child = .{ .type = @enumFromInt(nef.value), .width = .word },
+                    .component = .{ .type = @enumFromInt(nef.value), .width = .word },
                     .len = @enumFromInt(lef.value),
                 };
                 slice = slice ++ &[1]Vector{v};

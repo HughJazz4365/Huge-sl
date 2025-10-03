@@ -24,11 +24,22 @@ entry_points: List(EntryPoint) = .empty,
 
 decorations: List(Decoration) = .empty,
 types: List(TypeEntry) = .empty,
-global_variables: List(GlobalVar) = .empty,
+global_variables: List(GlobalVariable) = .empty,
+global_constants: List(GlobalConstant) = .empty,
 instructions: List(Instruction) = .empty,
+
+global_name_mappings: List(NameMapping) = .empty,
+current_name_mappings: []NameMapping = &.{},
 
 //memory model
 
+pub fn new(parser: *Parser) Generator {
+    return .{
+        .parser = parser,
+        .allocator = parser.allocator,
+        .arena = parser.arena.allocator(),
+    };
+}
 pub fn generate(self: *Generator) Error![]u32 {
     const magic_number: u32 = 0x07230203;
     const spirv_version_major: u8 = 1;
@@ -88,45 +99,71 @@ fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
 }
 fn generateExpressionID(self: *Generator, expr: Expression) Error!TempID {
     return switch (expr) {
-        .value => |value| try self.generateValueID(value),
+        .value => |value| .{ .type = .global_const, .id = try self.generateValueID(value) },
         else => Error.GenError,
     };
 }
-fn generateValueID(self: *Generator, value: Parser.Value) Error!TempID {
+fn generateValueID(self: *Generator, value: Parser.Value) Error!u32 {
     const @"type" = self.castParserType(value.type) catch unreachable;
     const type_id = try self.getTypeID(@"type");
     return switch (value.type) {
         .number => |number| switch (number.width) {
             inline else => |width| switch (number.type) {
-                inline else => |nt| .{ .type = .global, .id = try self.addGlobalVar(.{
-                    .type_id = type_id,
-                    .mut = false,
-                    .data = .{
-                        .value = blk: {
-                            const compt: Parser.Type = .{ .number = .{ .type = nt, .width = width } };
-                            const T = compt.ToZig();
-                            break :blk if (width == .long) .{
-                                .many = @ptrCast(@alignCast(
-                                    @as(*T, @ptrCast(@alignCast(@constCast(
-                                        &value.payload.wide,
-                                    )))),
-                                )),
-                            } else .{ .single = util.fit(u32, util.extract(T, value.payload.wide)) };
-                        },
-                    },
-                }) },
+                inline else => |nt| try self.addGlobalConst(.{ .type = type_id, .value = blk: {
+                    const compt: Parser.Type = .{ .number = .{ .type = nt, .width = width } };
+                    const T = compt.ToZig();
+                    break :blk if (width == .long) .{
+                        .many = @ptrCast(@alignCast(
+                            @as(*T, @ptrCast(@alignCast(@constCast(
+                                &value.payload.wide,
+                            )))),
+                        )),
+                    } else .{ .single = util.fit(u32, util.extract(T, value.payload.wide)) };
+                } }),
             },
         },
+
+        .vector => |vector| switch (vector.len) {
+            inline else => |len| switch (vector.component.width) {
+                inline else => |width| switch (vector.component.type) {
+                    inline else => |nt| blk: {
+                        const compt: Parser.Type = .{ .vector = .{ .len = len, .component = .{ .type = nt, .width = width } } };
+                        const T = compt.ToZig();
+                        const vec_len = @intFromEnum(len);
+
+                        const slice = try self.arena.alloc(u32, vec_len);
+                        inline for (0..vec_len) |i|
+                            slice[i] = try self.generateValueID(.{
+                                .type = .{ .number = compt.vector.component },
+                                .payload = .{
+                                    .wide = util.fit(u128, @as(*const T, @ptrCast(@alignCast(value.payload.ptr)))[i]),
+                                },
+                            });
+
+                        break :blk try self.addGlobalConst(.{
+                            .type = type_id,
+                            .value = .{ .many = slice },
+                        });
+                    },
+                },
+            },
+        },
+
+        // iterate through vector components and add constants for each one and add vector
 
         // else => unreachable,
         else => @panic("unhandled gen value type"),
     };
 }
-fn addGlobalVar(self: *Generator, global_var: GlobalVar) Error!u32 {
-    const len = self.global_variables.items.len;
-    try self.global_variables.append(self.arena, global_var);
-    return @truncate(len);
+fn addGlobalConst(self: *Generator, global_constant: GlobalConstant) Error!u32 {
+    for (self.global_constants.items, 0..) |c, i| {
+        if (c.eql(global_constant, self)) return @truncate(i);
+    }
+    const id: u32 = @truncate(self.global_constants.items.len);
+    try self.global_constants.append(self.arena, global_constant);
+    return id;
 }
+
 fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: Parser.EntryPoint) Error!void {
     _ = .{ self, name, entry_point };
 }
@@ -134,6 +171,11 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: Parser.En
 fn getConstantID(self: *Generator, value: Parser.Value) Error!u32 {
     const type_id = try self.getTypeID(value.type);
     _ = type_id;
+}
+fn getTypeFromID(self: *Generator, id: u32) Type {
+    return for (self.types.items) |t| {
+        if (t.id == id) break t.type;
+    } else unreachable;
 }
 fn getTypeID(self: *Generator, @"type": Type) Error!u32 {
     for (self.types.items) |t|
@@ -152,7 +194,7 @@ fn castParserType(self: *Generator, ptype: Parser.Type) Error!Type {
             } },
         },
         .vector => |vector| .{ .vector = .{
-            .component_type = try self.getTypeID(try self.castParserType(.{ .number = vector.child })),
+            .component_type = try self.getTypeID(try self.castParserType(.{ .number = vector.component })),
             .len = @intFromEnum(vector.len),
         } },
         .void => .void,
@@ -169,16 +211,27 @@ pub fn newLocalID(self: *Generator) u32 {
     return self.local_id;
 }
 
-const GlobalVar = struct {
+const GlobalVariable = struct {
     type_id: u32,
-    mut: bool,
-    data: union {
-        storage_class: StorageClass,
-        value: union {
-            single: u32,
-            many: []u32,
-        },
+    storage_class: StorageClass,
+};
+const GlobalConstant = struct {
+    type: u32,
+    value: union {
+        single: u32,
+        many: []u32,
     },
+    pub fn eql(a: GlobalConstant, b: GlobalConstant, self: *Generator) bool {
+        if (a.type != b.type) return false;
+        return if (self.getTypeFromID(a.type).constructorIDCount() == 1)
+            a.value.single == b.value.single
+        else
+            std.mem.eql(u32, a.value.many, b.value.many);
+    }
+};
+const NameMapping = struct {
+    name: []const u8,
+    id: TempID,
 };
 // 1 to 1 translatable to spirv instruction
 // needed to preserve id order
@@ -215,7 +268,7 @@ const OpFunction = struct {
 const FunctionControl = enum(u32) {
     none = 0,
     @"inline" = 1,
-    dont = 2,
+    dontinline = 2,
     pure = 3,
     @"const" = 4,
 };
@@ -234,7 +287,7 @@ const TempID = struct {
     type: TempIDType,
     id: u32,
 };
-const TempIDType = union(enum) { global, func };
+const TempIDType = union(enum) { global_const, global_variable, func };
 
 const EntryPoint = struct {
     id: u32,
@@ -250,10 +303,6 @@ const Capabilities = packed struct {
 const Extensions = packed struct {
     glslstd: bool = true,
 };
-
-const Allocator = std.mem.Allocator;
-const Writer = std.Io.Writer;
-const List = std.ArrayList;
 
 const Type = union(enum) {
     bool,
@@ -278,6 +327,15 @@ const Type = union(enum) {
             .float => a.float.width == b.float.width,
             .vector => a.vector.component_type == b.vector.component_type and a.vector.len == b.vector.len,
             else => std.meta.eql(a, b),
+        };
+    }
+    pub fn constructorIDCount(t: Type) u32 {
+        return switch (t) {
+            .int => |int| (int.width + 31) >> 5,
+            .float => |float| (float.width + 31) >> 5,
+            .vector => |vector| vector.len,
+
+            else => 1,
         };
     }
 };
@@ -329,3 +387,6 @@ const StorageClass = enum(u32) {
 // to account for pointer stuff
 const ShaderStageInfo = Parser.ShaderStageInfo;
 const Expression = Parser.Expression;
+const Allocator = std.mem.Allocator;
+const Writer = std.Io.Writer;
+const List = std.ArrayList;

@@ -9,11 +9,7 @@ pub fn compile(allocator: std.mem.Allocator, source: []const u8) ![]u32 {
     var parser: Parser = try .parse(allocator, &tokenizer);
     defer parser.deinit();
 
-    var generator: SpirvGen = .{
-        .parser = &parser,
-        .arena = parser.arena.allocator(),
-        .allocator = allocator,
-    };
+    var generator: SpirvGen = .new(&parser);
     return try generator.generate();
 }
 
