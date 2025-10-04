@@ -15,7 +15,7 @@ allocator: Allocator,
 arena: Allocator,
 parser: *Parser,
 
-local_id: u32 = 0,
+id: u32 = 0,
 
 // spirv module structure
 capabilities: Capabilities = .{}, //flag struct
@@ -26,12 +26,13 @@ decorations: List(Decoration) = .empty,
 types: List(TypeEntry) = .empty,
 global_variables: List(GlobalVariable) = .empty,
 global_constants: List(GlobalConstant) = .empty,
-instructions: List(Instruction) = .empty,
+instructions: List(u32) = .empty,
 
 global_name_mappings: List(NameMapping) = .empty,
 current_name_mappings: []NameMapping = &.{},
 
-//memory model
+current_buf: *List(u32) = undefined,
+in_function: bool = false,
 
 pub fn new(parser: *Parser) Generator {
     return .{
@@ -49,39 +50,19 @@ pub fn generate(self: *Generator) Error![]u32 {
     const generator_magic: u32 = 0;
     _ = .{ self, magic_number, version_word, generator_magic };
 
-    for (self.parser.global_scope.body.items) |statement| {
-        switch (statement) {
-            .var_decl => |var_decl| try self.generateVarDecl(var_decl),
-            else => @panic("einienne"),
-        }
-    }
-    // try self.result.appendSlice(
-    // self.arena,
-    // &[_]u32{ magic_number, version_word, generator_magic, 0, 0 },
-    // );
-    // defer self.result.items[3] = self.id;
+    for (self.parser.global_scope.body.items) |statement|
+        try self.generateStatement(statement);
 
-    // for (self.parser.global_scope.body.items) |statement|
-    // switch (statement) {
-    // .var_decl => |var_decl| try self.generateVarDecl(var_decl),
-    // else => {},
-    // };
-    // try self.output.print("WRITE: {d}\n", .{52});
-    //algorithm:
-    //go through global scope statements
-    //if its a var decl of type entrypoint generate code for it
-
-    //generate for entry point:
-    //when encounter a new type add it to the used_types list
-    //when encounter a new function generate an output for it
-
-    // const result = try self.allocator.alloc(u32, self.result.items.len);
     const result: []u32 = @constCast(&[0]u32{});
-    // @memcpy(result, self.result.items);
     return result;
 }
 
-// fn generateFunction(self: *Generator, var_decl: Parser.VariableDecl) Error!void {}
+fn generateStatement(self: *Generator, statement: Parser.Statement) Error!void {
+    switch (statement) {
+        .var_decl => |var_decl| try self.generateVarDecl(var_decl),
+        else => @panic("cant gen that statement"),
+    }
+}
 fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
     std.debug.print("{s} vd: {d}\n", .{ var_decl.name, var_decl.reference_count });
     if (var_decl.type == .entrypoint)
@@ -97,9 +78,9 @@ fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
     const value = try self.generateExpressionID(var_decl.value);
     std.debug.print("exprid: {any}\n", .{value});
 }
-fn generateExpressionID(self: *Generator, expr: Expression) Error!TempID {
+fn generateExpressionID(self: *Generator, expr: Expression) Error!u32 {
     return switch (expr) {
-        .value => |value| .{ .type = .global_const, .id = try self.generateValueID(value) },
+        .value => |value| try self.generateValueID(value),
         else => Error.GenError,
     };
 }
@@ -166,6 +147,36 @@ fn addGlobalConst(self: *Generator, global_constant: GlobalConstant) Error!u32 {
 
 fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: Parser.EntryPoint) Error!void {
     _ = .{ self, name, entry_point };
+    const rtype = try self.getTypeID(.void);
+    const function_type = try self.getTypeID(.{ .function = .{ .rtype = rtype } });
+    const result = self.newID();
+    var buf: List(u32) = .empty;
+
+    //op function
+    try buf.appendSlice(
+        self.arena,
+        &.{ opWord(5, 54), rtype, result, @intFromEnum(FunctionControl.none), function_type },
+    );
+    const was_in_function = self.in_function;
+    self.in_function = true;
+
+    self.current_buf = &buf;
+    for (entry_point.body.items) |statement| try self.generateStatement(statement);
+
+    if (!was_in_function) self.in_function = false;
+
+    //op function end
+    try buf.append(self.arena, opWord(1, 56));
+    //track entry point
+    try self.entry_points.append(self.arena, .{
+        .id = result,
+        .name = name,
+        .stage_info = entry_point.stage_info,
+        .io = &.{}, //get from parsing the body
+    });
+
+    try self.instructions.appendSlice(self.arena, buf.items);
+    buf.deinit(self.arena);
 }
 
 fn getConstantID(self: *Generator, value: Parser.Value) Error!u32 {
@@ -180,7 +191,7 @@ fn getTypeFromID(self: *Generator, id: u32) Type {
 fn getTypeID(self: *Generator, @"type": Type) Error!u32 {
     for (self.types.items) |t|
         if (@"type".eql(t.type)) return t.id;
-    const new_id = self.newLocalID();
+    const new_id = self.newID();
     try self.types.append(self.arena, .{ .type = @"type", .id = new_id });
     return new_id;
 }
@@ -206,9 +217,9 @@ fn opWord(count: u16, op_code: u16) u32 {
     return (@as(u32, count) << 16) | @as(u32, op_code);
 }
 
-pub fn newLocalID(self: *Generator) u32 {
-    defer self.local_id += 1;
-    return self.local_id;
+pub fn newID(self: *Generator) u32 {
+    defer self.id += 1;
+    return self.id;
 }
 
 const GlobalVariable = struct {
@@ -231,39 +242,7 @@ const GlobalConstant = struct {
 };
 const NameMapping = struct {
     name: []const u8,
-    id: TempID,
-};
-// 1 to 1 translatable to spirv instruction
-// needed to preserve id order
-const Instruction = union(enum) {
-    function: OpFunction,
-    label: u32,
-    store: OpStore,
-    return_void,
-    function_end,
-
-    add_same: GenericBinOp,
-    sub_same: GenericBinOp,
-    mul_same: GenericBinOp,
-    vec_x_scalar, //...
-    mat_x_vec,
-    vec_x_mat,
-    mat_x_mat,
-    mat_x_scalar,
-
-    variable: void,
-    // OpFunction %void None %3
-    //          %5 = OpLabel
-    //               OpStore %9 %11
-    //               OpReturn
-    //               OpFunctio
-};
-// const OpFunction
-const OpFunction = struct {
-    result_type: u32,
-    result: u32,
-    function_control: FunctionControl,
-    function_type: u32,
+    id: u32,
 };
 const FunctionControl = enum(u32) {
     none = 0,
@@ -272,25 +251,10 @@ const FunctionControl = enum(u32) {
     pure = 3,
     @"const" = 4,
 };
-const OpStore = struct {
-    pointer: TempID,
-    value: TempID,
-    memory_operands: []u32 = @constCast(&.{}),
-};
-const GenericBinOp = struct {
-    type: u32,
-    result: u32,
-    a: TempID,
-    b: TempID,
-};
-const TempID = struct {
-    type: TempIDType,
-    id: u32,
-};
-const TempIDType = union(enum) { global_const, global_variable, func };
 
 const EntryPoint = struct {
     id: u32,
+    name: []const u8,
     stage_info: ShaderStageInfo,
     io: []u32,
 };
@@ -348,15 +312,8 @@ const MatrixType = struct { column_type: u32, count: u32 };
 const ArrayType = struct { elem_type: u32, len: u32 };
 
 const PointerType = struct { type: u32, storage_class: StorageClass };
-const FunctionType = struct { rtype: u32, arg_types: []u32 };
+const FunctionType = struct { rtype: u32, arg_types: []u32 = &.{} };
 
-const EntryPointInstruction = struct {
-    // exec model,
-    execution_model: ExecutionModel,
-    id: u32,
-    name: []const u8,
-    interfaces: List(u32) = .empty,
-};
 const ExecutionModel = enum(u32) {
     vertex = 0,
     tesselation_control = 1,
