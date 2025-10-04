@@ -1,4 +1,4 @@
-const brightness  = f64{0.8}
+const brightness = 0.8
 const main = entrypoint(.fragment){
-	out col = vec4{vec3{f32{brightness}}, 1}
+	out col = vec4{vec3{brightness}, 1}
 }

@@ -24,8 +24,8 @@ entry_points: List(EntryPoint) = .empty,
 
 decorations: List(Decoration) = .empty,
 types: List(TypeEntry) = .empty,
-global_variables: List(GlobalVariable) = .empty,
-global_constants: List(GlobalConstant) = .empty,
+global_variables: List(GlobalVariableEntry) = .empty,
+global_constants: List(GlobalConstantEntry) = .empty,
 instructions: List(u32) = .empty,
 
 global_name_mappings: List(NameMapping) = .empty,
@@ -52,6 +52,8 @@ pub fn generate(self: *Generator) Error![]u32 {
 
     for (self.parser.global_scope.body.items) |statement|
         try self.generateStatement(statement);
+    for (self.types.items) |t| std.debug.print("T: {any}\n", .{t});
+    for (self.global_constants.items) |c| std.debug.print("C: {any}\n", .{c});
 
     const result: []u32 = @constCast(&[0]u32{});
     return result;
@@ -90,7 +92,7 @@ fn generateValueID(self: *Generator, value: Parser.Value) Error!u32 {
     return switch (value.type) {
         .number => |number| switch (number.width) {
             inline else => |width| switch (number.type) {
-                inline else => |nt| try self.addGlobalConst(.{ .type = type_id, .value = blk: {
+                inline else => |nt| try self.getGlobalConstID(.{ .type = type_id, .value = blk: {
                     const compt: Parser.Type = .{ .number = .{ .type = nt, .width = width } };
                     const T = compt.ToZig();
                     break :blk if (width == .long) .{
@@ -121,7 +123,7 @@ fn generateValueID(self: *Generator, value: Parser.Value) Error!u32 {
                                 },
                             });
 
-                        break :blk try self.addGlobalConst(.{
+                        break :blk try self.getGlobalConstID(.{
                             .type = type_id,
                             .value = .{ .many = slice },
                         });
@@ -136,13 +138,13 @@ fn generateValueID(self: *Generator, value: Parser.Value) Error!u32 {
         else => @panic("unhandled gen value type"),
     };
 }
-fn addGlobalConst(self: *Generator, global_constant: GlobalConstant) Error!u32 {
-    for (self.global_constants.items, 0..) |c, i| {
-        if (c.eql(global_constant, self)) return @truncate(i);
+fn getGlobalConstID(self: *Generator, global_constant: GlobalConstant) Error!u32 {
+    for (self.global_constants.items) |c| {
+        if (c.value.eql(global_constant, self)) return @truncate(c.id);
     }
-    const id: u32 = @truncate(self.global_constants.items.len);
-    try self.global_constants.append(self.arena, global_constant);
-    return id;
+    const new_id = self.newID();
+    try self.global_constants.append(self.arena, .{ .value = global_constant, .id = new_id });
+    return new_id;
 }
 
 fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: Parser.EntryPoint) Error!void {
@@ -222,10 +224,12 @@ pub fn newID(self: *Generator) u32 {
     return self.id;
 }
 
+const GlobalVariableEntry = struct { id: u32, value: GlobalVariable };
 const GlobalVariable = struct {
     type_id: u32,
     storage_class: StorageClass,
 };
+const GlobalConstantEntry = struct { id: u32, value: GlobalConstant };
 const GlobalConstant = struct {
     type: u32,
     value: union {
@@ -241,8 +245,8 @@ const GlobalConstant = struct {
     }
 };
 const NameMapping = struct {
-    name: []const u8,
     id: u32,
+    name: []const u8,
 };
 const FunctionControl = enum(u32) {
     none = 0,
@@ -259,7 +263,7 @@ const EntryPoint = struct {
     io: []u32,
 };
 
-const TypeEntry = struct { type: Type, id: u32 };
+const TypeEntry = struct { id: u32, type: Type };
 const Decoration = struct {};
 const Capabilities = packed struct {
     shader: bool = true,
