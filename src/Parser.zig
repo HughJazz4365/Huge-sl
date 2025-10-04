@@ -510,6 +510,9 @@ pub const Expression = union(enum) {
             else => true,
         };
     }
+    pub fn isEmptyExpression(self: Expression) bool {
+        return self == .value and self.value.type == .type and self.value.payload.type == .unknown;
+    }
 };
 pub fn isExprMutable(self: *Parser, expr: Expression) Error!bool {
     return switch (expr) {

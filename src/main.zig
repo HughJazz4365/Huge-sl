@@ -18,14 +18,14 @@ pub fn main() !void {
     // _ = measure;
     std.debug.print("time {d} ms.\n", .{@as(f64, @floatFromInt(measure)) / 1_000_000});
 
-    if (false)
-        std.debug.print("dissasembly:\n{s}\n", .{try shaderc.glslSpirvDissasembly(
-            "test.glsl",
-            .vertex,
-            "main",
-            true,
-            // false,
-        )});
+    // if (false)
+    std.debug.print("dissasembly:\n{s}\n", .{try shaderc.glslSpirvDissasembly(
+        "test.glsl",
+        .vertex,
+        "main",
+        true,
+        // false,
+    )});
 }
 pub fn kek() !void {
     const out_file = try std.fs.cwd().openFile("out.spv", .{ .mode = .read_write });

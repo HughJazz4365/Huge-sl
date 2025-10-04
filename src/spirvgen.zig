@@ -60,6 +60,7 @@ pub fn generate(self: *Generator) Error![]u32 {
 }
 
 fn generateStatement(self: *Generator, statement: Parser.Statement) Error!void {
+    std.debug.print("STATEMENT: {f}\n", .{statement});
     switch (statement) {
         .var_decl => |var_decl| try self.generateVarDecl(var_decl),
         else => @panic("cant gen that statement"),
@@ -72,13 +73,21 @@ fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
             var_decl.name,
             @as(*const Parser.EntryPoint, @ptrCast(@alignCast(var_decl.value.value.payload.ptr))).*,
         );
-    //functions and entrypoints are handled separately
 
-    //skip variables of incomplete types
+    //skip variables of 'incomplete' types
     _ = self.castParserType(var_decl.type) catch |err| if (err == Error.InvalidSpirvType) return else return err;
 
-    const value = try self.generateExpressionID(var_decl.value);
-    std.debug.print("exprid: {any}\n", .{value});
+    const value: ?u32 = if (!var_decl.value.isEmptyExpression())
+        try self.generateExpressionID(var_decl.value)
+    else
+        null;
+    return switch (var_decl.qualifier) {
+        .@"const" => value.?,
+        .out => ,
+        else => @panic("cant gen var with this qualifier"),
+    };
+
+    // std.debug.print("exprid: {any}\n", .{value});
 }
 fn generateExpressionID(self: *Generator, expr: Expression) Error!u32 {
     return switch (expr) {
@@ -92,17 +101,21 @@ fn generateValueID(self: *Generator, value: Parser.Value) Error!u32 {
     return switch (value.type) {
         .number => |number| switch (number.width) {
             inline else => |width| switch (number.type) {
-                inline else => |nt| try self.getGlobalConstID(.{ .type = type_id, .value = blk: {
-                    const compt: Parser.Type = .{ .number = .{ .type = nt, .width = width } };
-                    const T = compt.ToZig();
-                    break :blk if (width == .long) .{
-                        .many = @ptrCast(@alignCast(
-                            @as(*T, @ptrCast(@alignCast(@constCast(
-                                &value.payload.wide,
-                            )))),
-                        )),
-                    } else .{ .single = util.fit(u32, util.extract(T, value.payload.wide)) };
-                } }),
+                inline else => |nt| try self.getGlobalConstID(.{
+                    .type = type_id,
+                    .value = blk: {
+                        const compt: Parser.Type = .{ .number = .{ .type = nt, .width = width } };
+                        const T = compt.ToZig();
+                        break :blk if (width == .long) .{
+                            //reorder words in that slice
+                            .many = @ptrCast(@alignCast(
+                                @as(*T, @ptrCast(@alignCast(@constCast(
+                                    &value.payload.wide,
+                                )))),
+                            )),
+                        } else .{ .single = util.fit(u32, util.extract(T, value.payload.wide)) };
+                    },
+                }),
             },
         },
 
@@ -131,8 +144,6 @@ fn generateValueID(self: *Generator, value: Parser.Value) Error!u32 {
                 },
             },
         },
-
-        // iterate through vector components and add constants for each one and add vector
 
         // else => unreachable,
         else => @panic("unhandled gen value type"),
