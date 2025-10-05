@@ -15,7 +15,7 @@ allocator: Allocator,
 arena: Allocator,
 parser: *Parser,
 
-id: u32 = 0,
+id: u32 = 1,
 
 // spirv module structure
 capabilities: Capabilities = .{}, //flag struct
@@ -91,7 +91,7 @@ pub fn generate(self: *Generator) Error![]u32 {
         const name_len = (entry_point.name.len + 4) / 4;
 
         try result.appendSlice(&.{
-            opWord(@truncate(4 + entry_point.io.len + name_len), .entry_point),
+            opWord(@truncate(3 + entry_point.io.len + name_len), .entry_point),
             execution_model,
             entry_point.id,
         });
@@ -113,7 +113,7 @@ pub fn generate(self: *Generator) Error![]u32 {
         //extra parameters for 8,16 bit floats
         .float => |float| &.{ opWord(3, .type_float), t.id, float.width },
         .vector => |vector| &.{ opWord(4, .type_vector), t.id, vector.component_type, vector.len },
-        .pointer => |pointer| &.{ opWord(4, .type_vector), t.id, @intFromEnum(pointer.storage_class), pointer.type },
+        .pointer => |pointer| &.{ opWord(4, .type_pointer), t.id, @intFromEnum(pointer.storage_class), pointer.type },
         .function => |function| blk: {
             try result.appendSlice(
                 &.{ opWord(@intCast(3 + function.arg_types.len), .type_function), t.id, function.rtype },

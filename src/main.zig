@@ -13,13 +13,22 @@ pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
     const compiled = try sl.compileFile(allocator, path);
+
+    const out_file = try std.fs.cwd().openFile("out.spv", .{ .mode = .write_only });
+    defer out_file.close();
+    var out_buf: [128]u8 = undefined;
+    var writer = out_file.writer(&out_buf);
+
+    try writer.interface.writeSliceEndian(u32, compiled, .little);
+    try writer.interface.flush();
+
     defer allocator.free(compiled);
 
     try out_writer.interface.print("compiled: {any}\n", .{compiled});
     try out_writer.interface.flush();
     const measure = timer.read();
     // _ = measure;
-    std.debug.print("time {d} ms.\n", .{@as(f64, @floatFromInt(measure)) / 1_000_000});
+    std.debug.print("time {any} ms.\n", .{@as(f64, @floatFromInt(measure)) / 1_000_000});
 
     if (false)
         std.debug.print("dissasembly:\n{s}\n", .{try shaderc.glslSpirvDissasembly(
