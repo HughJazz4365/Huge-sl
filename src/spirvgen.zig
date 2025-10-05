@@ -43,12 +43,19 @@ pub fn new(parser: *Parser) Generator {
         .arena = parser.arena.allocator(),
     };
 }
+pub fn generateDissasembly() Error![]const u8 {
+    //TODO:
+    // dissasemble(u32) also
+}
 pub fn generate(self: *Generator) Error![]u32 {
+    //generate all the stuff by parsing global scope of parsed data
     for (self.parser.global_scope.body.items) |statement|
         try self.generateStatement(statement);
-    for (self.types.items) |t| std.debug.print("T: {any}\n", .{t});
-    for (self.global_constants.items) |c| std.debug.print("C: {any}\n", .{c});
-    for (self.global_variables.items) |gv| std.debug.print("GV: {any}\n", .{gv});
+    // for (self.types.items) |t| std.debug.print("T: {any}\n", .{t});
+    // for (self.global_constants.items) |c| std.debug.print("C: {any}\n", .{c});
+    // for (self.global_variables.items) |gv| std.debug.print("GV: {any}\n", .{gv});
+    //TODO: ENABLE DYNAMICALY
+    self.capabilities.shader = true;
 
     //compile all the parts into one slice
     const spirv_magic: u32 = 0x07230203;
@@ -57,14 +64,118 @@ pub fn generate(self: *Generator) Error![]u32 {
     const version_word = @as(u32, spirv_version_major) << 16 | @as(u32, spirv_version_minor) << 8;
     const generator_magic: u32 = 0;
 
-    var result: List(u32) = .empty;
-    //add header
-    try result.appendSlice(
-        self.allocator,
-        &.{ spirv_magic, version_word, generator_magic, self.id, 0 },
-    );
+    var result_unmanaged: List(u32) = .empty;
+    var result = result_unmanaged.toManaged(self.allocator);
 
-    return result.toOwnedSlice(self.allocator);
+    //add header
+    try result.appendSlice(&.{ spirv_magic, version_word, generator_magic, self.id, 0 });
+    //enable capabilities
+    inline for (@typeInfo(Capabilitiy).@"enum".fields) |ef|
+        if (@field(self.capabilities, ef.name))
+            try result.appendSlice(&.{ opWord(2, .capability), ef.value });
+    //extensions
+    // //////////////
+    //
+
+    //logical addressing model(0)
+    //memory model is Vulkan(3)/GLSL450(1)???
+    try result.appendSlice(&.{ opWord(3, .memory_model), 0, 1 });
+
+    //entry point
+    for (self.entry_points.items) |entry_point| {
+        const execution_model: u32 = switch (entry_point.stage_info) {
+            .vertex => 0,
+            .fragment => 4,
+            .compute => 5,
+        };
+        const name_len = (entry_point.name.len + 4) / 4;
+
+        try result.appendSlice(&.{
+            opWord(@truncate(4 + entry_point.io.len + name_len), .entry_point),
+            execution_model,
+            entry_point.id,
+        });
+        const name_index = result.items.len;
+        try result.appendNTimes(0, name_len);
+        for (entry_point.name, 0..) |char, i|
+            result.items[name_index + i / 4] |= @as(u32, char) << @intCast((i & 3) * 8);
+        try result.appendSlice(entry_point.io);
+    }
+
+    //append decorations section
+    try result.appendSlice(self.decorations.items);
+
+    //add type decls
+    for (self.types.items) |t| try result.appendSlice(switch (t.type) {
+        .void => &.{ opWord(2, .type_void), t.id },
+        .bool => &.{ opWord(2, .type_bool), t.id },
+        .int => |int| &.{ opWord(4, .type_int), t.id, int.width, @intFromBool(int.signed) },
+        //extra parameters for 8,16 bit floats
+        .float => |float| &.{ opWord(3, .type_float), t.id, float.width },
+        .vector => |vector| &.{ opWord(4, .type_vector), t.id, vector.component_type, vector.len },
+        .pointer => |pointer| &.{ opWord(4, .type_vector), t.id, @intFromEnum(pointer.storage_class), pointer.type },
+        .function => |function| blk: {
+            try result.appendSlice(
+                &.{ opWord(@intCast(3 + function.arg_types.len), .type_function), t.id, function.rtype },
+            );
+            break :blk function.arg_types;
+        },
+        else => @panic("cant generate instruction for that type decl for now"),
+    });
+    //add constant decl instructions
+    for (self.global_constants.items) |c| {
+        // const index = result.items.len;
+        const @"type" = self.getTypeFromID(c.payload.type);
+        switch (@"type") {
+            .bool => try result.appendSlice(&.{
+                opWord(3, if (c.payload.value.single > 0) .constant_true else .constant_false),
+                c.payload.type,
+                c.id,
+            }),
+
+            .float, .int => {
+                const width = (if (@"type" == .float)
+                    @"type".float.width
+                else
+                    @"type".int.width);
+                try result.appendSlice(&.{
+                    opWord(@intCast(3 + (width >> 5)), .constant),
+                    c.payload.type,
+                    c.id,
+                });
+                if (width > 32) {
+                    try result.appendSlice(c.payload.value.many);
+                } else try result.append(c.payload.value.single);
+            },
+            .vector => |vector| {
+                try result.appendSlice(&.{
+                    opWord(@intCast(3 + vector.len), .constant_composite),
+                    c.payload.type,
+                    c.id,
+                });
+                try result.appendSlice(c.payload.value.many);
+            },
+
+            else => @panic("invalid constant type"),
+        }
+        // std.debug.print("genconst: {any}\n", .{result.items[index..]});
+    }
+
+    //add all the global variables
+    for (self.global_variables.items) |gv| {
+        try result.appendSlice(&.{
+            opWord(@intCast(if (gv.initializer != null) @as(u16, 5) else @as(u16, 4)), .variable),
+            gv.type,
+            gv.id,
+            @intFromEnum(gv.storage_class),
+        });
+        if (gv.initializer) |i| try result.append(i);
+    }
+
+    //add the rest of the module
+    try result.appendSlice(self.instructions.items);
+
+    return try result.toOwnedSlice();
 }
 
 fn generateStatement(self: *Generator, statement: Parser.Statement) Error!void {
@@ -115,7 +226,7 @@ fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
     } else {
         try self.global_variables.append(self.arena, .{
             .id = new_id,
-            .type_id = ptr_type_id,
+            .type = ptr_type_id,
             .storage_class = storage_class,
             .initializer = value,
             .from_function = self.in_function,
@@ -159,7 +270,7 @@ fn decorateLocationEntryPointIO(self: *Generator, storage_class: StorageClass) E
     }
     try self.decorations.appendSlice(self.arena, &.{
         opWord(4, .decorate),
-        self.current_interfaces.items[self.current_interfaces.items.len - 1],
+        self.global_variables.items[self.current_interfaces.items[self.current_interfaces.items.len - 1]].id,
         @intFromEnum(Decoration.location),
         location,
     });
@@ -227,10 +338,10 @@ fn generateValueID(self: *Generator, value: Parser.Value) Error!u32 {
 }
 fn getGlobalConstID(self: *Generator, global_constant: GlobalConstant) Error!u32 {
     for (self.global_constants.items) |c| {
-        if (c.value.eql(global_constant, self)) return @truncate(c.id);
+        if (c.payload.eql(global_constant, self)) return @truncate(c.id);
     }
     const new_id = self.newID();
-    try self.global_constants.append(self.arena, .{ .value = global_constant, .id = new_id });
+    try self.global_constants.append(self.arena, .{ .payload = global_constant, .id = new_id });
     return new_id;
 }
 
@@ -319,10 +430,27 @@ pub fn newID(self: *Generator) u32 {
     return self.id;
 }
 const Op = enum(u32) {
+    constant_true = 41,
+    constant_false = 42,
+    constant = 43,
+    constant_composite = 44,
+
+    type_void = 19,
+    type_bool = 20,
+    type_int = 21,
+    type_float = 22,
+    type_vector = 23,
+    type_matrix = 24,
+    type_pointer = 32,
+    type_function = 33,
+
+    entry_point = 15,
+    capability = 17,
     decorate = 71,
     function = 54,
     function_end = 56,
     variable = 59,
+    memory_model = 14,
 };
 const Decoration = enum(u32) {
     location = 30,
@@ -330,12 +458,12 @@ const Decoration = enum(u32) {
 
 const GlobalVariable = struct {
     id: u32,
-    type_id: u32,
+    type: u32,
     storage_class: StorageClass,
     initializer: ?u32,
     from_function: bool,
 };
-const GlobalConstantEntry = struct { id: u32, value: GlobalConstant };
+const GlobalConstantEntry = struct { id: u32, payload: GlobalConstant };
 const GlobalConstant = struct {
     type: u32,
     value: union {
@@ -369,11 +497,29 @@ const EntryPoint = struct {
 };
 
 const TypeEntry = struct { id: u32, type: Type };
-const Capabilities = packed struct {
-    shader: bool = true,
+const Capabilities = structFromEnum(Capabilitiy, bool);
+const Capabilitiy = enum(u32) {
+    matrix = 0,
+    shader = 1,
+    geometry = 2,
+    tesselation = 3,
+
+    float64 = 10,
+    float16 = 9,
+    int64 = 11,
+    int16 = 22,
+
+    atomic_storage = 21,
+    int64atomics = 12,
+
+    geometry_point_size = 24,
+
+    storage_image_multisample = 27,
+    //there is too much of them
 };
-const Extensions = packed struct {
-    glslstd: bool = true,
+
+const Extensions = struct {
+    glslstd: ?u32 = null,
 };
 
 const Type = union(enum) {
@@ -449,6 +595,26 @@ const StorageClass = enum(u32) {
     image = 11,
     storage_buffer = 12,
 };
+fn structFromEnum(Enum: type, T: type) type {
+    const em = @typeInfo(Enum).@"enum";
+    var struct_fields: [em.fields.len]std.builtin.Type.StructField = undefined;
+    const zeroes = std.mem.zeroes(T);
+    inline for (em.fields, &struct_fields) |ef, *sf| {
+        sf.* = .{
+            .default_value_ptr = &zeroes,
+            .alignment = @alignOf(T),
+            .is_comptime = false,
+            .name = ef.name,
+            .type = T,
+        };
+    }
+    return @Type(.{ .@"struct" = .{
+        .decls = &.{},
+        .fields = &struct_fields,
+        .is_tuple = false,
+        .layout = .auto,
+    } });
+}
 //need a new 'type' type
 // to account for pointer stuff
 const ShaderStageInfo = Parser.ShaderStageInfo;
