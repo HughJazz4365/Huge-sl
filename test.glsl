@@ -1,6 +1,10 @@
 #version 450 
+
+layout(location = 0)in float i;
 layout(location = 0)out vec4 col;
+float v = 1.3;
 
 void main(){
-    col = vec4(1.0);
+    v += i;
+    col = vec4(v);
 }

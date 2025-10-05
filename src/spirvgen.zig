@@ -22,16 +22,18 @@ capabilities: Capabilities = .{}, //flag struct
 extensions: Extensions = .{}, //flag struct
 entry_points: List(EntryPoint) = .empty,
 
-decorations: List(Decoration) = .empty,
+decorations: List(u32) = .empty,
 types: List(TypeEntry) = .empty,
-global_variables: List(GlobalVariableEntry) = .empty,
-global_constants: List(GlobalConstantEntry) = .empty,
+
 instructions: List(u32) = .empty,
 
+global_variables: List(GlobalVariable) = .empty,
+global_constants: List(GlobalConstantEntry) = .empty,
 global_name_mappings: List(NameMapping) = .empty,
-current_name_mappings: []NameMapping = &.{},
 
+current_name_mappings: []NameMapping = &.{},
 current_buf: *List(u32) = undefined,
+current_interfaces: *List(u32) = undefined,
 in_function: bool = false,
 
 pub fn new(parser: *Parser) Generator {
@@ -42,21 +44,27 @@ pub fn new(parser: *Parser) Generator {
     };
 }
 pub fn generate(self: *Generator) Error![]u32 {
-    const magic_number: u32 = 0x07230203;
-    const spirv_version_major: u8 = 1;
-    const spirv_version_minor: u8 = 6;
-    const version_word = @as(u32, spirv_version_major) << 16 | @as(u32, spirv_version_minor) << 8;
-
-    const generator_magic: u32 = 0;
-    _ = .{ self, magic_number, version_word, generator_magic };
-
     for (self.parser.global_scope.body.items) |statement|
         try self.generateStatement(statement);
     for (self.types.items) |t| std.debug.print("T: {any}\n", .{t});
     for (self.global_constants.items) |c| std.debug.print("C: {any}\n", .{c});
+    for (self.global_variables.items) |gv| std.debug.print("GV: {any}\n", .{gv});
 
-    const result: []u32 = @constCast(&[0]u32{});
-    return result;
+    //compile all the parts into one slice
+    const spirv_magic: u32 = 0x07230203;
+    const spirv_version_major: u8 = 1;
+    const spirv_version_minor: u8 = 6;
+    const version_word = @as(u32, spirv_version_major) << 16 | @as(u32, spirv_version_minor) << 8;
+    const generator_magic: u32 = 0;
+
+    var result: List(u32) = .empty;
+    //add header
+    try result.appendSlice(
+        self.allocator,
+        &.{ spirv_magic, version_word, generator_magic, self.id, 0 },
+    );
+
+    return result.toOwnedSlice(self.allocator);
 }
 
 fn generateStatement(self: *Generator, statement: Parser.Statement) Error!void {
@@ -75,25 +83,93 @@ fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
         );
 
     //skip variables of 'incomplete' types
-    _ = self.castParserType(var_decl.type) catch |err| if (err == Error.InvalidSpirvType) return else return err;
+    const @"type" = self.castParserType(var_decl.type) catch |err| if (err == Error.InvalidSpirvType) return else return err;
+    const type_id = try self.getTypeID(@"type");
 
     const value: ?u32 = if (!var_decl.value.isEmptyExpression())
         try self.generateExpressionID(var_decl.value)
     else
         null;
-    return switch (var_decl.qualifier) {
-        .@"const" => value.?,
-        .out => ,
-        else => @panic("cant gen var with this qualifier"),
-    };
 
-    // std.debug.print("exprid: {any}\n", .{value});
+    //add name mappings!
+    if (var_decl.qualifier == .@"const") return;
+
+    const storage_class: StorageClass = switch (var_decl.qualifier) {
+        .@"var" => if (self.in_function) .function else .private,
+        .in => .input,
+        .out => .output,
+        else => @panic("idk how whats the storage class of this qualifier"),
+    };
+    const ptr_type_id = try self.getTypeID(
+        .{ .pointer = .{ .type = type_id, .storage_class = storage_class } },
+    );
+
+    const new_id = self.newID();
+    if (storage_class == .function) {
+        const consumed: u16 = if (value != null) 5 else 4;
+        try self.current_buf.appendSlice(
+            self.arena,
+            &.{ opWord(consumed, .variable), ptr_type_id, new_id, @intFromEnum(storage_class) },
+        );
+        if (value) |v| try self.current_buf.append(self.arena, v);
+    } else {
+        try self.global_variables.append(self.arena, .{
+            .id = new_id,
+            .type_id = ptr_type_id,
+            .storage_class = storage_class,
+            .initializer = value,
+            .from_function = self.in_function,
+        });
+        const gi = self.global_variables.items.len - 1;
+        if (self.in_function) {
+            if (storage_class == .input or storage_class == .output) {
+                try self.current_interfaces.append(self.arena, @truncate(gi));
+                try self.decorateLocationEntryPointIO(storage_class);
+            }
+        } else {
+            if (storage_class == .input or storage_class == .output)
+                try self.decorateLocationGlobalIo(storage_class);
+        }
+    }
+}
+fn decorateLocationGlobalIo(self: *Generator, storage_class: StorageClass) Error!void {
+    var location: u32 = 0;
+    for (self.global_variables.items[0 .. self.global_variables.items.len - 1]) |gv| {
+        if (gv.storage_class != storage_class) continue;
+        const location_consumption = 1;
+        location += location_consumption;
+    }
+    try self.decorations.appendSlice(self.arena, &.{
+        opWord(4, .decorate),
+        self.global_variables.items[self.global_variables.items.len - 1].id,
+        @intFromEnum(Decoration.location),
+        location,
+    });
+}
+//decorate last element of current_interfaces list with the correct location
+fn decorateLocationEntryPointIO(self: *Generator, storage_class: StorageClass) Error!void {
+    var location: u32 = 0;
+
+    for (self.current_interfaces.items[0 .. self.current_interfaces.items.len - 1]) |i| {
+        const variable = self.global_variables.items[i];
+        if (variable.storage_class != storage_class) continue;
+
+        const location_consumption = 1;
+        location += location_consumption;
+    }
+    try self.decorations.appendSlice(self.arena, &.{
+        opWord(4, .decorate),
+        self.current_interfaces.items[self.current_interfaces.items.len - 1],
+        @intFromEnum(Decoration.location),
+        location,
+    });
 }
 fn generateExpressionID(self: *Generator, expr: Expression) Error!u32 {
-    return switch (expr) {
+    const id = switch (expr) {
         .value => |value| try self.generateValueID(value),
         else => Error.GenError,
     };
+    return id;
 }
 fn generateValueID(self: *Generator, value: Parser.Value) Error!u32 {
     const @"type" = self.castParserType(value.type) catch unreachable;
@@ -159,33 +235,41 @@ fn getGlobalConstID(self: *Generator, global_constant: GlobalConstant) Error!u32
 }
 
 fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: Parser.EntryPoint) Error!void {
-    _ = .{ self, name, entry_point };
     const rtype = try self.getTypeID(.void);
     const function_type = try self.getTypeID(.{ .function = .{ .rtype = rtype } });
     const result = self.newID();
     var buf: List(u32) = .empty;
+    var interfaces: List(u32) = .empty;
+
+    for (self.global_variables.items, 0..) |gv, i|
+        if (gv.storage_class == .input or gv.storage_class == .output and !gv.from_function)
+            try interfaces.append(self.arena, @truncate(i));
 
     //op function
     try buf.appendSlice(
         self.arena,
-        &.{ opWord(5, 54), rtype, result, @intFromEnum(FunctionControl.none), function_type },
+        &.{ opWord(5, .function), rtype, result, @intFromEnum(FunctionControl.none), function_type },
     );
     const was_in_function = self.in_function;
     self.in_function = true;
+    self.current_interfaces = &interfaces;
 
     self.current_buf = &buf;
     for (entry_point.body.items) |statement| try self.generateStatement(statement);
 
     if (!was_in_function) self.in_function = false;
 
+    const io = try self.arena.alloc(u32, interfaces.items.len);
+    for (interfaces.items, 0..) |interface, i| io[i] = self.global_variables.items[interface].id;
+
     //op function end
-    try buf.append(self.arena, opWord(1, 56));
+    try buf.append(self.arena, opWord(1, .function_end));
     //track entry point
     try self.entry_points.append(self.arena, .{
         .id = result,
         .name = name,
         .stage_info = entry_point.stage_info,
-        .io = &.{}, //get from parsing the body
+        .io = io, //get from parsing the body
     });
 
     try self.instructions.appendSlice(self.arena, buf.items);
@@ -226,19 +310,30 @@ fn castParserType(self: *Generator, ptype: Parser.Type) Error!Type {
     };
 }
 
-fn opWord(count: u16, op_code: u16) u32 {
-    return (@as(u32, count) << 16) | @as(u32, op_code);
+fn opWord(count: u16, op: Op) u32 {
+    return (@as(u32, count) << 16) | @intFromEnum(op);
 }
 
 pub fn newID(self: *Generator) u32 {
     defer self.id += 1;
     return self.id;
 }
+const Op = enum(u32) {
+    decorate = 71,
+    function = 54,
+    function_end = 56,
+    variable = 59,
+};
+const Decoration = enum(u32) {
+    location = 30,
+};
 
-const GlobalVariableEntry = struct { id: u32, value: GlobalVariable };
 const GlobalVariable = struct {
+    id: u32,
     type_id: u32,
     storage_class: StorageClass,
+    initializer: ?u32,
+    from_function: bool,
 };
 const GlobalConstantEntry = struct { id: u32, value: GlobalConstant };
 const GlobalConstant = struct {
@@ -266,7 +361,6 @@ const FunctionControl = enum(u32) {
     pure = 3,
     @"const" = 4,
 };
-
 const EntryPoint = struct {
     id: u32,
     name: []const u8,
@@ -275,7 +369,6 @@ const EntryPoint = struct {
 };
 
 const TypeEntry = struct { id: u32, type: Type };
-const Decoration = struct {};
 const Capabilities = packed struct {
     shader: bool = true,
 };
@@ -298,7 +391,7 @@ const Type = union(enum) {
     image: void,
     //sampled_image???
 
-    ptr: PointerType,
+    pointer: PointerType,
     function: FunctionType,
     pub fn eql(a: Type, b: Type) bool {
         return if (std.meta.activeTag(a) != std.meta.activeTag(b)) false else switch (a) {
@@ -340,6 +433,7 @@ const ExecutionModel = enum(u32) {
 
 const StorageClass = enum(u32) {
     function = 7,
+    private = 6,
 
     uniform_constant = 0,
     uniform = 2,
