@@ -193,7 +193,7 @@ fn parseVariableDecl(self: *Parser, token: Token) Error!Statement {
         .qualifier = qualifier,
         .name = name_token.identifier,
         .type = @"type",
-        .value = if (value) |v| v else Expression{ .value = .{ .type = .unknown } },
+        .value = if (value) |v| v else Expression.empty,
     } };
 }
 
@@ -503,7 +503,9 @@ pub const Expression = union(enum) {
     @"switch",
 
     value: Value,
+    pub const empty = Expression{ .value = .{ .type = .type, .payload = .{ .type = .unknown } } };
     pub const format = debug.formatExpression;
+
     pub fn shouldTurnIntoIntermediate(self: Expression) bool {
         return switch (self) {
             .value, .identifier => false,

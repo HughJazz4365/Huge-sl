@@ -212,6 +212,7 @@ fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
     const @"type" = self.convertParserType(var_decl.type) catch |err| if (err == Error.InvalidSpirvType) return else return err;
     const type_id = try self.getTypeID(@"type");
 
+    std.debug.print("VALEXPR: {any}\n", .{var_decl.value});
     const value: ?u32 = if (!var_decl.value.isEmptyExpression())
         try self.generateExpressionID(var_decl.value)
     else
@@ -436,7 +437,10 @@ fn convertParserType(self: *Generator, ptype: Parser.Type) Error!Type {
             .len = @intFromEnum(vector.len),
         } },
         .void => .void,
-        else => return Error.InvalidSpirvType,
+        else => {
+            std.debug.print("T in question: {f}\n", .{ptype});
+            return Error.InvalidSpirvType;
+        },
     };
 }
 

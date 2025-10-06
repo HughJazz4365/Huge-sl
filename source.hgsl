@@ -1,23 +1,23 @@
-in normal : vec3
+//blinn phong lighting model
+
+in normal: vec3
+in world_pos: vec3
+
+push(.pub) eye_pos: vec3 //public push constant (exposed to shader system)
+const light_dir = |vec3{0.25, -1, 0.34}
+const light_color = @colHex(0xFA_FA_55)
+
+const ambient_intensity = 0.1 //can be a vec3
+
+const spec_pow = 30
+const spec_intensity = 1
 
 const main = entrypoint(.fragment){
-	out out_col : vec4
+	const albedo = @colHex(0xFF_F8_F7)
+	const diffuse_color = -light_dir ; normal
 
-	var exposure: f32 = -1.2 ^ 2
-	var albedo: vec3 = vec3{0.01 + 0.3, 3.3, 1.76 - 0.25}} 
+	const view_dir = |(eye_pos - world_pos)
+	const specular_color = (|@reflect(-light_dir, normal) ; view_dir) ^ spec_pow * spec_intensity
 
-	out_col = .{albedo * exposure, 1}
+	out color = (albedo * (.{diffuse_color + ambient_intensity} + specular_color)).xyz1
 }
-
-// const double = fn(x) f32{
-// 	return x * 2
-// }
-
-//things to do there:
-//[3 ]: global stage io
-//[5 ]: @builtin scope //@ShaderStage.fragment
-//[6 ]: enums
-//[7 ]: entrypoint scope stage io
-//[12]: mutable variables
-//[16]: vector swizzle
-//[17]: '1' in vector swizzle
