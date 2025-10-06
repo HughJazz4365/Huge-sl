@@ -71,7 +71,7 @@ pub fn turnIntoIntermediateVariableIfNeeded(self: *Parser, expr: Expression) Err
     return .{ .identifier = name };
 }
 pub fn createIntermediateVariableName(self: *Parser) Error![]u8 {
-    const prefix = "IV";
+    const prefix = "IV ";
     const slice = try self.arena.allocator().alloc(u8, prefix.len + 4);
     @memcpy(slice[0..prefix.len], prefix);
     const byteptr: [*]const u8 = @ptrCast(@alignCast(&self.intermediate_value_index));

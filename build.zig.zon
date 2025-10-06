@@ -1,13 +1,8 @@
 .{
-    .name = .sl,
+    .name = .Huge_sl,
     .version = "0.0.1",
     .minimum_zig_version = "0.15.1",
     .paths = .{""},
-    .dependencies = .{
-        .shaderc = .{ .path = "lib/shaderc" },
-        .glslang = .{ .path = "lib/glslang" },
-        .@"spirv-headers" = .{ .path = "lib/SPIRV-Headers" },
-        .@"spirv-tools" = .{ .path = "lib/SPIRV-Tools" },
-    },
-    .fingerprint = 0x1cf15b90dd8bcfd,
+    .dependencies = .{},
+    .fingerprint = 0xb17bbab5b793d582,
 }

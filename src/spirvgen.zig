@@ -201,7 +201,7 @@ fn generateStatement(self: *Generator, statement: Parser.Statement) Error!void {
     }
 }
 fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
-    std.debug.print("{s} vd: {d}\n", .{ var_decl.name, var_decl.reference_count });
+    // std.debug.print("{s} vd: {d}\n", .{ var_decl.name, var_decl.reference_count });
     if (var_decl.type == .entrypoint)
         return try self.generateEntryPoint(
             var_decl.name,
