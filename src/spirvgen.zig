@@ -15,6 +15,7 @@ allocator: Allocator,
 arena: Allocator,
 parser: *Parser,
 
+//id of '0' is reserved
 id: u32 = 1,
 
 // spirv module structure
@@ -83,7 +84,7 @@ pub fn generate(self: *Generator) Error![]u32 {
 
     //entry point
     for (self.entry_points.items) |entry_point| {
-        const execution_model: u32 = switch (entry_point.stage_info) {
+        const execution_mode: u32 = switch (entry_point.stage_info) {
             .vertex => 0,
             .fragment => 4,
             .compute => 5,
@@ -92,7 +93,7 @@ pub fn generate(self: *Generator) Error![]u32 {
 
         try result.appendSlice(&.{
             opWord(@truncate(3 + entry_point.io.len + name_len), .entry_point),
-            execution_model,
+            execution_mode,
             entry_point.id,
         });
         const name_index = result.items.len;
@@ -100,6 +101,21 @@ pub fn generate(self: *Generator) Error![]u32 {
         for (entry_point.name, 0..) |char, i|
             result.items[name_index + i / 4] |= @as(u32, char) << @intCast((i & 3) * 8);
         try result.appendSlice(entry_point.io);
+    }
+    //execution modes
+    for (self.entry_points.items) |entry_point| {
+        switch (entry_point.stage_info) {
+            .fragment => try result.appendSlice(&.{
+                opWord(3, .execution_mode),
+                entry_point.id,
+                @intFromEnum(ExecutionMode.origin_upper_left),
+            }),
+
+            else => {},
+            // .vertex => 0,
+            // .fragment => 4,
+            // .compute => 5,
+        }
     }
 
     //append decorations section
@@ -179,7 +195,6 @@ pub fn generate(self: *Generator) Error![]u32 {
 }
 
 fn generateStatement(self: *Generator, statement: Parser.Statement) Error!void {
-    std.debug.print("STATEMENT: {f}\n", .{statement});
     switch (statement) {
         .var_decl => |var_decl| try self.generateVarDecl(var_decl),
         else => @panic("cant gen that statement"),
@@ -194,7 +209,7 @@ fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
         );
 
     //skip variables of 'incomplete' types
-    const @"type" = self.castParserType(var_decl.type) catch |err| if (err == Error.InvalidSpirvType) return else return err;
+    const @"type" = self.convertParserType(var_decl.type) catch |err| if (err == Error.InvalidSpirvType) return else return err;
     const type_id = try self.getTypeID(@"type");
 
     const value: ?u32 = if (!var_decl.value.isEmptyExpression())
@@ -283,7 +298,7 @@ fn generateExpressionID(self: *Generator, expr: Expression) Error!u32 {
     return id;
 }
 fn generateValueID(self: *Generator, value: Parser.Value) Error!u32 {
-    const @"type" = self.castParserType(value.type) catch unreachable;
+    const @"type" = self.convertParserType(value.type) catch unreachable;
     const type_id = try self.getTypeID(@"type");
     return switch (value.type) {
         .number => |number| switch (number.width) {
@@ -361,6 +376,8 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: Parser.En
         self.arena,
         &.{ opWord(5, .function), rtype, result, @intFromEnum(FunctionControl.none), function_type },
     );
+    //op label
+    try buf.appendSlice(self.arena, &.{ opWord(2, .label), self.newID() });
     const was_in_function = self.in_function;
     self.in_function = true;
     self.current_interfaces = &interfaces;
@@ -373,6 +390,8 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: Parser.En
     const io = try self.arena.alloc(u32, interfaces.items.len);
     for (interfaces.items, 0..) |interface, i| io[i] = self.global_variables.items[interface].id;
 
+    //op return
+    try buf.append(self.arena, opWord(1, .@"return"));
     //op function end
     try buf.append(self.arena, opWord(1, .function_end));
     //track entry point
@@ -403,7 +422,7 @@ fn getTypeID(self: *Generator, @"type": Type) Error!u32 {
     try self.types.append(self.arena, .{ .type = @"type", .id = new_id });
     return new_id;
 }
-fn castParserType(self: *Generator, ptype: Parser.Type) Error!Type {
+fn convertParserType(self: *Generator, ptype: Parser.Type) Error!Type {
     return switch (ptype) {
         .number => |number| switch (number.type) {
             .float => .{ .float = .{ .width = @intFromEnum(number.width) } },
@@ -413,7 +432,7 @@ fn castParserType(self: *Generator, ptype: Parser.Type) Error!Type {
             } },
         },
         .vector => |vector| .{ .vector = .{
-            .component_type = try self.getTypeID(try self.castParserType(.{ .number = vector.component })),
+            .component_type = try self.getTypeID(try self.convertParserType(.{ .number = vector.component })),
             .len = @intFromEnum(vector.len),
         } },
         .void => .void,
@@ -444,13 +463,18 @@ const Op = enum(u32) {
     type_pointer = 32,
     type_function = 33,
 
-    entry_point = 15,
     capability = 17,
-    decorate = 71,
-    function = 54,
-    function_end = 56,
-    variable = 59,
+    entry_point = 15,
+    execution_mode = 16,
     memory_model = 14,
+    decorate = 71,
+
+    function = 54,
+    label = 248,
+    @"return" = 253,
+    function_end = 56,
+
+    variable = 59,
 };
 const Decoration = enum(u32) {
     location = 30,
@@ -568,6 +592,10 @@ const ArrayType = struct { elem_type: u32, len: u32 };
 const PointerType = struct { type: u32, storage_class: StorageClass };
 const FunctionType = struct { rtype: u32, arg_types: []u32 = &.{} };
 
+const ExecutionMode = enum(u32) {
+    origin_upper_left = 7,
+    origin_lower_left = 8,
+};
 const ExecutionModel = enum(u32) {
     vertex = 0,
     tesselation_control = 1,

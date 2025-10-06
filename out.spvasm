@@ -1,12 +1,13 @@
 ; SPIR-V
 ; Version: 1.6
 ; Generator: Khronos; 0
-; Bound: 11
+; Bound: 12
 ; Schema: 0
                OpCapability Shader
                OpMemoryModel Logical GLSL450
-               OpEntryPoint Fragment %3 "main" %10
-               OpDecorate %10 Location 0
+               OpEntryPoint Fragment %3 "main" %11
+               OpExecutionMode %3 OriginUpperLeft
+               OpDecorate %11 Location 0
        %void = OpTypeVoid
           %2 = OpTypeFunction %void
       %float = OpTypeFloat 32
@@ -14,7 +15,9 @@
 %_ptr_Output_v4float = OpTypePointer Output %v4float
 %float_0_800000012 = OpConstant %float 0.800000012
     %float_1 = OpConstant %float 1
-          %8 = OpConstantComposite %v4float %float_0_800000012 %float_0_800000012 %float_0_800000012 %float_1
-         %10 = OpVariable %_ptr_Output_v4float Output %8
+          %9 = OpConstantComposite %v4float %float_0_800000012 %float_0_800000012 %float_0_800000012 %float_1
+         %11 = OpVariable %_ptr_Output_v4float Output %9
           %3 = OpFunction %void None %2
+          %4 = OpLabel
+               OpReturn
                OpFunctionEnd
