@@ -3,6 +3,7 @@ const util = @import("util.zig");
 const tp = @import("type.zig");
 const Tokenizer = @This();
 const Parser = @import("Parser.zig");
+const ErrorCtx = @import("errorctx.zig");
 
 pub const Error = error{InvalidInput};
 const State = struct {
@@ -11,14 +12,15 @@ const State = struct {
 };
 state: State,
 
-start_ptr: [*]const u8,
+full_source: []const u8,
+err_ctx: *ErrorCtx,
 
-///assumes that there will be no error
-pub inline fn skipErr(self: *Tokenizer) Error!void {
+pub fn skipErr(self: *Tokenizer) Error!void {
     _ = try self.next();
 }
 
-pub inline fn skip(self: *Tokenizer) void {
+///assumes token was already peeked
+pub fn skip(self: *Tokenizer) void {
     _ = self.next() catch unreachable;
 }
 
@@ -52,7 +54,7 @@ fn nextFat(self: *Tokenizer) Error!FatToken {
     };
     inline for (keywords) |tag| {
         if (if (@intFromEnum(tag) >= @intFromEnum(TokenTag.@"const"))
-            util.strExtract(bytes, @tagName(tag))
+            strExtract(bytes, @tagName(tag))
         else
             util.strStarts(bytes, @tagName(tag))) return .{
             .len = @tagName(tag).len,
@@ -88,13 +90,14 @@ fn nextFat(self: *Tokenizer) Error!FatToken {
     if (getTypeLiteralRaw(bytes)) |t| return t;
 
     // strip valid identifier
-    const valid_identifier = try util.stripValidIdentifier(bytes);
+    const valid_identifier = try self.stripValidIdentifier(bytes);
 
     return .{
         .len = valid_identifier.len,
         .token = .{ .identifier = valid_identifier },
     };
 }
+
 const FatToken = struct { len: usize, token: Token };
 fn getNumberLiteralRaw(bytes: []const u8) ?FatToken {
     const neg = bytes[0] == '-';
@@ -126,17 +129,17 @@ fn getNumberLiteralRaw(bytes: []const u8) ?FatToken {
 
 fn getTypeLiteralRaw(bytes: []const u8) ?FatToken {
     inline for (.{ "void", "bool", "type", "compint", "compfloat" }) |s| {
-        if (util.strExtract(bytes, s))
+        if (strExtract(bytes, s))
             return .{ .len = s.len, .token = .{ .type_literal = @unionInit(tp.Type, s, {}) } };
     }
     inline for (comptime tp.Vector.allVectors()) |v| {
         const vec_literal = comptime v.literalComp();
-        if (util.strExtract(bytes, vec_literal))
+        if (strExtract(bytes, vec_literal))
             return .{ .len = vec_literal.len, .token = .{ .type_literal = .{ .vector = v } } };
     }
     inline for (comptime tp.Number.allNumbers()) |v| {
         const num_literal = comptime v.literalComp();
-        if (util.strExtract(bytes, num_literal))
+        if (strExtract(bytes, num_literal))
             return .{ .len = num_literal.len, .token = .{ .type_literal = .{ .number = v } } };
     }
     return null;
@@ -157,10 +160,10 @@ pub fn nextBytes(self: *Tokenizer) RawToken {
                 in_comment = true;
                 break :blk .{ false, comment_symbol.len };
             }
-            if (char == '\n' or util.strStartsComp(self.state.source[count..], "\r\n")) {
+            if (util.startingEndlLength(self.state.source)) |l| {
                 is_endl = true;
                 in_comment = false;
-                break :blk .{ false, if (char == '\n') 1 else 2 };
+                break :blk .{ false, l };
             }
             break :blk .{ !isWhitespace(char) and !in_comment, 1 };
         };
@@ -180,19 +183,65 @@ pub fn nextBytes(self: *Tokenizer) RawToken {
 fn isWhitespace(char: u8) bool {
     return char == ' ' or char == '\t';
 }
+fn strExtract(haystack: []const u8, needle: []const u8) bool {
+    if (!util.strStarts(haystack, needle)) return false;
+    if (haystack.len == needle.len) return true;
+    return !isIdentifierChar(haystack[needle.len]);
+}
+fn stripValidIdentifier(self: *Tokenizer, bytes: []const u8) Error![]const u8 {
+    var letter = false;
+    var global = false;
+    const end = for (bytes, 0..) |char, i| {
+        if (!switch (char) {
+            'a'...'z', 'A'...'Z' => blk: {
+                letter = true;
+                break :blk true;
+            },
+            '_' => true,
+            '@' => blk: {
+                global = true;
+                break :blk i == 0;
+            },
+            '0'...'9' => i != @as(usize, @intFromBool(global)),
+            else => false,
+        }) break i;
+    } else bytes.len;
+    if (!letter) {
+        const offset = @intFromPtr(bytes.ptr) - @intFromPtr(self.full_source.ptr);
+        if (end == 0) {
+            self.err_ctx.printError(offset, Error.InvalidInput, "Invalid character: \'{c}\'", .{bytes[0]});
+        } else self.err_ctx.printError(offset, Error.InvalidInput, "Invalid identifier: \'{s}\'", .{bytes[0..end]});
+        return Error.InvalidInput;
+    }
+    //  return self.errorOut();
 
-inline fn shift(self: *Tokenizer, amount: usize) void {
+    return bytes[0..end];
+}
+fn isIdentifierChar(char: u8) bool {
+    return switch (char) {
+        'a'...'z',
+        'A'...'Z',
+        '0'...'9',
+        '_',
+        '@',
+        => true,
+        else => false,
+    };
+}
+
+fn shift(self: *Tokenizer, amount: usize) void {
     self.state.source = self.state.source[amount..];
 }
 const RawToken = union(enum) { eof, endl, valid: []const u8 };
 
-pub fn new(source: []const u8) Tokenizer {
+pub fn new(source: []const u8, err_ctx: *ErrorCtx) Tokenizer {
     return .{
         .state = .{
             .source = source,
             .last = .eof,
         },
-        .start_ptr = source.ptr,
+        .err_ctx = err_ctx,
+        .full_source = source,
     };
 }
 
@@ -229,7 +278,7 @@ pub const Token = union(enum) {
     in,
     out,
     uniform,
-    property,
+    push,
     shared,
 
     @"if",

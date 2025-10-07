@@ -101,7 +101,7 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
 
     return switch (token) {
         .eof => null,
-        .@"const", .@"var", .uniform, .property, .shared, .out, .in => blk: {
+        .@"const", .@"var", .uniform, .push, .shared, .out, .in => blk: {
             self.tokenizer.skip();
             break :blk try self.parseVariableDecl(token);
         },
@@ -636,7 +636,7 @@ fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
         .@"const" => .@"const",
         .@"var" => .@"var",
         .uniform => .uniform,
-        .property => .property,
+        .push => .push,
         .shared => .shared,
         else => Error.UnexpectedToken,
     };
@@ -646,12 +646,12 @@ pub const Qualifier = union(enum) {
     @"var",
     shared,
     uniform,
-    property,
+    push,
     in: bi.InterpolationQualifier,
     out: bi.InterpolationQualifier,
     pub fn isMutable(self: Qualifier) bool {
         return switch (self) {
-            .@"const", .in, .uniform, .property => false,
+            .@"const", .in, .uniform, .push => false,
             else => true,
         };
     }
