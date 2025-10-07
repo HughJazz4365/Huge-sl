@@ -9,6 +9,7 @@ pub const Error = error{InvalidInput};
 const State = struct {
     source: []const u8,
     last: Token = .eof,
+    last_ptr: [*]const u8 = undefined,
 };
 state: State,
 
@@ -41,6 +42,7 @@ pub fn peek(self: *Tokenizer) Error!Token {
 }
 pub fn next(self: *Tokenizer) Error!Token {
     const fat = try self.nextFat();
+    self.state.last_ptr = self.state.source.ptr;
     self.shift(fat.len);
     self.state.last = fat.token;
     return fat.token;
@@ -207,10 +209,12 @@ fn stripValidIdentifier(self: *Tokenizer, bytes: []const u8) Error![]const u8 {
         }) break i;
     } else bytes.len;
     if (!letter) {
+        // _ = self;
         const offset = @intFromPtr(bytes.ptr) - @intFromPtr(self.full_source.ptr);
-        if (end == 0) {
-            self.err_ctx.printError(offset, Error.InvalidInput, "Invalid character: \'{c}\'", .{bytes[0]});
-        } else self.err_ctx.printError(offset, Error.InvalidInput, "Invalid identifier: \'{s}\'", .{bytes[0..end]});
+        self.err_ctx.printError(offset, Error.InvalidInput, "", .{});
+        // if (end == 0) {
+        //     self.err_ctx.printError(offset, Error.InvalidInput, "Invalid character: \'{c}\'", .{bytes[0]});
+        // } else self.err_ctx.printError(offset, Error.InvalidInput, "Invalid identifier: \'{s}\'", .{bytes[0..1]});
         return Error.InvalidInput;
     }
     //  return self.errorOut();
@@ -333,5 +337,6 @@ pub const UnaryOperator = util.SortEnumDecending(
     enum {
         @"-",
         @"+",
+        @"|",
     },
 );

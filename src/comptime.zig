@@ -4,8 +4,17 @@ const util = @import("util.zig");
 const Parser = @import("Parser.zig");
 
 const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(i128, -1)) } };
-pub fn refine(self: *Parser, expr: Expression) Error!Expression {
-    const result = switch (expr) {
+
+pub fn refineTopLevel(self: *Parser, expr: Expression) Error!Expression {
+    const result = try refine(self, expr);
+    if (expr == .identifier and result == .identifier and util.strEql(expr.identifier, result.identifier)) {
+        std.debug.print("exprref: {f}\n", .{result});
+        try self.current_scope.trackReference(result.identifier, .track);
+    }
+    return result;
+}
+fn refine(self: *Parser, expr: Expression) Error!Expression {
+    return switch (expr) {
         .bin_op => |bin_op| try refineBinOp(self, bin_op),
         .u_op => |u_op| try refineUOp(self, u_op),
         .constructor => |constructor| try refineConstructor(self, constructor),
@@ -14,13 +23,8 @@ pub fn refine(self: *Parser, expr: Expression) Error!Expression {
         .identifier => |identifier| try refineIdentifier(self, identifier),
         else => expr,
     };
-    if (expr == .identifier and result == .identifier) {
-        std.debug.print("exprref: {f}\n", .{result});
-        try self.current_scope.trackReference(result.identifier, .track);
-    }
-    return result;
 }
-inline fn refineIdentifier(self: *Parser, identifier: []const u8) Error!Expression {
+fn refineIdentifier(self: *Parser, identifier: []const u8) Error!Expression {
     const var_ref = try self.current_scope.getVariableReferece(identifier);
     return if (var_ref.isComptime()) var_ref.value.* else .{ .identifier = identifier };
 }
@@ -129,7 +133,7 @@ fn refineConstructor(self: *Parser, constructor: Parser.Constructor) Error!Expre
     if (constructor.type == .unknown) return initial;
 
     const target_structure = constructor.type.constructorStructure();
-    if (target_structure.len <= 1) return Error.InvalidConstructor;
+    if (target_structure.len <= 1) return self.errorOut(Error.InvalidConstructor);
 
     const slice = if (constructor.components.len == target_structure.len)
         constructor.components
@@ -138,7 +142,10 @@ fn refineConstructor(self: *Parser, constructor: Parser.Constructor) Error!Expre
 
     var filled_count: usize = 0;
     for (constructor.components) |source_component| {
-        if (filled_count >= slice.len) return Error.InvalidConstructor;
+        if (filled_count >= slice.len) {
+            filled_count += 1;
+            continue;
+        }
         slice[filled_count] = self.implicitCast(source_component, target_structure.component) catch {
             // if (component_structure.len <= 1) return Error.CannotImplicitlyCast;
             const splitted_component = try self.turnIntoIntermediateVariableIfNeeded(source_component);
@@ -154,7 +161,11 @@ fn refineConstructor(self: *Parser, constructor: Parser.Constructor) Error!Expre
         filled_count += 1;
         continue;
     }
-    if (filled_count != target_structure.len) return Error.InvalidConstructor;
+    if (filled_count != target_structure.len) return self.errorOutFmt(
+        Error.InvalidConstructor,
+        "Constructor component count doest match that of a target type({f}). given: {d}, expected: {d}",
+        .{ constructor.type, filled_count, target_structure.len },
+    );
     return try constructValue(self, .{ .type = constructor.type, .components = slice });
 }
 
@@ -208,7 +219,7 @@ const ElementIterator = struct {
             return try refine(parser, .{ .indexing = .{ .target = self.expr, .index = ptr } });
         }
     }
-    pub inline fn new(parser: *Parser, expr: Expression) Error!ElementIterator {
+    pub fn new(parser: *Parser, expr: Expression) Error!ElementIterator {
         const @"type" = try parser.typeOf(expr);
         if (!(@"type" == .array or @"type" == .vector or (@"type" == .unknown and expr == .constructor))) return Error.CannotImplicitlyCast;
         return .{ .expr = try parser.createVal(expr) };
@@ -222,7 +233,8 @@ fn refineUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
     const target = if (u_op.target.* != .value) return initial else u_op.target.value;
     return switch (u_op.op) {
         .@"-" => .{ .value = try mulValues(self, target, minusonecompint) },
-        .@"+" => initial,
+        .@"+" => u_op.target.*,
+        else => initial,
         // .@"-" => .{ .value = try addValues(left, try mulValues(right, minusonecompint)) },
     };
 }

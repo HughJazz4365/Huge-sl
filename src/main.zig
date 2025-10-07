@@ -15,7 +15,7 @@ pub fn main() !void {
     // var gpa = std.heap.DebugAllocator(.{}){};
     // defer _ = gpa.deinit();
 
-    const compiled = try hgsl.compileFile(allocator, path);
+    const compiled = try hgsl.compileFile(allocator, path, &out_writer.interface);
     defer allocator.free(compiled);
     const measure = timer.read();
     // _ = measure;

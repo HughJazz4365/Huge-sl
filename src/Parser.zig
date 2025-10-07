@@ -41,6 +41,15 @@ pub const Error = error{
     NegativePower, //a ^ (- |r|)
 } || Tokenizer.Error;
 
+pub fn errorOut(self: *Parser, err: Error) Error {
+    return self.errorOutFmt(err, "", .{});
+}
+pub fn errorOutFmt(self: *Parser, err: Error, comptime fmt: []const u8, args: anytype) Error {
+    const offset = @intFromPtr(self.tokenizer.state.last_ptr) - @intFromPtr(self.tokenizer.full_source.ptr);
+    self.tokenizer.err_ctx.printError(offset, err, fmt, args);
+    return err;
+}
+
 pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
     var self: Parser = .{};
     self.allocator = allocator;
@@ -708,7 +717,7 @@ const ShouldStopFn = fn (*Parser, Token) Error!bool;
 const List = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const BinaryOperator = Tokenizer.BinaryOperator;
-pub const refine = ct.refine;
+pub const refine = ct.refineTopLevel;
 pub const Type = tp.Type;
 pub const FunctionType = tp.FunctionType;
 const UnaryOperator = Tokenizer.UnaryOperator;

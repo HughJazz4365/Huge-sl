@@ -30,7 +30,7 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
             if (v.component.type == .float) "" else v.component.type.prefix(),
             @intFromEnum(v.len),
         }),
-        .unknown => try writer.print("[?]", .{}),
+        .unknown => try writer.print("[UNKNOWNTYPE]", .{}),
         else => try writer.print("{s}", .{@tagName(t)}),
     }
 }
