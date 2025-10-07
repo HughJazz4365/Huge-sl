@@ -30,8 +30,10 @@ pub const Error = error{
     CannotImplicitlyCast,
     CannotExplicitlyCast,
     CannotInferType,
+    VariableOfUnknownType,
 
     InvalidOperands,
+    InvalidUnaryOperationTarget,
     InvalidConstructor,
     InvalidIndex,
 
@@ -75,7 +77,7 @@ pub fn turnIntoIntermediateVariableIfNeeded(self: *Parser, expr: Expression) Err
         .qualifier = .@"const",
         .name = name,
         .type = try self.typeOf(expr),
-        .value = expr,
+        .initializer = expr,
     } });
     return .{ .identifier = name };
 }
@@ -178,40 +180,37 @@ fn parseVariableDecl(self: *Parser, token: Token) Error!Statement {
         break :blk self.asType(expr) orelse return Error.UnexpectedToken;
     };
 
-    const value: ?Expression = blk: {
+    const initializer: ?Expression = blk: {
         const next = try self.tokenizer.peek();
         if (next != .@"=") break :blk null;
         self.tokenizer.skip();
         var expr = try self.parseExpression(defaultShouldStop);
+
         if (@"type" != .unknown)
             expr = try self.implicitCast(expr, @"type")
-        else
+        else {
             @"type" = try self.typeOf(expr);
-
-        if (!@"type".isComplete()) {
-            expr = try self.makeExprCompleteType(expr);
-            @"type" = try self.typeOf(expr);
-            if (!@"type".isComplete()) return Error.CannotInferType;
+            if (!@"type".isComplete()) return self.errorOutFmt(
+                Error.VariableOfUnknownType,
+                "Cannot infer variable type since the type of inilializer expressions type is unknown",
+                .{},
+            );
         }
         break :blk expr;
     };
-    if (value == null and qualifier == .@"const") return Error.NoValueConstant;
-    if (value != null and qualifier == .in) return Error.StageInputCantHaveInitialValue;
+    if (initializer == null and qualifier == .@"const") return Error.NoValueConstant;
+    if (initializer != null and qualifier == .in) return Error.StageInputCantHaveInitialValue;
 
     return .{ .var_decl = .{
         .qualifier = qualifier,
         .name = name_token.identifier,
         .type = @"type",
-        .value = if (value) |v| v else Expression.empty,
+        .initializer = if (initializer) |v| v else Expression.empty,
     } };
 }
 
-fn makeExprCompleteType(self: *Parser, expr: Expression) Error!Expression {
-    _ = self;
-    return expr;
-}
 pub const Statement = union(enum) {
-    var_decl: VariableDecl,
+    var_decl: VariableDeclaration,
     //   [qualifier] [name] {:} {type expr} {=} {value expr}
     assignment: Assignment,
     //   [target expr] {binop} [=] [value expr]
@@ -224,18 +223,18 @@ pub const Assignment = struct {
     target: Expression,
     value: Expression,
 };
-pub const VariableDecl = struct {
+pub const VariableDeclaration = struct {
     qualifier: Qualifier,
     name: []const u8,
     type: Type,
-    value: Expression,
+    initializer: Expression,
     reference_count: u32 = 0,
 
-    pub fn variableReference(self: *VariableDecl) VariableReference {
+    pub fn variableReference(self: *VariableDeclaration) VariableReference {
         return .{
             .is_mutable = self.qualifier.isMutable(),
             .type = self.type,
-            .value = &self.value,
+            .value = &self.initializer,
         };
     }
 };
@@ -304,7 +303,7 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
     var expr: Expression = switch (token) {
         .u_op => |u_op| .{ .u_op = .{
             .op = u_op,
-            .target = try self.createVal(try self.parseExpressionSide()),
+            .target = try self.createVal(try self.refine(try self.parseExpressionSide())),
         } },
         .identifier => |id| blk: {
             const name = id;
@@ -466,8 +465,14 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
         .cast => |cast| cast.type,
         .identifier => |identifier| (try self.current_scope.getVariableReferece(identifier)).type,
         .bin_op => |bin_op| try self.typeOfBinOp(bin_op),
+        .u_op => |u_op| try self.typeOfUOp(u_op),
         .indexing => |indexing| (try self.typeOf(indexing.target.*)).constructorStructure().component,
         else => .unknown,
+    };
+}
+fn typeOfUOp(self: *Parser, u_op: UOp) Error!Type {
+    return switch (u_op.op) {
+        else => try self.typeOf(u_op.target.*),
     };
 }
 fn typeOfBinOp(self: *Parser, bin_op: BinOp) Error!Type {

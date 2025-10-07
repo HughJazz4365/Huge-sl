@@ -42,7 +42,6 @@ pub fn peek(self: *Tokenizer) Error!Token {
 }
 pub fn next(self: *Tokenizer) Error!Token {
     const fat = try self.nextFat();
-    self.state.last_ptr = self.state.source.ptr;
     self.shift(fat.len);
     self.state.last = fat.token;
     return fat.token;
@@ -177,10 +176,9 @@ pub fn nextBytes(self: *Tokenizer) RawToken {
             self.shift(is_valid[1]);
         }
     }
-    return if (count == 0)
-        if (is_endl) .endl else .eof
-    else
-        .{ .valid = self.state.source[0..count] };
+    if (count == 0) return if (is_endl) .endl else .eof;
+    self.state.last_ptr = self.state.source.ptr;
+    return .{ .valid = self.state.source[0..count] };
 }
 fn isWhitespace(char: u8) bool {
     return char == ' ' or char == '\t';
@@ -337,6 +335,7 @@ pub const UnaryOperator = util.SortEnumDecending(
     enum {
         @"-",
         @"+",
-        @"|",
+        @"|", //normalize
+
     },
 );

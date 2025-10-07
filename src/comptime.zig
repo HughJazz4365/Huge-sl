@@ -6,6 +6,8 @@ const Parser = @import("Parser.zig");
 const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(i128, -1)) } };
 
 pub fn refineTopLevel(self: *Parser, expr: Expression) Error!Expression {
+    // std.debug.print("expr: {any}\n", .{expr});
+
     const result = try refine(self, expr);
     if (expr == .identifier and result == .identifier and util.strEql(expr.identifier, result.identifier)) {
         std.debug.print("exprref: {f}\n", .{result});
@@ -234,9 +236,30 @@ fn refineUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
     return switch (u_op.op) {
         .@"-" => .{ .value = try mulValues(self, target, minusonecompint) },
         .@"+" => u_op.target.*,
-        else => initial,
+        .@"|" => blk: {
+            const @"type" = try self.typeOf(u_op.target.*);
+            if (@"type" != .vector or @"type".vector.component.type != .float)
+                return self.errorOutFmt(Error.InvalidUnaryOperationTarget, "Only floating point vectors can be normalized", .{});
+            if (u_op.target.* != .value) break :blk initial;
+            normalizeValue(u_op.target.value);
+            break :blk u_op.target.*;
+        },
+        // else => initial,
         // .@"-" => .{ .value = try addValues(left, try mulValues(right, minusonecompint)) },
     };
+}
+fn normalizeValue(value: Parser.Value) void {
+    switch (value.type.vector.len) {
+        inline else => |len| switch (value.type.vector.component.width) {
+            inline else => |width| {
+                const comptype: Type = .{ .vector = .{ .len = len, .component = .{ .type = .float, .width = width } } };
+                const T = comptype.ToZig();
+                const vec_ptr: *T = @ptrCast(@alignCast(@constCast(value.payload.ptr)));
+                const val = vec_ptr.*;
+                vec_ptr.* *= @as(T, @splat(1 / @sqrt(@reduce(.Add, val * val))));
+            },
+        },
+    }
 }
 
 fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {

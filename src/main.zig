@@ -12,8 +12,6 @@ pub fn main() !void {
     const path = "source.hgsl";
 
     const allocator = std.heap.page_allocator;
-    // var gpa = std.heap.DebugAllocator(.{}){};
-    // defer _ = gpa.deinit();
 
     const compiled = try hgsl.compileFile(allocator, path, &out_writer.interface);
     defer allocator.free(compiled);
