@@ -200,21 +200,21 @@ fn generateStatement(self: *Generator, statement: Parser.Statement) Error!void {
         else => @panic("cant gen that statement"),
     }
 }
-fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDecl) Error!void {
+fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDeclaration) Error!void {
     // std.debug.print("{s} vd: {d}\n", .{ var_decl.name, var_decl.reference_count });
     if (var_decl.type == .entrypoint)
         return try self.generateEntryPoint(
             var_decl.name,
-            @as(*const Parser.EntryPoint, @ptrCast(@alignCast(var_decl.value.value.payload.ptr))).*,
+            @as(*const Parser.EntryPoint, @ptrCast(@alignCast(var_decl.initializer.value.payload.ptr))).*,
         );
 
     //skip variables of 'incomplete' types
     const @"type" = self.convertParserType(var_decl.type) catch |err| if (err == Error.InvalidSpirvType) return else return err;
     const type_id = try self.getTypeID(@"type");
 
-    std.debug.print("VALEXPR: {any}\n", .{var_decl.value});
-    const value: ?u32 = if (!var_decl.value.isEmptyExpression())
-        try self.generateExpressionID(var_decl.value)
+    std.debug.print("VALEXPR: {any}\n", .{var_decl.initializer});
+    const value: ?u32 = if (!var_decl.initializer.isEmpty())
+        try self.generateExpressionID(var_decl.initializer)
     else
         null;
 
