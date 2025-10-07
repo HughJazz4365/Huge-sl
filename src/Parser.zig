@@ -23,9 +23,11 @@ pub const Error = error{
     UnexpectedToken,
 
     UndeclaredVariable,
-    NoValueConstant,
+    IncompleteStatement,
     MutatingImmutableVariable,
     StageInputCantHaveInitialValue,
+    UnexpectedInitializer,
+    MissingInitializer,
 
     CannotImplicitlyCast,
     CannotExplicitlyCast,
@@ -43,6 +45,12 @@ pub const Error = error{
     NegativePower, //a ^ (- |r|)
 } || Tokenizer.Error;
 
+pub fn errorOutDefault(self: *Parser, comptime err: Error) Error {
+    return self.errorOutFmt(err, switch (err) {
+        Error.MissingInitializer => "Constants must have initializers",
+        else => return self.errorOut(err),
+    }, .{});
+}
 pub fn errorOut(self: *Parser, err: Error) Error {
     return self.errorOutFmt(err, "", .{});
 }
@@ -76,7 +84,7 @@ pub fn turnIntoIntermediateVariableIfNeeded(self: *Parser, expr: Expression) Err
     try self.addStatement(.{ .var_decl = .{
         .qualifier = .@"const",
         .name = name,
-        .type = try self.typeOf(expr),
+        .type = (try self.typeOf(expr)).asExpr(),
         .initializer = expr,
     } });
     return .{ .identifier = name };
@@ -103,6 +111,13 @@ pub fn create(self: *Parser, T: type) !*T {
 pub inline fn addStatement(self: *Parser, statement: Statement) Error!void {
     try self.current_scope.addStatement(statement);
 }
+pub fn isStatementComplete(self: *Parser, statement: Statement) Error!?bool {
+    _ = self;
+    return switch (statement) {
+        else => true,
+    };
+}
+
 pub fn parseStatement(self: *Parser) Error!?Statement {
     var token = try self.tokenizer.peek();
     while (token == .endl) {
@@ -114,7 +129,7 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
         .eof => null,
         .@"const", .@"var", .uniform, .push, .shared, .out, .in => blk: {
             self.tokenizer.skip();
-            break :blk try self.parseVariableDecl(token);
+            break :blk .{ .var_decl = try self.parseVarDecl(token) };
         },
 
         .@"return" => blk: {
@@ -165,48 +180,47 @@ fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
         .value = value,
     } };
 }
-fn parseVariableDecl(self: *Parser, token: Token) Error!Statement {
+fn parseVarDecl(self: *Parser, token: Token) Error!VariableDeclaration {
     const qualifier = try self.parseQualifier(token);
 
     const name_token = try self.tokenizer.next();
-    if (name_token != .identifier) return Error.UnexpectedToken;
+    if (name_token != .identifier)
+        return self.errorOutFmt(Error.UnexpectedToken, "Expected variable name after qualifier", .{});
 
-    var @"type": Type = blk: {
-        const next = try self.tokenizer.peek();
-        if (next != .@":") break :blk .unknown;
+    var type_expr = Expression.empty;
+
+    //type is explicitly specified
+    if (try self.tokenizer.peek() == .@":") {
         self.tokenizer.skip();
 
-        const expr = try self.parseExpressionSide();
-        break :blk self.asType(expr) orelse return Error.UnexpectedToken;
-    };
-
-    const initializer: ?Expression = blk: {
-        const next = try self.tokenizer.peek();
-        if (next != .@"=") break :blk null;
+        type_expr = try self.implicitCast(
+            try self.refine(try self.parseExpression(assignmentShouldStop)),
+            .type,
+        );
+    }
+    const initializer_expr: Expression = if (try self.tokenizer.peek() == .@"=") blk: {
         self.tokenizer.skip();
-        var expr = try self.parseExpression(defaultShouldStop);
 
-        if (@"type" != .unknown)
-            expr = try self.implicitCast(expr, @"type")
-        else {
-            @"type" = try self.typeOf(expr);
-            if (!@"type".isComplete()) return self.errorOutFmt(
-                Error.VariableOfUnknownType,
-                "Cannot infer variable type since the type of inilializer expressions type is unknown",
-                .{},
-            );
-        }
+        if (!qualifier.canHaveInitializer())
+            return self.errorOutFmt(Error.UnexpectedInitializer, "Variable with \'{s}\' qualifier cant have initializers", .{@tagName(qualifier)});
+        const expr = try self.implicitCast(
+            try self.parseExpression(defaultShouldStop),
+            type_expr.asType(),
+        );
+        if (type_expr.isEmpty()) type_expr = (try self.typeOf(expr)).asExpr();
         break :blk expr;
+    } else clk: {
+        if (qualifier == .@"const")
+            return self.errorOutDefault(Error.MissingInitializer);
+        break :clk .empty;
     };
-    if (initializer == null and qualifier == .@"const") return Error.NoValueConstant;
-    if (initializer != null and qualifier == .in) return Error.StageInputCantHaveInitialValue;
 
-    return .{ .var_decl = .{
+    return .{
         .qualifier = qualifier,
         .name = name_token.identifier,
-        .type = @"type",
-        .initializer = if (initializer) |v| v else Expression.empty,
-    } };
+        .type = type_expr,
+        .initializer = initializer_expr,
+    };
 }
 
 pub const Statement = union(enum) {
@@ -226,7 +240,7 @@ pub const Assignment = struct {
 pub const VariableDeclaration = struct {
     qualifier: Qualifier,
     name: []const u8,
-    type: Type,
+    type: Expression,
     initializer: Expression,
     reference_count: u32 = 0,
 
@@ -311,7 +325,7 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
         },
         .@"(" => try self.parseExpression(bracketShouldStop),
         .@"." => switch (try self.tokenizer.next()) {
-            .@"{" => try self.parseCastOrConstructor(.unknown),
+            .@"{" => try self.parseCastOrConstructor(Expression.empty),
             else => return Error.UnexpectedToken,
         },
         // .@"fn" => try self.parseFunctionOrType(),
@@ -323,9 +337,9 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
     while (true) {
         peek = try self.tokenizer.peek();
         if (peek == .@"{") {
-            if (self.asType(expr)) |at| {
+            if (try self.typeOf(expr) == .type) {
                 self.tokenizer.skip();
-                expr = try self.parseCastOrConstructor(at);
+                expr = try self.parseCastOrConstructor(expr);
                 continue;
             } else return Error.UnexpectedToken;
         }
@@ -345,7 +359,7 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
     return expr;
 }
 
-fn parseCastOrConstructor(self: *Parser, @"type": Type) Error!Expression {
+fn parseCastOrConstructor(self: *Parser, type_expr: Expression) Error!Expression {
     var list: List(Expression) = try .initCapacity(self.arena.allocator(), 1);
 
     var token = try self.tokenizer.peek();
@@ -359,10 +373,11 @@ fn parseCastOrConstructor(self: *Parser, @"type": Type) Error!Expression {
 
     if (list.items.len == 0) return Error.InvalidConstructor;
 
+    const type_ptr = if (type_expr.isEmpty()) @constCast(&Expression.empty) else try self.createVal(type_expr);
     return if (list.items.len == 1) .{ .cast = .{
-        .type = @"type",
-        .expr = @ptrCast(list.items.ptr),
-    } } else .{ .constructor = .{ .type = @"type", .components = list.items } };
+        .type = type_ptr,
+        .expr = &list.items[0],
+    } } else .{ .constructor = .{ .type = type_ptr, .components = list.items } };
 }
 fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
     if (try self.tokenizer.next() != .@"(") return Error.UnexpectedToken;
@@ -372,7 +387,7 @@ fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
     const stage_info: ShaderStageInfo = .fragment;
     const ep_type: Type = .{ .entrypoint = std.meta.activeTag(stage_info) };
 
-    if (try self.tokenizer.peek() != .@"{") return .{ .value = .{ .type = .type, .payload = .{ .type = ep_type } } };
+    if (try self.tokenizer.peek() != .@"{") return ep_type.asExpr();
     self.tokenizer.skip();
 
     var entry_point: EntryPoint = .new(self, stage_info);
@@ -417,7 +432,7 @@ pub const EntryPoint = struct {
             },
         };
     }
-    pub inline fn addStatement(scope: *Scope, statement: Statement) Error!void {
+    pub fn addStatement(scope: *Scope, statement: Statement) Error!void {
         try scope.addStatementFn(scope, statement);
     }
     fn addStatementFn(scope: *Scope, statement: Statement) Error!void {
@@ -461,9 +476,9 @@ fn parseValue(self: *Parser, token: Token) Error!Value {
 pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
     return switch (expr) {
         .value => |value| value.type,
-        .constructor => |constructor| constructor.type,
-        .cast => |cast| cast.type,
-        .identifier => |identifier| (try self.current_scope.getVariableReferece(identifier)).type,
+        .constructor => |constructor| constructor.type.asType(),
+        .cast => |cast| cast.type.asType(),
+        .identifier => |identifier| (try self.current_scope.getVariableReferece(identifier)).type.asType(),
         .bin_op => |bin_op| try self.typeOfBinOp(bin_op),
         .u_op => |u_op| try self.typeOfUOp(u_op),
         .indexing => |indexing| (try self.typeOf(indexing.target.*)).constructorStructure().component,
@@ -484,14 +499,12 @@ fn typeOfBinOp(self: *Parser, bin_op: BinOp) Error!Type {
         },
     };
 }
-pub fn asType(self: *Parser, expr: Expression) ?Type {
-    _ = self;
-    return switch (expr) {
-        .value => |value| if (value.type == .type) value.payload.type else null,
-        else => null,
-    };
-}
 
+pub fn isExpressionComptime(self: *Parser, expr: Expression) Error!bool {
+    _ = self;
+    //recursively descend
+    return expr == .value;
+}
 pub const Expression = union(enum) {
     bin_op: BinOp,
     u_op: UOp,
@@ -517,7 +530,7 @@ pub const Expression = union(enum) {
     @"switch",
 
     value: Value,
-    pub const empty = Expression{ .value = .{ .type = .type, .payload = .{ .type = .unknown } } };
+    pub const empty = (Type{ .unknown = {} }).asExpr();
     pub const format = debug.formatExpression;
 
     pub fn shouldTurnIntoIntermediate(self: Expression) bool {
@@ -526,8 +539,11 @@ pub const Expression = union(enum) {
             else => true,
         };
     }
-    pub fn isEmptyExpression(self: Expression) bool {
+    pub fn isEmpty(self: Expression) bool {
         return self == .value and self.value.type == .type and self.value.payload.type == .unknown;
+    }
+    pub fn asType(self: Expression) Type {
+        return if (self == .value and self.value.type == .type) self.value.payload.type else .unknown;
     }
 };
 pub fn isExprMutable(self: *Parser, expr: Expression) Error!bool {
@@ -538,11 +554,11 @@ pub fn isExprMutable(self: *Parser, expr: Expression) Error!bool {
     };
 }
 pub const Cast = struct {
-    type: Type,
+    type: *Expression,
     expr: *Expression,
 };
 pub const Constructor = struct {
-    type: Type,
+    type: *Expression,
     components: []Expression,
 };
 pub const Indexing = struct {
@@ -635,7 +651,7 @@ pub const Scope = struct {
 };
 pub const VariableReference = struct {
     is_mutable: bool,
-    type: Type,
+    type: Expression,
     value: *Expression,
     pub fn isComptime(self: VariableReference) bool {
         return !self.is_mutable and self.value.* == .value;
@@ -649,8 +665,8 @@ fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
         .out => .{ .out = .smooth },
         .@"const" => .@"const",
         .@"var" => .@"var",
-        .uniform => .uniform,
-        .push => .push,
+        .uniform => .{ .uniform = .private },
+        .push => .{ .push = .private },
         .shared => .shared,
         else => Error.UnexpectedToken,
     };
@@ -658,44 +674,25 @@ fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
 pub const Qualifier = union(enum) {
     @"const",
     @"var",
-    shared,
-    uniform,
-    push,
+
+    uniform: bi.UniformAccessQualifier,
+    push: bi.UniformAccessQualifier,
+
     in: bi.InterpolationQualifier,
     out: bi.InterpolationQualifier,
+
+    shared,
+    pub fn canHaveInitializer(self: Qualifier) bool {
+        return self != .in;
+    }
     pub fn isMutable(self: Qualifier) bool {
         return switch (self) {
+            .@"var", .shared, .out => true,
             .@"const", .in, .uniform, .push => false,
-            else => true,
         };
     }
 };
 
-pub const implicitCast = ct.implicitCast;
-
-// pub fn parseFunctionOrType(self: *Parser) Error!Expression {
-//     const arg_types: List(Type) = .empty;
-//     const arg_names: List([]const u8) = .empty;
-
-//     var rtype: Type = .void;
-//     _ = &.{ arg_names, arg_types, &rtype };
-
-//     var token = try self.tokenizer.next();
-//     if (token == .@"(") {
-//         var arg_index: usize = 0;
-//         _ = &arg_index;
-//         //parse args
-//         //function type examples
-//         //fn(f32, type) type
-//         //fn(Light, u32) Ligth
-//         //fn(GetSomeType(), @Interpolation) type
-//         //function def examples
-
-//         //if token is identifier then try to parse expression and see if its undecl identifier
-//         //if so its add arg_name
-
-//     }
-// }
 pub const Function = struct {
     arg_names: [][]const u8,
     type: tp.FunctionType,
@@ -723,6 +720,7 @@ const List = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const BinaryOperator = Tokenizer.BinaryOperator;
 pub const refine = ct.refineTopLevel;
+pub const implicitCast = ct.implicitCast;
 pub const Type = tp.Type;
 pub const FunctionType = tp.FunctionType;
 const UnaryOperator = Tokenizer.UnaryOperator;

@@ -11,7 +11,7 @@ offset: usize = 0,
 file_path: []const u8 = "",
 
 // error_code: [:0]const u8 = undefined,
-error_code: anyerror = error.SomeError,
+error_code: anyerror = error.UnhandledError,
 
 error_msg_buf: [error_msg_buf_len]u8 = @splat(0),
 error_msg_len: usize = 0,

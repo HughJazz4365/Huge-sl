@@ -69,6 +69,9 @@ pub const Type = union(enum) {
             else => .{ .component = self },
         };
     }
+    pub fn asExpr(self: Type) Expression {
+        return .{ .value = .{ .type = .type, .payload = .{ .type = self } } };
+    }
 };
 pub const ConstructorStructure = struct {
     component: Type,
