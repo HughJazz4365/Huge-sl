@@ -60,7 +60,9 @@ pub fn output(self: *ErrorCtx) !void {
     ) catch return;
     out_writer.flush() catch return;
 }
-pub fn outputReturnErr(self: *ErrorCtx) anyerror {
+
+pub fn outputUpdateIfEmpty(self: *ErrorCtx, err: anyerror) anyerror {
+    if (self.error_code == error.UnhandledError) self.printError(self.offset, err, "", .{});
     try self.output();
     return self.error_code;
 }

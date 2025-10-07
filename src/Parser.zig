@@ -69,7 +69,7 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
     self.current_scope = &self.global_scope.scope;
 
     while (try self.parseStatement()) |statement| {
-        try self.global_scope.addStatement(statement);
+        try self.global_scope.addStatement(&self, statement);
         std.debug.print("{f}\n", .{statement});
     }
     return self;
@@ -109,11 +109,13 @@ pub fn create(self: *Parser, T: type) !*T {
 }
 
 pub inline fn addStatement(self: *Parser, statement: Statement) Error!void {
-    try self.current_scope.addStatement(statement);
+    try self.current_scope.addStatement(self, statement);
 }
-pub fn isStatementComplete(self: *Parser, statement: Statement) Error!?bool {
-    _ = self;
+pub fn isStatementComplete(self: *Parser, statement: Statement) Error!bool {
     return switch (statement) {
+        .var_decl => |var_decl| (var_decl.type.asType().eql(try self.typeOf(var_decl.initializer)) or
+            var_decl.initializer.isEmpty()) and
+            var_decl.type.asType() != .unknown,
         else => true,
     };
 }
@@ -432,11 +434,12 @@ pub const EntryPoint = struct {
             },
         };
     }
-    pub fn addStatement(scope: *Scope, statement: Statement) Error!void {
-        try scope.addStatementFn(scope, statement);
+    pub fn addStatement(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
+        try scope.addStatementFn(scope, parser, statement);
     }
-    fn addStatementFn(scope: *Scope, statement: Statement) Error!void {
+    fn addStatementFn(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
         const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);
+        if (!(try parser.isStatementComplete(statement))) return Error.IncompleteStatement;
         try entry_point.body.append(entry_point.allocator, statement);
     }
     pub fn getVariableReferenceFn(scope: *Scope, name: []const u8) Error!VariableReference {
@@ -599,12 +602,13 @@ pub const GlobalScope = struct {
             },
         };
     }
-    pub fn addStatement(self: *GlobalScope, statement: Statement) Error!void {
-        try addStatementFn(&self.scope, statement);
+    pub fn addStatement(self: *GlobalScope, parser: *Parser, statement: Statement) Error!void {
+        try addStatementFn(&self.scope, parser, statement);
     }
 
-    fn addStatementFn(scope: *Scope, statement: Statement) Error!void {
+    fn addStatementFn(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
         const global_scope: *GlobalScope = @fieldParentPtr("scope", scope);
+        if (!(try parser.isStatementComplete(statement))) return Error.IncompleteStatement;
         try global_scope.body.append(global_scope.allocator, statement);
     }
     fn getVariableReferenceFn(scope: *Scope, name: []const u8) Error!VariableReference {
@@ -627,7 +631,7 @@ pub const GlobalScope = struct {
 };
 
 pub const Scope = struct {
-    addStatementFn: *const fn (*Scope, Statement) Error!void = undefined,
+    addStatementFn: *const fn (*Scope, *Parser, Statement) Error!void = undefined,
     getVariableReferenceFn: *const fn (*Scope, []const u8) Error!VariableReference = undefined,
     trackReferenceFn: *const fn (*Scope, []const u8, DeclReferenceType) Error!void = undefined,
 
@@ -635,8 +639,8 @@ pub const Scope = struct {
 
     pub const DeclReferenceType = enum { track, untrack };
 
-    pub inline fn addStatement(self: *Scope, statement: Statement) Error!void {
-        try self.addStatementFn(self, statement);
+    pub inline fn addStatement(self: *Scope, parser: *Parser, statement: Statement) Error!void {
+        try self.addStatementFn(self, parser, statement);
     }
 
     pub inline fn getVariableReferece(self: *Scope, name: []const u8) Error!VariableReference {

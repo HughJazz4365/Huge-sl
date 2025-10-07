@@ -29,7 +29,7 @@ pub fn compile(
     error_ctx.init(source, path, err_writer);
 
     var tokenizer: Tokenizer = .new(source, &error_ctx);
-    var parser = Parser.parse(allocator, &tokenizer) catch return error_ctx.outputReturnErr();
+    var parser = Parser.parse(allocator, &tokenizer) catch |err| return error_ctx.outputUpdateIfEmpty(err);
 
     defer parser.deinit();
 
