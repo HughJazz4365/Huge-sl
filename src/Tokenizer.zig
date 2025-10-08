@@ -5,7 +5,7 @@ const Tokenizer = @This();
 const Parser = @import("Parser.zig");
 const ErrorCtx = @import("errorctx.zig");
 
-pub const Error = error{InvalidInput};
+pub const Error = error{ InvalidInput, InvalidNumberLiteral };
 const State = struct {
     source: []const u8,
     last: Token = .eof,
@@ -64,7 +64,7 @@ fn nextFat(self: *Tokenizer) Error!FatToken {
     }
 
     //before op s ??
-    if (getNumberLiteralRaw(bytes)) |l| return l;
+    if (try self.getNumberLiteralRaw(bytes)) |l| return l;
 
     const bin_op_match = util.matchToEnum(BinaryOperator, bytes);
     const u_op_match = util.matchToEnum(UnaryOperator, bytes);
@@ -91,43 +91,72 @@ fn nextFat(self: *Tokenizer) Error!FatToken {
     if (getTypeLiteralRaw(bytes)) |t| return t;
 
     // strip valid identifier
-    const valid_identifier = try self.stripValidIdentifier(bytes);
+    const is_builtin = bytes[0] == '@';
+    const valid_identifier = try self.stripValidIdentifier(bytes[@intFromBool(is_builtin)..]);
+    // if(is_builtin)chechIfItsAValidBuiltin;
+    // if (is_builtin) std.debug.print("BI: {s}\n", .{valid_identifier});
 
-    return .{
-        .len = valid_identifier.len,
-        .token = .{ .identifier = valid_identifier },
-    };
+    return if (is_builtin)
+        .{ .len = valid_identifier.len + 1, .token = .{ .builtin = valid_identifier } }
+    else
+        .{ .len = valid_identifier.len, .token = .{ .identifier = valid_identifier } };
 }
 
 const FatToken = struct { len: usize, token: Token };
-fn getNumberLiteralRaw(bytes: []const u8) ?FatToken {
+fn getNumberLiteralRaw(self: *Tokenizer, bytes: []const u8) Error!?FatToken {
     const neg = bytes[0] == '-';
+
     var count: usize = @intFromBool(neg);
+
+    const base: u8 =
+        if (util.strStartsComp(bytes[count..], "0x")) 16 //
+        else if (util.strStartsComp(bytes[count..], "0b")) 2 //
+        else if (util.strStartsComp(bytes[count..], "0o")) 8 //
+        else 10;
+    if (base != 10) count += 2;
+
+    const off = count;
     var dot = false;
 
     while (bytes.len > count) {
         const char = bytes[count];
         if (char == '.') {
-            if (dot) break;
+            if (dot or
+                (count - off == 0) or
+                base != 10) break;
             dot = true;
             count += 1;
         } else if (switch (char) {
-            '0'...'9' => true,
+            '_' => count - off != 0,
+            '0', '1' => true,
+            '2'...'7' => base >= 8,
+            '8', '9' => base >= 10,
+            'a'...'f', 'A'...'F' => base == 16,
             else => false,
         }) count += 1 else break;
     }
-    if (count - @as(usize, @intFromBool(neg)) - @as(usize, @intFromBool(dot)) == 0)
-        return null;
-    return if (dot)
-        .{ .len = count, .token = .{
-            .compfloat = std.fmt.parseFloat(f128, bytes[0..count]) catch unreachable,
-        } }
-    else
-        .{ .len = count, .token = .{
-            .compint = std.fmt.parseInt(i128, bytes[0..count], 10) catch unreachable,
-        } };
-}
+    while (count - off > 0 and (bytes[count - 1] == '_' or bytes[count - 1] == '.')) count -= 1;
 
+    if (count - off - @as(usize, @intFromBool(dot)) == 0)
+        return null;
+    // std.debug.print("lit: {s}, toparse: {s}\n", .{ bytes[0..count], bytes[off..count] });
+    return .{ .len = count, .token = if (dot) .{ .compfloat = blk: {
+        const f = std.fmt.parseFloat(f128, bytes[off..count]) catch return self.errorInvalidNumberLiteral(bytes[0..count], true);
+        break :blk if (neg) -f else f;
+    } } else .{ .compint = blk: {
+        const i = std.fmt.parseInt(i128, bytes[off..count], base) catch return self.errorInvalidNumberLiteral(bytes[0..count], false);
+        break :blk if (neg) -i else i;
+    } } };
+}
+fn errorInvalidNumberLiteral(self: *Tokenizer, bytes: []const u8, is_float: bool) Error {
+    self.err_ctx.printError(
+        @intFromPtr(bytes.ptr) - @intFromPtr(self.full_source.ptr),
+        Error.InvalidNumberLiteral,
+        "Invalid {s} literal: \'{s}\'",
+        .{ if (is_float) "float" else "integer", bytes },
+    );
+    return Error.InvalidNumberLiteral;
+}
 fn getTypeLiteralRaw(bytes: []const u8) ?FatToken {
     inline for (.{ "void", "bool", "type", "compint", "compfloat" }) |s| {
         if (strExtract(bytes, s))
@@ -190,32 +219,24 @@ fn strExtract(haystack: []const u8, needle: []const u8) bool {
 }
 fn stripValidIdentifier(self: *Tokenizer, bytes: []const u8) Error![]const u8 {
     var letter = false;
-    var global = false;
     const end = for (bytes, 0..) |char, i| {
         if (!switch (char) {
-            'a'...'z', 'A'...'Z' => blk: {
+            'a'...'z', 'A'...'Z', '_' => blk: {
                 letter = true;
                 break :blk true;
             },
-            '_' => true,
-            '@' => blk: {
-                global = true;
-                break :blk i == 0;
-            },
-            '0'...'9' => i != @as(usize, @intFromBool(global)),
+            // '_' => true,
+            '0'...'9' => i != 0,
             else => false,
         }) break i;
     } else bytes.len;
     if (!letter) {
-        // _ = self;
         const offset = @intFromPtr(bytes.ptr) - @intFromPtr(self.full_source.ptr);
-        self.err_ctx.printError(offset, Error.InvalidInput, "", .{});
-        // if (end == 0) {
-        //     self.err_ctx.printError(offset, Error.InvalidInput, "Invalid character: \'{c}\'", .{bytes[0]});
-        // } else self.err_ctx.printError(offset, Error.InvalidInput, "Invalid identifier: \'{s}\'", .{bytes[0..1]});
+        if (end == 0) {
+            self.err_ctx.printError(offset, Error.InvalidInput, "Invalid character: \'{c}\'", .{bytes[0]});
+        } else self.err_ctx.printError(offset, Error.InvalidInput, "Invalid identifier: \'{s}\'", .{bytes[0..1]});
         return Error.InvalidInput;
     }
-    //  return self.errorOut();
 
     return bytes[0..end];
 }
@@ -252,6 +273,7 @@ pub const Token = union(enum) {
     endl,
 
     identifier: []const u8,
+    builtin: []const u8,
 
     type_literal: tp.Type,
     compint: i128,

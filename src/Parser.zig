@@ -196,25 +196,29 @@ fn parseVarDecl(self: *Parser, token: Token) Error!VariableDeclaration {
         self.tokenizer.skip();
 
         type_expr = try self.implicitCast(
-            try self.refine(try self.parseExpression(assignmentShouldStop)),
+            try self.refine(try self.parseExpressionSide()),
             .type,
         );
     }
-    const initializer_expr: Expression = if (try self.tokenizer.peek() == .@"=") blk: {
-        self.tokenizer.skip();
 
-        if (!qualifier.canHaveInitializer())
-            return self.errorOutFmt(Error.UnexpectedInitializer, "Variable with \'{s}\' qualifier cant have initializers", .{@tagName(qualifier)});
-        const expr = try self.implicitCast(
-            try self.parseExpression(defaultShouldStop),
-            type_expr.asType(),
-        );
-        if (type_expr.isEmpty()) type_expr = (try self.typeOf(expr)).asExpr();
-        break :blk expr;
-    } else clk: {
-        if (qualifier == .@"const")
-            return self.errorOutDefault(Error.MissingInitializer);
-        break :clk .empty;
+    const initializer_expr: Expression = switch (try self.tokenizer.peek()) {
+        .endl, .eof => if (qualifier == .@"const")
+            return self.errorOutDefault(Error.MissingInitializer)
+        else
+            .empty,
+        .@"=" => blk: {
+            self.tokenizer.skip();
+
+            if (!qualifier.canHaveInitializer())
+                return self.errorOutFmt(Error.UnexpectedInitializer, "Variable with \'{s}\' qualifier cant have initializers", .{@tagName(qualifier)});
+            const expr = try self.implicitCast(
+                try self.parseExpression(defaultShouldStop),
+                type_expr.asType(),
+            );
+            if (type_expr.isEmpty()) type_expr = (try self.typeOf(expr)).asExpr();
+            break :blk expr;
+        },
+        else => return Error.UnexpectedToken,
     };
 
     return .{
@@ -291,8 +295,7 @@ pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, should
 
 fn assignmentShouldStop(self: *Parser, token: Token) Error!bool {
     const peek = try self.tokenizer.peekTimes(2);
-    const def = token == .endl or token == .eof or (token == .@"}" and @intFromPtr(self.current_scope) != @intFromPtr(&self.global_scope.scope));
-    return token == .@"=" or token == .bin_op and peek == .@"=" or def;
+    return token == .@"=" or token == .bin_op and peek == .@"=" or self.defaultShouldStop(token) catch unreachable;
 }
 
 fn bracketShouldStop(self: *Parser, token: Token) !bool {
@@ -321,10 +324,8 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
             .op = u_op,
             .target = try self.createVal(try self.refine(try self.parseExpressionSide())),
         } },
-        .identifier => |id| blk: {
-            const name = id;
-            break :blk .{ .identifier = name };
-        },
+        .identifier => |id| .{ .identifier = id },
+        .builtin => |b| .{ .builtin = b },
         .@"(" => try self.parseExpression(bracketShouldStop),
         .@"." => switch (try self.tokenizer.next()) {
             .@"{" => try self.parseCastOrConstructor(Expression.empty),
@@ -509,11 +510,15 @@ pub fn isExpressionComptime(self: *Parser, expr: Expression) Error!bool {
     return expr == .value;
 }
 pub const Expression = union(enum) {
+    call: Call,
+    identifier: []const u8,
+    builtin: []const u8,
+
+    value: Value,
+
     bin_op: BinOp,
     u_op: UOp,
-    fn_call,
-    //   [name] ['('] {args} [')']
-    identifier: []const u8,
+
     swizzle: Swizzle,
     //   [expr] [swizzle]
     member_access: MemberAccess,
@@ -532,7 +537,6 @@ pub const Expression = union(enum) {
     @"if",
     @"switch",
 
-    value: Value,
     pub const empty = (Type{ .unknown = {} }).asExpr();
     pub const format = debug.formatExpression;
 
@@ -556,6 +560,10 @@ pub fn isExprMutable(self: *Parser, expr: Expression) Error!bool {
         else => false,
     };
 }
+pub const Call = struct {
+    func: *Expression,
+    args: []Expression,
+};
 pub const Cast = struct {
     type: *Expression,
     expr: *Expression,
