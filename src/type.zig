@@ -2,6 +2,7 @@ const std = @import("std");
 const Parser = @import("Parser.zig");
 
 pub const Type = union(enum) {
+    //dont change the order!
     void,
     type,
     bool,
@@ -27,12 +28,12 @@ pub const Type = union(enum) {
     function: FunctionType,
     entrypoint: ShaderStage,
 
-    pub fn isEmpty(self: Type) bool {
-        return self == .unknown and self.unknown.isEmpty();
-    }
     pub const unknownempty: Type = .{ .unknown = &Expression.empty };
     pub const format = @import("debug.zig").formatType;
 
+    pub fn isEmpty(self: Type) bool {
+        return self == .unknown and self.unknown.isEmpty();
+    }
     pub fn eql(a: Type, b: Type) bool {
         return std.meta.eql(a, b);
     }
@@ -61,7 +62,7 @@ pub const Type = union(enum) {
             .number => |number| @intFromEnum(number.width) >> 3,
             .vector => |vector| (Type.size(.{ .number = vector.component }) * @intFromEnum(vector.len) + 15) / 16 * 16,
             .array => |array| array.child.size() * array.len,
-            .matrix => |matrix| Type.size(.{ .vector = matrix.column_type }) * @intFromEnum(matrix.len),
+            .matrix => |matrix| Type.size(.{ .vector = matrix.columnVector() }) * @intFromEnum(matrix.n),
             .bool => 1,
             else => 0,
         };
@@ -70,7 +71,7 @@ pub const Type = union(enum) {
         return switch (self) {
             .vector => |vector| .{ .component = .{ .number = vector.component }, .len = @intFromEnum(vector.len) },
             .array => |array| .{ .component = array.child.*, .len = array.len },
-            .matrix => |matrix| .{ .component = .{ .vector = matrix.column_type }, .len = @intFromEnum(matrix.len) },
+            .matrix => |matrix| .{ .component = .{ .vector = matrix.columnVector() }, .len = @intFromEnum(matrix.n) },
             else => .{ .component = self },
         };
     }
@@ -91,8 +92,12 @@ pub const FunctionType = struct {
 pub const ShaderStage = enum { vertex, fragment, compute };
 
 pub const Matrix = struct {
-    len: VectorLen,
-    column_type: Vector,
+    m: VectorLen,
+    n: VectorLen,
+    component_width: BitWidth,
+    pub fn columnVector(self: Matrix) Vector {
+        return .{ .len = self.m, .component = .{ .type = .float, .width = self.component_width } };
+    }
 };
 pub const Array = struct {
     child: *Type,

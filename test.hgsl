@@ -1,5 +1,5 @@
 const brightness = 0.8
 in someshit: vec3
 const main = entrypoint(.fragment){
-	out col = vec4{vec3{brightness}, 1}
+	out col = vec4{2 * vec3{brightness} * 2, 1}
 }

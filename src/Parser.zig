@@ -627,10 +627,7 @@ pub const Expression = union(enum) {
     pub const format = debug.formatExpression;
 
     pub fn shouldTurnIntoIntermediate(self: Expression) bool {
-        return switch (self) {
-            .value, .identifier => false,
-            else => true,
-        };
+        return self != .value;
     }
     pub fn asType(self: *Expression) Type {
         return if (self.* == .value and self.value.type == .type) self.value.payload.type else .{ .unknown = self };

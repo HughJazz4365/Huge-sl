@@ -265,42 +265,82 @@ fn normalizeValue(value: Parser.Value) void {
 }
 
 fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
-    const initial: Expression = .{ .bin_op = bin_op };
 
-    const left_type = try self.typeOf(bin_op.left.*);
-    const right_type = try self.typeOf(bin_op.right.*);
+    // const left_type = try self.typeOf(bin_op.left.*);
+    // const right_type = try self.typeOf(bin_op.right.*);
 
-    if (left_type == .unknown and right_type != .unknown) {
-        bin_op.left.* = self.implicitCast(bin_op.left.*, right_type) catch return initial;
-    } else if (right_type == .unknown and left_type != .unknown)
-        bin_op.right.* = self.implicitCast(bin_op.right.*, left_type) catch return initial;
+    // if (left_type == .unknown or right_type == .unknown) return initial;
 
-    blk: {
-        if (left_type == .vector and right_type.depth() == 0) {
-            const left_child_type: Type = .{ .number = left_type.vector.component };
-            const casted = self.implicitCast(bin_op.right.*, left_child_type) catch return initial;
-            const copy_right = try self.createVal(casted);
-            bin_op.right.* = try refine(self, .{ .cast = .{
-                .type = left_type,
-                .expr = copy_right,
-            } });
-            return refine(self, initial) catch break :blk;
-        }
-    }
-
-    const left = if (bin_op.left.* != .value) return initial else bin_op.left.value;
-    const right = if (bin_op.right.* != .value) return initial else bin_op.right.value;
+    // const left = if (bin_op.left.* != .value) return initial else bin_op.left.value;
+    // const right = if (bin_op.right.* != .value) return initial else bin_op.right.value;
     return switch (bin_op.op) {
+        .@"*" => try refineMul(self, bin_op.left, bin_op.right),
+        else => .{ .bin_op = bin_op },
         // return switch (bin_op.op) {
-        .@"+" => .{ .value = try addValues(left, right) },
-        .@"-" => .{ .value = try addValues(left, try mulValues(self, right, minusonecompint)) },
-        .@"*" => .{ .value = try mulValues(self, left, right) },
-        .@"^" => .{ .value = try powValues(left, right) },
-        .@"'", .@"\"" => .{ .value = try dotValues(left, right) },
+        // .@"+" => .{ .value = try addValues(left, right) },
+        // .@"-" => .{ .value = try addValues(left, try mulValues(self, right, minusonecompint)) },
+        // .@"*" => .{ .value = try mulValues(self, left, right) },
+        // .@"^" => .{ .value = try powValues(left, right) },
+        // .@"'", .@"\"" => .{ .value = try dotValues(left, right) },
         // else => initial,
     };
 }
+fn refineMul(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
+    const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@"*" } };
 
+    var left_expr = left.*;
+    var right_expr = right.*;
+
+    var left_type = try self.typeOf(left_expr);
+    var right_type = try self.typeOf(right_expr);
+
+    if (left_type == .unknown and right_type == .unknown) return initial;
+    if (left_type == .unknown) {
+        left_expr = try self.implicitCast(left_expr, right_type) catch return initial;
+        left_type = right_type;
+    } else if (right_type == .unknown) {
+        right_expr = try self.implicitCast(right_expr, left_type) catch return initial;
+        right_type = left_type;
+    }
+
+    //TODO: matrix bs
+    if (left_type == .matrix) {
+        //mat x mat
+        // mat x vec
+        // mar x scalar
+        return Error.CallingTheUncallable;
+    } else if (right_type == .matrix) {
+        //vec x mat
+        //scalar x mat
+        return Error.CallingTheUncallable;
+    } else {
+        if (right_type == .vector) {
+            std.mem.swap(Type, &left_type, &right_type);
+            std.mem.swap(Type, &left_expr, &right_expr);
+        }
+
+        //vec * scalar
+        //scalar * vec
+        //vec * vec
+        //scalar * scalar
+        //
+        //change to scalevec or mul same numeric
+    }
+
+    //ORDERED
+    //fmat * fmat => mat(column = l.column, len = r.len)
+    //fvec * fmat => vec(len = mul.len), mul.column.len == vec.len
+    //fmat * fvec => fmat.column, mul.len == vec.len
+    //
+    //UNORDERED
+    //fmat * float => fmat.colunm.component == float
+    //vec * number =>
+    //
+    //sametype
+    //vec * vec
+    //number * number
+
+}
 fn dotValues(left: Value, right: Value) Error!Value {
     const t, const a, const b = try implicitCastEqualizeValues(left, right);
     if (t != .vector or t.vector.component.type != .float) return Error.InvalidOperands;
@@ -339,6 +379,18 @@ fn powValues(left: Value, right: Value) Error!Value {
 
 fn mulValues(self: *Parser, left: Value, right: Value) Error!Value {
     const t, const a, const b = try implicitCastEqualizeValues(left, right);
+    // blk: {
+    //     if (left_type == .vector and right_type.depth() == 0) {
+    //         const left_child_type: Type = .{ .number = left_type.vector.component };
+    //         const casted = self.implicitCast(bin_op.right.*, left_child_type) catch return initial;
+    //         const copy_right = try self.createVal(casted);
+    //         bin_op.right.* = try refine(self, .{ .cast = .{
+    //             .type = left_type,
+    //             .expr = copy_right,
+    //         } });
+    //         return refine(self, initial) catch break :blk;
+    //     }
+    // }
     const payload: Parser.ValuePayload = switch (t) {
         .compint => .{ .wide = util.fit(u128, util.extract(i128, a.wide) * util.extract(i128, b.wide)) },
         .compfloat => .{ .wide = util.fit(u128, util.extract(f128, a.wide) * util.extract(f128, b.wide)) },
@@ -402,16 +454,23 @@ fn implicitCastEqualizeValues(a: Value, b: Value) Error!EqualizeResult {
 
     //'first' comes first in Type union
     var reordered = false;
+    std.debug.print("a: {f}, b: {f}\n", .{ a, b });
     var first, const second = blk: {
         const a_tag_value = @intFromEnum(std.meta.activeTag(a.type));
         const b_tag_value = @intFromEnum(std.meta.activeTag(b.type));
-        if (a_tag_value >= b_tag_value) reordered = true;
-        break :blk if (a_tag_value >= b_tag_value) [2]Value{ b, a } else [2]Value{ a, b };
+        std.debug.print("atv: {d}, btv: {d}\n", .{ a_tag_value, b_tag_value });
+        const should_reorder = a_tag_value > b_tag_value;
+        reordered = should_reorder;
+        break :blk if (should_reorder) [2]Value{ b, a } else [2]Value{ a, b };
     };
 
+    std.debug.print("first: {f}, second: {f}\n", .{ first, second });
     switch (second.type) {
         .compfloat, .number => first = try implicitCastValue(first, second.type),
-        else => return Error.InvalidOperands,
+        else => {
+            std.debug.print("a: {f}, b: {f}\n", .{ a, b });
+            return Error.InvalidOperands;
+        },
     }
 
     return if (reordered)
