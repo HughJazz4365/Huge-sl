@@ -344,10 +344,13 @@ pub const BinaryOperator = util.SortEnumDecending(
         @"+",
         @"-",
         @"^",
+        @"'", //dot
+        @"\"", //dot clamped
     },
 );
 pub fn bindingPower(bin_op: BinaryOperator) u8 {
     return switch (bin_op) {
+        .@"\"", .@"'" => 20,
         .@"^" => 15,
         .@"*" => 10,
         .@"+", .@"-" => 5,

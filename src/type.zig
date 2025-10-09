@@ -7,7 +7,8 @@ pub const Type = union(enum) {
     bool,
 
     //intermediate compile time types
-    unknown,
+    unknown: *const Expression,
+
     enum_literal,
     compint,
     compfloat,
@@ -26,6 +27,10 @@ pub const Type = union(enum) {
     function: FunctionType,
     entrypoint: ShaderStage,
 
+    pub fn isEmpty(self: Type) bool {
+        return self == .unknown and self.unknown.isEmpty();
+    }
+    pub const unknownempty: Type = .{ .unknown = &Expression.empty };
     pub const format = @import("debug.zig").formatType;
 
     pub fn eql(a: Type, b: Type) bool {
@@ -80,7 +85,7 @@ pub const ConstructorStructure = struct {
 
 pub const FunctionType = struct {
     rtype: *Type,
-    args_types: []Type,
+    arg_types: []Type,
 };
 
 pub const ShaderStage = enum { vertex, fragment, compute };

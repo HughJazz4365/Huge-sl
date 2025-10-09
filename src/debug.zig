@@ -38,6 +38,7 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
 pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
     switch (expr) {
         .identifier => |id| try writer.print("{s}", .{id}),
+        .builtin => |b| try writer.print("@{s}", .{b}),
         .value => |v| try writer.print("{f}", .{v}),
         .bin_op => |bin_op| try writer.print("({f} {s} {f})", .{ bin_op.left, @tagName(bin_op.op), bin_op.right }),
         .u_op => |u_op| try writer.print("{s}{f}", .{ @tagName(u_op.op), u_op.target }),
@@ -53,6 +54,11 @@ pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
         },
         .cast => |cast| try writer.print("{f}{{ {f} }}", .{ cast.type, cast.expr.* }),
         .indexing => |indexing| try writer.print("{f}[{f}]", .{ indexing.target, indexing.index }),
+        .call => |call| {
+            try writer.print("{f}(", .{call.callee.*});
+            for (call.args) |arg| try writer.print("{f},", .{arg});
+            try writer.print(")", .{});
+        },
         inline else => |_, tag| try writer.print("{s}", .{@tagName(tag)}),
     }
 }
