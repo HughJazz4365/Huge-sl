@@ -1,0 +1,13 @@
+
+const double = fn(x)f32{
+	return x*2
+}
+//const double = fn(x)f32=>x*2
+
+
+
+const main = entrypoint(.fragment){
+	in exposure: f32
+	out col : vec4 = .{double(exposure)}
+}
+

@@ -4,7 +4,7 @@ in normal: vec3
 in world_pos: vec3
 
 push eye_pos: vec3 //public push constant (exposed to shader system)
-const light_dir = 2 * |vec3{3, -4, 0} * 2 
+const light_dir = |(2 * vec3{3, -4, 0} * 2) 
 //const light_color : vec3 = @colHex(0xFA_FA_55)
 const light_color : vec3 = vec3{1,1,1}
 

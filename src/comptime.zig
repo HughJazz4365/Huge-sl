@@ -6,9 +6,8 @@ const Parser = @import("Parser.zig");
 const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(i128, -1)) } };
 
 pub fn refineTopLevel(self: *Parser, expr: Expression) Error!Expression {
-    // std.debug.print("expr: {any}\n", .{expr});
-
     const result = try refine(self, expr);
+    //can be triggered multiple times from one expr = bad
     if (expr == .identifier and result == .identifier and util.strEql(expr.identifier, result.identifier)) {
         std.debug.print("exprref: {f}\n", .{result});
         try self.current_scope.trackReference(result.identifier, .track);
@@ -273,7 +272,7 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
 
     // const left = if (bin_op.left.* != .value) return initial else bin_op.left.value;
     // const right = if (bin_op.right.* != .value) return initial else bin_op.right.value;
-    const result: Expression = switch (bin_op.op) {
+    return switch (bin_op.op) {
         .@"*" => try refineMul(self, bin_op.left, bin_op.right),
         else => .{ .bin_op = bin_op },
         // return switch (bin_op.op) {
@@ -284,8 +283,6 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
         // .@"'", .@"\"" => .{ .value = try dotValues(left, right) },
         // else => initial,
     };
-    std.debug.print("RES: {f}\n", .{result});
-    return result;
 }
 fn refineMul(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
     const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@"*" } };
@@ -376,10 +373,14 @@ fn mulVecOrScalarValues(self: *Parser, left: Value, right: Value) Error!Value {
     var left_value = left;
     var right_value = right;
     if (right.type == .vector) std.mem.swap(Value, &right_value, &left_value);
-    if (left_value.type == .vector and right_value.type.eql(.{ .number = left_value.type.vector.component }))
-        right_value = try splatNumber(self, left_value.type.vector, right_value.payload.wide);
-
-    if (!left_value.type.eql(right_value.type)) unreachable;
+    right_value = if (left_value.type == .vector and right_value.type.isScalar())
+        try splatNumber(
+            self,
+            left_value.type.vector,
+            (try implicitCastValue(right_value, .{ .number = left_value.type.vector.component })).payload.wide,
+        )
+    else
+        try implicitCastValue(right_value, left_value.type);
 
     const t, const a, const b = .{ left_value.type, left_value.payload, right_value.payload };
     const payload: Parser.ValuePayload = switch (t) {
@@ -461,6 +462,7 @@ fn implicitCastCast(self: *Parser, cast: Parser.Cast, @"type": Type) Error!Expre
     return if (cast.type.eql(@"type")) initial else self.errorOut(Error.CannotImplicitlyCast);
 }
 
+//bad idea??
 fn implicitCastEqualizeValues(a: Value, b: Value) Error!EqualizeResult {
     if (a.type.eql(b.type)) return .{ a.type, a.payload, b.payload };
 

@@ -143,7 +143,17 @@ pub const Vector = struct {
         return slice;
     }
 };
-pub const VectorLen = enum(u8) { _2 = 2, _3 = 3, _4 = 4 };
+pub const VectorLen = enum(u8) {
+    _2 = 2,
+    _3 = 3,
+    _4 = 4,
+    pub fn allLengths() []const VectorLen {
+        comptime var slice: []const VectorLen = &.{};
+        for (@typeInfo(VectorLen).@"enum".fields) |ef|
+            slice = slice ++ &[1]VectorLen{@enumFromInt(ef.value)};
+        return slice;
+    }
+};
 
 pub const Number = struct {
     type: NumberType,

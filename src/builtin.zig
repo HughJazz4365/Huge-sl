@@ -6,16 +6,16 @@ const Parser = @import("Parser.zig");
 pub const InterpolationQualifier = enum { smooth, flat, noperspective };
 pub const UniformAccessQualifier = enum { private, public };
 
-const col_hex_function: BuiltinFunction = .{
-    .body = &.{},
-    .type = intToVec3FT,
-};
+const name_map: std.StaticStringMap(FunctionType) = .initComptime(.{
+    .{ "colHex", colHexFType },
+    .{ "reflect", reflectFType },
+});
 
-pub const BuiltinFunction = struct {
-    body: []const Statement,
-    type: tp.FunctionType,
+const reflectFType: FunctionType = .{
+    .rtyep = vec3_type,
+    .arg_types = &.{ vec3_type, vec3_type },
 };
-const intToVec3FT: tp.FunctionType = .{
+const colHexFType: FunctionType = .{
     .rtype = vec3_type,
     .arg_types = &.{i32_type},
 };
@@ -25,3 +25,4 @@ const vec3_type: Type = .{ .vector = .{ .len = ._3, .component = .{ .type = .flo
 const Type = tp.Type;
 const Expression = Parser.Expression;
 const Statement = Parser.Statement;
+const FunctionType = tp.FunctionType;

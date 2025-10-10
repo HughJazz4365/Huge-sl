@@ -315,6 +315,7 @@ pub const Token = union(enum) {
 
     @"fn",
     entrypoint,
+    @"anytype",
 
     @"struct",
     @"enum",
