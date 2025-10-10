@@ -46,7 +46,7 @@ fn refineCast(self: *Parser, cast: Parser.Cast) Error!Expression {
 }
 fn isExplicitlyCastable(from: Type, to: Type) bool {
     return switch (to) {
-        .number, .compint, .compfloat, .bool, .@"enum" => to == .number or to == .compint or to == .compfloat or to == .bool or to == .@"enum",
+        .number, .compint, .compfloat, .bool, .@"enum" => to.isScalar() or to == .bool or to == .@"enum",
         .vector => |vector| switch (from) {
             .vector => |fromvec| fromvec.len == vector.len,
             .array => |array| array.len == @intFromEnum(vector.len),
@@ -236,7 +236,7 @@ fn refineUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
 
     const target = if (u_op.target.* != .value) return initial else u_op.target.value;
     return switch (u_op.op) {
-        .@"-" => .{ .value = try mulValues(self, target, minusonecompint) },
+        .@"-" => .{ .value = try mulVecOrScalarValues(self, target, minusonecompint) },
         .@"+" => u_op.target.*,
         .@"|" => blk: {
             const @"type" = try self.typeOf(u_op.target.*);
@@ -273,7 +273,7 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
 
     // const left = if (bin_op.left.* != .value) return initial else bin_op.left.value;
     // const right = if (bin_op.right.* != .value) return initial else bin_op.right.value;
-    return switch (bin_op.op) {
+    const result: Expression = switch (bin_op.op) {
         .@"*" => try refineMul(self, bin_op.left, bin_op.right),
         else => .{ .bin_op = bin_op },
         // return switch (bin_op.op) {
@@ -284,6 +284,8 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
         // .@"'", .@"\"" => .{ .value = try dotValues(left, right) },
         // else => initial,
     };
+    std.debug.print("RES: {f}\n", .{result});
+    return result;
 }
 fn refineMul(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
     const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@"*" } };
@@ -296,10 +298,10 @@ fn refineMul(self: *Parser, left: *Expression, right: *Expression) Error!Express
 
     if (left_type == .unknown and right_type == .unknown) return initial;
     if (left_type == .unknown) {
-        left_expr = try self.implicitCast(left_expr, right_type) catch return initial;
+        left_expr = self.implicitCast(left_expr, right_type) catch return initial;
         left_type = right_type;
     } else if (right_type == .unknown) {
-        right_expr = try self.implicitCast(right_expr, left_type) catch return initial;
+        right_expr = self.implicitCast(right_expr, left_type) catch return initial;
         right_type = left_type;
     }
 
@@ -313,33 +315,26 @@ fn refineMul(self: *Parser, left: *Expression, right: *Expression) Error!Express
         //vec x mat
         //scalar x mat
         return Error.CallingTheUncallable;
-    } else {
+    } else if (left_type == .vector or right_type == .vector) {
         if (right_type == .vector) {
             std.mem.swap(Type, &left_type, &right_type);
-            std.mem.swap(Type, &left_expr, &right_expr);
+            std.mem.swap(Expression, &left_expr, &right_expr);
         }
+        right_expr = self.implicitCast(right_expr, .{ .number = left_type.vector.component }) catch
+            try self.implicitCast(right_expr, left_type);
 
-        //vec * scalar
-        //scalar * vec
-        //vec * vec
-        //scalar * scalar
-        //
-        //change to scalevec or mul same numeric
-    }
+        if (left_expr == .value and right_expr == .value)
+            return .{ .value = try mulVecOrScalarValues(self, left_expr.value, right_expr.value) };
+        left.*, right.* = .{ left_expr, right_expr };
+        return initial;
+    } else if (left_type.isScalar()) {
+        right_expr = try self.implicitCast(right_expr, left_type);
+        if (left_expr == .value and right_expr == .value)
+            return .{ .value = try mulVecOrScalarValues(self, left_expr.value, right_expr.value) };
 
-    //ORDERED
-    //fmat * fmat => mat(column = l.column, len = r.len)
-    //fvec * fmat => vec(len = mul.len), mul.column.len == vec.len
-    //fmat * fvec => fmat.column, mul.len == vec.len
-    //
-    //UNORDERED
-    //fmat * float => fmat.colunm.component == float
-    //vec * number =>
-    //
-    //sametype
-    //vec * vec
-    //number * number
-
+        left.*, right.* = .{ left_expr, right_expr };
+        return initial;
+    } else return self.errorOut(Error.InvalidOperands);
 }
 fn dotValues(left: Value, right: Value) Error!Value {
     const t, const a, const b = try implicitCastEqualizeValues(left, right);
@@ -377,20 +372,16 @@ fn powValues(left: Value, right: Value) Error!Value {
     return .{ .type = t, .payload = payload };
 }
 
-fn mulValues(self: *Parser, left: Value, right: Value) Error!Value {
-    const t, const a, const b = try implicitCastEqualizeValues(left, right);
-    // blk: {
-    //     if (left_type == .vector and right_type.depth() == 0) {
-    //         const left_child_type: Type = .{ .number = left_type.vector.component };
-    //         const casted = self.implicitCast(bin_op.right.*, left_child_type) catch return initial;
-    //         const copy_right = try self.createVal(casted);
-    //         bin_op.right.* = try refine(self, .{ .cast = .{
-    //             .type = left_type,
-    //             .expr = copy_right,
-    //         } });
-    //         return refine(self, initial) catch break :blk;
-    //     }
-    // }
+fn mulVecOrScalarValues(self: *Parser, left: Value, right: Value) Error!Value {
+    var left_value = left;
+    var right_value = right;
+    if (right.type == .vector) std.mem.swap(Value, &right_value, &left_value);
+    if (left_value.type == .vector and right_value.type.eql(.{ .number = left_value.type.vector.component }))
+        right_value = try splatNumber(self, left_value.type.vector, right_value.payload.wide);
+
+    if (!left_value.type.eql(right_value.type)) unreachable;
+
+    const t, const a, const b = .{ left_value.type, left_value.payload, right_value.payload };
     const payload: Parser.ValuePayload = switch (t) {
         .compint => .{ .wide = util.fit(u128, util.extract(i128, a.wide) * util.extract(i128, b.wide)) },
         .compfloat => .{ .wide = util.fit(u128, util.extract(f128, a.wide) * util.extract(f128, b.wide)) },
@@ -412,6 +403,28 @@ fn mulValues(self: *Parser, left: Value, right: Value) Error!Value {
     };
     return .{ .type = t, .payload = payload };
 }
+fn splatNumber(self: *Parser, vector_type: tp.Vector, wide: u128) Error!Value {
+    return switch (vector_type.len) {
+        inline else => |l| switch (vector_type.component.type) {
+            inline else => |nt| switch (vector_type.component.width) {
+                inline else => |width| blk: {
+                    const comptype: Type = .{ .number = .{ .type = nt, .width = width } };
+                    const T = comptype.ToZig();
+                    const V = @Vector(@intCast(@intFromEnum(l)), T);
+
+                    const num = util.extract(T, wide);
+                    const ptr = try self.create(V);
+                    inline for (0..@intFromEnum(l)) |i| ptr[i] = num;
+
+                    break :blk .{
+                        .type = .{ .vector = .{ .len = l, .component = comptype.number } },
+                        .payload = .{ .ptr = @ptrCast(@alignCast(ptr)) },
+                    };
+                },
+            },
+        },
+    };
+}
 fn addValues(left: Value, right: Value) Error!Value {
     const t, const a, const b = try implicitCastEqualizeValues(left, right);
 
@@ -423,7 +436,6 @@ fn addValues(left: Value, right: Value) Error!Value {
     };
     return .{ .type = t, .payload = payload };
 }
-
 pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expression {
     if (@"type" == .unknown) return expr;
 

@@ -48,6 +48,9 @@ pub const Type = union(enum) {
             else => true,
         };
     }
+    pub fn isScalar(self: Type) bool {
+        return self == .compfloat or self == .compint or self == .number;
+    }
 
     pub fn depth(self: Type) u32 {
         return switch (self) {
@@ -140,7 +143,7 @@ pub const Vector = struct {
         return slice;
     }
 };
-const VectorLen = enum(u8) { _2 = 2, _3 = 3, _4 = 4 };
+pub const VectorLen = enum(u8) { _2 = 2, _3 = 3, _4 = 4 };
 
 pub const Number = struct {
     type: NumberType,
