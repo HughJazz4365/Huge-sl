@@ -34,7 +34,8 @@ fn refine(self: *Parser, expr: Expression) Error!Expression {
 }
 fn refineIdentifier(self: *Parser, identifier: []const u8) Error!Expression {
     const var_ref = try self.current_scope.getVariableReference(self, identifier);
-    return var_ref.value;
+    if (var_ref.is_mutable) return .{ .identifier = identifier };
+    return if (var_ref.value) |v| v.* else .{ .identifier = identifier };
 }
 
 fn refineCast(self: *Parser, cast: Parser.Cast) Error!Expression {
@@ -286,7 +287,9 @@ fn refineAdd(self: *Parser, left: *Expression, right: *Expression) Error!Express
     var left_expr, var left_type, var right_expr, var right_type = .{ left.*, try self.typeOf(left.*), right.*, try self.typeOf(right.*) };
 
     if (!equalizeExprTypesIfUnknown(self, &left_expr, &left_type, &right_expr, &right_type)) return initial;
-    if (left_type.isScalar() or right_type.isScalar()) try equalizeScalarTypes(self, &left_expr, &left_type, &right_expr, &right_type);
+    std.debug.print("lt: {f}, rt: {f}\n", .{ left_type, right_type });
+    if (left_type.isScalar() or right_type.isScalar()) try equalizeScalarTypes(self, &left_expr, left_type, &right_expr, right_type);
+    std.debug.print("lt: {f}, rt: {f}\n", .{ left_type, right_type });
     if (!left_type.eql(right_type)) return self.errorInvalidOperandTypes(left_type, .@"+", right_type);
     //add values
     if (left_expr == .value and right_expr == .value) return .{ .value = try addValues(left_expr.value.type, left_expr.value.payload, right_expr.value.payload) };
@@ -323,7 +326,7 @@ fn refineMul(self: *Parser, left: *Expression, right: *Expression) Error!Express
         left.*, right.* = .{ left_expr, right_expr };
         return initial;
     } else if (left_type.isScalar()) {
-        try equalizeScalarTypes(self, &left_expr, &left_type, &right_expr, &right_type);
+        try equalizeScalarTypes(self, &left_expr, left_type, &right_expr, right_type);
         if (left_expr == .value and right_expr == .value)
             return .{ .value = try mulVecOrScalarValues(self, left_expr.value, right_expr.value) };
 
@@ -346,12 +349,10 @@ fn equalizeExprTypesIfUnknown(self: *Parser, left_expr: *Expression, left_type: 
     }
     return true;
 }
-fn equalizeScalarTypes(self: *Parser, left_expr: *Expression, left_type: *Type, right_expr: *Expression, right_type: *Type) Error!void {
-    const result_type: Type = if (left_type.scalarRestrictiveness() > right_type.scalarRestrictiveness()) left_type.* else right_type.*;
+fn equalizeScalarTypes(self: *Parser, left_expr: *Expression, left_type: Type, right_expr: *Expression, right_type: Type) Error!void {
+    const result_type: Type = if (left_type.scalarRestrictiveness() > right_type.scalarRestrictiveness()) left_type else right_type;
     left_expr.* = try self.implicitCast(left_expr.*, result_type);
     right_expr.* = try self.implicitCast(right_expr.*, result_type);
-    left_type.* = result_type;
-    right_type.* = result_type;
 }
 fn dotValues(left: Value, right: Value) Error!Value {
     const t, const a, const b = try implicitCastEqualizeValues(left, right);

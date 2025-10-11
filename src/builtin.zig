@@ -6,20 +6,30 @@ const Parser = @import("Parser.zig");
 pub const InterpolationQualifier = enum { smooth, flat, noperspective };
 pub const UniformAccessQualifier = enum { private, public };
 
-const name_map: std.StaticStringMap(FunctionType) = .initComptime(.{
-    .{ "colHex", colHexFType },
-    .{ "reflect", reflectFType },
+pub fn getBuiltin(name: []const u8) Parser.Error!Builtin {
+    return name_map.get(name) orelse Parser.Error.InvalidBuiltin;
+}
+const name_map: std.StaticStringMap(Builtin) = .initComptime(.{
+    .{ "colHex", colHex },
+    .{ "reflect", reflect },
 });
+const Builtin = struct {
+    type: Type,
+};
 
-const reflectFType: FunctionType = .{
-    .rtyep = vec3_type,
-    .arg_types = &.{ vec3_type, vec3_type },
+const reflect: Builtin = .{
+    .type = .{ .function = .{
+        .rtype = &vec3_type,
+        .arg_types = &.{ vec3_type, vec3_type },
+    } },
 };
-const colHexFType: FunctionType = .{
-    .rtype = vec3_type,
-    .arg_types = &.{i32_type},
+const colHex: Builtin = .{
+    .type = .{ .function = .{
+        .rtype = &vec3_type,
+        .arg_types = &.{u32_type},
+    } },
 };
-const i32_type: Type = .{ .number = .{ .type = .int, .width = .word } };
+const u32_type: Type = .{ .number = .{ .type = .uint, .width = .word } };
 const vec3_type: Type = .{ .vector = .{ .len = ._3, .component = .{ .type = .float, .width = .word } } };
 
 const Type = tp.Type;

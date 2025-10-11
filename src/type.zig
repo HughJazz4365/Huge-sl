@@ -51,6 +51,14 @@ pub const Type = union(enum) {
     pub fn isScalar(self: Type) bool {
         return self == .compfloat or self == .compint or self == .number;
     }
+    pub fn scalarRestrictiveness(self: Type) u3 {
+        return switch (self) {
+            .compint => 1,
+            .compfloat => 2,
+            .number => 3,
+            else => 0,
+        };
+    }
 
     pub fn depth(self: Type) u32 {
         return switch (self) {
@@ -88,8 +96,8 @@ pub const ConstructorStructure = struct {
 };
 
 pub const FunctionType = struct {
-    rtype: *Type,
-    arg_types: []Type,
+    rtype: *const Type,
+    arg_types: []const Type,
 };
 
 pub const ShaderStage = enum { vertex, fragment, compute };
@@ -103,7 +111,7 @@ pub const Matrix = struct {
     }
 };
 pub const Array = struct {
-    child: *Type,
+    child: *const Type,
     len: u32,
     pub fn ToZig(comptime arr: Array) type {
         return [arr.len](arr.child.*).ToZig();

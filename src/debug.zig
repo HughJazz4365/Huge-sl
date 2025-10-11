@@ -92,7 +92,7 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
         .vector => |vector| switch (vector.len) {
             inline else => |len| switch (vector.component.width) {
                 inline else => |width| switch (vector.component.type) {
-                    inline else => |num_type| std.debug.print("|{f}|{d}", .{
+                    inline else => |num_type| try writer.print("|{f}|{d}", .{
                         value.type,
                         @as(*const (tp.Vector{ .len = len, .component = .{ .width = width, .type = num_type } }).ToZig(), @ptrCast(@alignCast(value.payload.ptr))).*,
                     }),
@@ -121,7 +121,6 @@ pub fn formatToken(token: Token, writer: *std.Io.Writer) !void {
         inline else => |value, tag| try writer.print("[{s}]: {any}", .{ @tagName(tag), value }),
     }
 }
-const p = std.debug.print;
 const Expression = Parser.Expression;
 const Statement = Parser.Statement;
 const Token = Parser.Token;

@@ -22,6 +22,7 @@ pub const Error = error{
 
     UnexpectedToken,
 
+    InvalidBuiltin,
     UndeclaredVariable,
     VariableRedeclaration,
     RepeatingArgumentNames,
@@ -53,28 +54,6 @@ pub const Error = error{
     RecursionNotSupported,
     NegativePower, //a ^ (- |r|)
 } || Tokenizer.Error;
-
-pub fn UnexpectedToken(self: *Parser, token: Token) Error {
-    return self.errorOutFmt(
-        Error.UnexpectedToken,
-        "Unexpected token \'{f}\'",
-        .{token},
-    );
-}
-pub fn errorOutDefault(self: *Parser, comptime err: Error) Error {
-    return self.errorOutFmt(err, switch (err) {
-        Error.MissingInitializer => "Constants must have initializers",
-        else => return self.errorOut(err),
-    }, .{});
-}
-pub fn errorOut(self: *Parser, err: Error) Error {
-    return self.errorOutFmt(err, "", .{});
-}
-pub fn errorOutFmt(self: *Parser, err: Error, comptime fmt: []const u8, args: anytype) Error {
-    const offset = @intFromPtr(self.tokenizer.state.last_ptr) - @intFromPtr(self.tokenizer.full_source.ptr);
-    self.tokenizer.err_ctx.printError(offset, err, fmt, args);
-    return err;
-}
 
 pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
     var self: Parser = .{};
@@ -165,19 +144,12 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
 
         else => try self.parseAssignmentOrIgnore(),
     };
-    //1.if token == return => .return
-    //2.if token == break => .break
-    //3.try parsing qualifier, if can => continue to parse var_decl
-    //4. parse expr if next token is '='
-    //its an assignment and we parse the assigned value
-    //else expr is .ignored
-
 }
 fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
     const target = try self.parseExpressionRecursive(assignmentShouldStop, false, 0);
     const peek = try self.tokenizer.peek();
     if (self.defaultShouldStop(peek) catch unreachable) return .{ .ignore = target };
-    if (!try self.isExprMutable(target)) return Error.MutatingImmutableVariable;
+    if (!try self.isExprMutable(target)) return self.errorOutFmt(Error.MutatingImmutableVariable, "Trying to mutate unmutable variable: {f}", .{target});
 
     const modifier: ?BinaryOperator = if (peek == .bin_op) op: {
         self.tokenizer.skip();
@@ -283,7 +255,7 @@ pub const VariableDeclaration = struct {
         return .{
             .is_mutable = self.qualifier.isMutable(),
             .type = self.type,
-            .value = if (self.initializer.isEmpty()) null else &self.initializer,
+            .value = if (self.initializer.isEmpty() or self.initializer != .value) .{ .identifier = self.name } else self.initializer,
         };
     }
 };
@@ -478,7 +450,7 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
 
                     for (arg_names.items) |past_name| if (util.strEql(name, past_name)) return Error.RepeatingArgumentNames;
                     blk: {
-                        _ = self.global_scope.getVariableReference(name) catch break :blk;
+                        _ = self.global_scope.getVariableReference(self, name) catch break :blk;
                         return self.errorOutFmt(Error.VariableRedeclaration, "Function argument name '{s}' aliases with a global variable", .{name});
                     }
                     const index = arg_types.items.len;
@@ -507,7 +479,7 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
             switch (peek_end) {
                 .@")" => {},
                 .@"," => self.tokenizer.skip(),
-                else => return self.UnexpectedToken(peek_end),
+                else => return self.errorUnexpectedToken(peek_end),
             }
             peek = try self.tokenizer.peek();
         }
@@ -618,7 +590,7 @@ pub const Function = struct {
         } else for (function.arg_names) |n| if (util.strEql(n, name)) return;
         return Error.UndeclaredVariable;
     }
-    fn getVariableReferenceFn(scope: *Scope, name: []const u8) Error!VariableReference {
+    fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
         const function: *Function = @fieldParentPtr("scope", scope);
         return for (function.body.items) |*statement| {
             if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
@@ -627,9 +599,9 @@ pub const Function = struct {
             if (util.strEql(name, n)) break .{
                 .is_mutable = false,
                 .type = t,
-                .value = null,
+                .value = .{ .identifier = name },
             };
-        } else Error.UndeclaredVariable;
+        } else try parser.global_scope.getVariableReference(parser, name);
     }
 };
 
@@ -664,12 +636,12 @@ pub const EntryPoint = struct {
         );
         try entry_point.body.append(parser.arena.allocator(), statement);
     }
-    pub fn getVariableReferenceFn(scope: *Scope, name: []const u8) Error!VariableReference {
+    pub fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
         const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);
         return for (entry_point.body.items) |*statement| {
             if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
                 break statement.var_decl.variableReference();
-        } else try scope.parent.getVariableReference(name);
+        } else try parser.global_scope.scope.getVariableReference(parser, name);
     }
     fn trackReferenceFn(scope: *Scope, name: []const u8, ref_type: Scope.DeclReferenceType) Error!void {
         const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);
@@ -703,7 +675,8 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
         .value => |value| value.type,
         .constructor => |constructor| constructor.type,
         .cast => |cast| cast.type,
-        .identifier => |identifier| (try self.current_scope.getVariableReference(identifier)).type,
+        .identifier => |identifier| (try self.current_scope.getVariableReference(self, identifier)).type,
+        .builtin => |b| (try bi.getBuiltin(b)).type,
         .bin_op => |bin_op| try self.typeOfBinOp(bin_op),
         .u_op => |u_op| try self.typeOfUOp(u_op),
         .indexing => |indexing| (try self.typeOf(indexing.target.*)).constructorStructure().component,
@@ -722,19 +695,30 @@ fn typeOfUOp(self: *Parser, u_op: UOp) Error!Type {
 }
 fn typeOfBinOp(self: *Parser, bin_op: BinOp) Error!Type {
     return switch (bin_op.op) {
-        .@"+", .@"-", .@"*", .@"^" => blk: {
-            const left_type = try self.typeOf(bin_op.left.*);
-            const right_type = try self.typeOf(bin_op.right.*);
-            break :blk if (left_type.eql(right_type)) left_type else .unknownempty;
+        .@"^" => try self.typeOf(bin_op.left.*), //temp
+        .@"+", .@"-" => blk: {
+            const left = try self.typeOf(bin_op.left.*);
+            const right = try self.typeOf(bin_op.right.*);
+            break :blk if (left.eql(right)) left else .unknownempty;
+        },
+        .@"*" => blk: {
+            var deep = try self.typeOf(bin_op.left.*);
+            var shallow = try self.typeOf(bin_op.right.*);
+            if (deep == .unknown or shallow == .unknown) return .unknownempty;
+            if (shallow.depth() > deep.depth()) std.mem.swap(Type, &deep, &shallow);
+
+            const result: Type = if ((deep == .matrix and shallow == .number) or
+                (deep == .vector and shallow == .number) or
+                shallow.eql(deep))
+                deep
+            else if (deep == .matrix and shallow == .vector) shallow else .unknownempty;
+
+            break :blk result;
         },
         .@"\"", .@"'" => blk: {
             const left_type = try self.typeOf(bin_op.left.*);
             const right_type = try self.typeOf(bin_op.right.*);
-            if (right_type == .unknown or left_type == .unknown) break :blk .unknownempty;
-            if (left_type == .vector and left_type.eql(right_type)) {
-                const cs = left_type.constructorStructure();
-                break :blk cs.component;
-            } else return Error.InvalidOperands;
+            break :blk if (left_type == .vector and left_type.eql(right_type)) left_type.constructorStructure().component else .unknownempty;
         },
     };
 }
@@ -790,7 +774,7 @@ pub fn asTypeCreate(self: *Parser, expr: Expression) Error!Type {
 }
 pub fn isExprMutable(self: *Parser, expr: Expression) Error!bool {
     return switch (expr) {
-        .identifier => |identifier| (try self.current_scope.getVariableReference(identifier)).is_mutable,
+        .identifier => |identifier| (try self.current_scope.getVariableReference(self, identifier)).is_mutable,
         .indexing => |indexing| try self.isExprMutable(indexing.target.*),
         else => false,
     };
@@ -846,8 +830,8 @@ pub const GlobalScope = struct {
     pub fn addStatement(self: *GlobalScope, parser: *Parser, statement: Statement) Error!void {
         try addStatementFn(&self.scope, parser, statement);
     }
-    fn getVariableReference(self: *GlobalScope, name: []const u8) Error!VariableReference {
-        return try getVariableReferenceFn(&self.scope, name);
+    fn getVariableReference(self: *GlobalScope, parser: *Parser, name: []const u8) Error!VariableReference {
+        return try getVariableReferenceFn(&self.scope, parser, name);
     }
 
     fn addStatementFn(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
@@ -855,12 +839,12 @@ pub const GlobalScope = struct {
         if (!(try parser.isStatementComplete(statement))) return Error.IncompleteStatement;
         try global_scope.body.append(parser.arena.allocator(), statement);
     }
-    fn getVariableReferenceFn(scope: *Scope, name: []const u8) Error!VariableReference {
+    fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
         const global_scope: *GlobalScope = @fieldParentPtr("scope", scope);
         return for (global_scope.body.items) |*statement| {
             if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
                 break statement.var_decl.variableReference();
-        } else Error.UndeclaredVariable;
+        } else parser.errorUndeclaredVariable(name);
     }
     fn trackReferenceFn(scope: *Scope, name: []const u8, ref_type: Scope.DeclReferenceType) Error!void {
         const global_scope: *GlobalScope = @fieldParentPtr("scope", scope);
@@ -877,7 +861,7 @@ pub const GlobalScope = struct {
 pub const Scope = struct {
     addStatementFn: *const fn (*Scope, *Parser, Statement) Error!void = undefined,
     //add a Parser field so scope can accerr global scope directly
-    getVariableReferenceFn: *const fn (*Scope, []const u8) Error!VariableReference = undefined,
+    getVariableReferenceFn: *const fn (*Scope, *Parser, []const u8) Error!VariableReference = undefined,
     trackReferenceFn: *const fn (*Scope, []const u8, DeclReferenceType) Error!void = undefined,
 
     parent: *Scope = undefined,
@@ -889,21 +873,21 @@ pub const Scope = struct {
         try self.addStatementFn(self, parser, statement);
     }
 
-    pub inline fn getVariableReference(self: *Scope, name: []const u8) Error!VariableReference {
-        return try self.getVariableReferenceFn(self, name);
+    pub inline fn getVariableReference(self: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
+        return try self.getVariableReferenceFn(self, parser, name);
     }
 
     pub inline fn trackReference(self: *Scope, name: []const u8, ref_type: DeclReferenceType) Error!void {
         try self.trackReferenceFn(self, name, ref_type);
     }
-    pub fn defaltGetVariableReference(T: type) fn (*Scope, []const u8) Error!VariableReference {
+    pub fn defaltGetVariableReference(T: type) fn (*Scope, *Parser, []const u8) Error!VariableReference {
         return struct {
-            pub fn f(scope: *Scope, name: []const u8) Error!VariableReference {
+            pub fn f(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
                 const impl: *T = @fieldParentPtr("scope", scope);
                 return for (impl.body.items) |*statement| {
                     if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
                         break statement.var_decl.variableReference();
-                } else try scope.parent.getVariableReference(name);
+                } else try scope.parent.getVariableReference(parser, name);
             }
         }.f;
     }
@@ -911,10 +895,7 @@ pub const Scope = struct {
 pub const VariableReference = struct {
     is_mutable: bool,
     type: Type,
-    value: ?*Expression,
-    pub fn isComptime(self: VariableReference) bool {
-        return if (self.value) |v| v.* == .value else false;
-    }
+    value: Expression,
 };
 
 fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
@@ -963,6 +944,38 @@ pub const ValuePayload = union {
     type: Type,
     ptr: *const anyopaque,
 };
+
+pub fn errorInvalidOperandTypes(self: *Parser, left_type: Type, op: Tokenizer.BinaryOperator, right_type: Type) Error {
+    return errorOutFmt(self, Error.InvalidOperands, "Invalid operand types: {f} {s} {f}", .{ left_type, @tagName(op), right_type });
+}
+pub fn errorUndeclaredVariable(self: *Parser, name: []const u8) Error {
+    return self.errorOutFmt(
+        Error.UndeclaredVariable,
+        "Undeclared variable \'{s}\'",
+        .{name},
+    );
+}
+pub fn errorUnexpectedToken(self: *Parser, token: Token) Error {
+    return self.errorOutFmt(
+        Error.UnexpectedToken,
+        "Unexpected token \'{f}\'",
+        .{token},
+    );
+}
+pub fn errorOutDefault(self: *Parser, comptime err: Error) Error {
+    return self.errorOutFmt(err, switch (err) {
+        Error.MissingInitializer => "Constants must have initializers",
+        else => return self.errorOut(err),
+    }, .{});
+}
+pub fn errorOut(self: *Parser, err: Error) Error {
+    return self.errorOutFmt(err, "", .{});
+}
+pub fn errorOutFmt(self: *Parser, err: Error, comptime fmt: []const u8, args: anytype) Error {
+    const offset = @intFromPtr(self.tokenizer.state.last_ptr) - @intFromPtr(self.tokenizer.full_source.ptr);
+    self.tokenizer.err_ctx.printError(offset, err, fmt, args);
+    return err;
+}
 
 const ShouldStopFn = fn (*Parser, Token) Error!bool;
 const List = std.ArrayList;

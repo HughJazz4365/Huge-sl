@@ -63,7 +63,6 @@ fn nextFat(self: *Tokenizer) Error!FatToken {
         };
     }
 
-    //before op s ??
     if (try self.getNumberLiteralRaw(bytes)) |l| return l;
 
     const bin_op_match = util.matchToEnum(BinaryOperator, bytes);
@@ -90,11 +89,8 @@ fn nextFat(self: *Tokenizer) Error!FatToken {
 
     if (getTypeLiteralRaw(bytes)) |t| return t;
 
-    // strip valid identifier
     const is_builtin = bytes[0] == '@';
     const valid_identifier = try self.stripValidIdentifier(bytes[@intFromBool(is_builtin)..]);
-    // if(is_builtin)chechIfItsAValidBuiltin;
-    // if (is_builtin) std.debug.print("BI: {s}\n", .{valid_identifier});
 
     return if (is_builtin)
         .{ .len = valid_identifier.len + 1, .token = .{ .builtin = valid_identifier } }
@@ -139,7 +135,6 @@ fn getNumberLiteralRaw(self: *Tokenizer, bytes: []const u8) Error!?FatToken {
 
     if (count - off - @as(usize, @intFromBool(dot)) == 0)
         return null;
-    // std.debug.print("lit: {s}, toparse: {s}\n", .{ bytes[0..count], bytes[off..count] });
     return .{ .len = count, .token = if (dot) .{ .compfloat = blk: {
         const f = std.fmt.parseFloat(f128, bytes[off..count]) catch return self.errorInvalidNumberLiteral(bytes[0..count], true);
         break :blk if (neg) -f else f;
@@ -225,7 +220,6 @@ fn stripValidIdentifier(self: *Tokenizer, bytes: []const u8) Error![]const u8 {
                 letter = true;
                 break :blk true;
             },
-            // '_' => true,
             '0'...'9' => i != 0,
             else => false,
         }) break i;
