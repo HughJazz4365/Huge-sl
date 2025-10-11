@@ -28,6 +28,7 @@ pub const Error = error{
 
     IncompleteStatement,
     MutatingImmutableVariable,
+    MissingFunctionBody,
     StageInputCantHaveInitialValue,
     UnexpectedInitializer,
     MissingInitializer,
@@ -219,15 +220,8 @@ fn parseVarDecl(self: *Parser, token: Token) Error!VariableDeclaration {
 
             if (!qualifier.canHaveInitializer())
                 return self.errorOutFmt(Error.UnexpectedInitializer, "Variable with \'{s}\' qualifier cant have initializers", .{@tagName(qualifier)});
-            const p =
-                try self.parseExpression(defaultShouldStop);
-            // std.debug.print("EEE:{f}, {f}\n", .{ p, try self.typeOf(p) });
 
-            const expr = try self.implicitCast(
-                p,
-
-                @"type",
-            );
+            const expr = try self.implicitCast(try self.parseExpression(defaultShouldStop), @"type");
             if (@"type".isEmpty()) @"type" = try self.typeOf(expr);
             break :blk expr;
         },
@@ -279,7 +273,7 @@ pub const VariableDeclaration = struct {
         return .{
             .is_mutable = self.qualifier.isMutable(),
             .type = self.type,
-            .value = &self.initializer,
+            .value = if (self.initializer.isEmpty()) null else &self.initializer,
         };
     }
 };
@@ -402,7 +396,6 @@ fn parseFunctionCall(self: *Parser, callee: Expression) Error!Call {
     if (@"type" == .unknown) return .{ .callee = callee_ptr, .args = args };
     if (@"type" != .function) return Error.InvalidCall;
     const ft = @"type".function;
-    std.debug.print("FT: {f}\n", .{@"type"});
 
     if (ft.arg_types.len != args.len) return Error.NonMatchingArgumentCount;
     for (ft.arg_types, args) |t, *arg| arg.* = try self.implicitCast(arg.*, t);
@@ -456,19 +449,20 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
             .arg_types = &.{},
         } } },
     } };
-    self.tokenizer.skip();
 
     var arg_types: List(Type) = .empty;
-    var set_index: ?usize = 0;
+    var set_index: ?usize = null;
     var arg_names: List([]const u8) = .empty;
     if (peek == .@"(") {
         self.tokenizer.skip();
         peek = try self.tokenizer.peek();
+
+        defer self.tokenizer.skip();
         while (peek != .@")") {
             switch (mode) {
                 .type => {
                     const type_expr = try self.refine(try self.parseExpression(argDeclShouldStop));
-                    try arg_types.append(self.arena.allocator(), self.asTypeCreate(type_expr));
+                    try arg_types.append(self.arena.allocator(), try self.asTypeCreate(type_expr));
                 },
                 .value => {
                     if (peek != .identifier) return Error.UnexpectedToken;
@@ -476,15 +470,15 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
                     self.tokenizer.skip();
 
                     for (arg_names.items) |past_name| if (util.strEql(name, past_name)) return Error.RepeatingArgumentNames;
-                    {
-                        _ = self.global_scope.getVariableReference(name) catch break;
+                    blk: {
+                        _ = self.global_scope.getVariableReference(name) catch break :blk;
                         return self.errorOutFmt(Error.VariableRedeclaration, "Function argument name '{s}' aliases with a global variable", .{name});
                     }
                     const index = arg_types.items.len;
                     var @"type": Type = .unknownempty;
                     if (try self.tokenizer.peek() == .@":") {
                         self.tokenizer.skip();
-                        if (self.tokenizer.peek() == .@"anytype") {
+                        if (try self.tokenizer.peek() == .@"anytype") {
                             set_index = index;
                         } else {
                             const type_expr = try self.parseExpression(argShouldStop);
@@ -508,24 +502,34 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
             peek = try self.tokenizer.peek();
         }
     }
-    const rtype: Type = .{ .void = {} };
+    // const rtype: Type = .{ .void = {} };
+    const rtype: Type = .{ .number = .{ .type = .float, .width = .word } };
+    if (arg_types.items.len > 0 and if (set_index) |si| si < arg_types.items.len - 1 else true) for (arg_types.items[if (set_index) |si| si else 0..]) |*t| {
+        t.* = rtype;
+    };
+    //determine rtype
     const ftype: tp.FunctionType = .{
-        .rtype = rtype,
+        .rtype = try self.createVal(rtype),
         .arg_types = try arg_types.toOwnedSlice(self.arena.allocator()),
     };
-    if (mode == .unsure) @painc("UNSURE FUNC");
+    std.debug.print("FTYPE: {f}\n", .{Type{ .function = ftype }});
+    if (mode == .unsure) @panic("UNSURE FUNC");
     if (mode == .type) {
         return .{ .value = .{
             .type = .type,
             .payload = .{ .type = .{ .function = ftype } },
         } };
     } else {
-        var result: Function = .{
-            .type = ftype,
-            .arg_names = try arg_names.toOwnedSlice(self.arena.allocator()),
-        };
-        // parseScope(, scope: *Scope)
+        var ptr: *Function = try self.createVal(Function.new(self, ftype, try arg_names.toOwnedSlice(self.arena.allocator())));
+        if (try self.tokenizer.peek() != .@"{") return Error.MissingFunctionBody;
+        self.tokenizer.skip();
 
+        try self.parseScope(&ptr.scope);
+
+        return .{ .value = .{
+            .type = .{ .function = ftype },
+            .payload = .{ .ptr = @ptrCast(@alignCast(ptr)) },
+        } };
     }
 }
 fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
@@ -542,10 +546,9 @@ fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
     var entry_point: EntryPoint = .new(self, stage_info);
     try self.parseScope(&entry_point.scope);
 
-    const ep_ptr = try self.createVal(entry_point);
     return .{ .value = .{
         .type = ep_type,
-        .payload = .{ .ptr = @ptrCast(@alignCast(ep_ptr)) },
+        .payload = .{ .ptr = @ptrCast(@alignCast(try self.createVal(entry_point))) },
     } };
 }
 
@@ -568,12 +571,13 @@ pub const Function = struct {
     has_side_effects: bool = false,
     //is generic
 
-    body: List(Expression) = .empty,
+    body: List(Statement) = .empty,
     scope: Scope,
 
-    pub fn new(self: *Parser, stage_info: ShaderStageInfo) EntryPoint {
+    pub fn new(self: *Parser, ftype: tp.FunctionType, arg_names: [][]const u8) Function {
         return .{
-            .stage_info = stage_info,
+            .type = ftype,
+            .arg_names = arg_names,
             .body = .empty,
             .scope = .{
                 .getVariableReferenceFn = &getVariableReferenceFn,
@@ -583,9 +587,6 @@ pub const Function = struct {
             },
         };
     }
-    pub fn addStatement(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
-        try scope.addStatementFn(scope, parser, statement);
-    }
     fn addStatementFn(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
         const function: *Function = @fieldParentPtr("scope", scope);
         if (!(try parser.isStatementComplete(statement))) return parser.errorOutFmt(
@@ -594,6 +595,29 @@ pub const Function = struct {
             .{statement},
         );
         try function.body.append(parser.arena.allocator(), statement);
+    }
+    fn trackReferenceFn(scope: *Scope, name: []const u8, ref_type: Scope.DeclReferenceType) Error!void {
+        const function: *Function = @fieldParentPtr("scope", scope);
+        for (function.body.items) |*statement| {
+            if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name)) {
+                statement.var_decl.reference_count = if (ref_type == .track) statement.var_decl.reference_count + 1 else statement.var_decl.reference_count -| 1;
+                return;
+            }
+        } else for (function.arg_names) |n| if (util.strEql(n, name)) return;
+        return Error.UndeclaredVariable;
+    }
+    fn getVariableReferenceFn(scope: *Scope, name: []const u8) Error!VariableReference {
+        const function: *Function = @fieldParentPtr("scope", scope);
+        return for (function.body.items) |*statement| {
+            if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
+                break statement.var_decl.variableReference();
+        } else for (function.type.arg_types, function.arg_names) |t, n| {
+            if (util.strEql(name, n)) break .{
+                .is_mutable = false,
+                .type = t,
+                .value = null,
+            };
+        } else Error.UndeclaredVariable;
     }
 };
 
@@ -632,7 +656,7 @@ pub const EntryPoint = struct {
         return for (entry_point.body.items) |*statement| {
             if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
                 break statement.var_decl.variableReference();
-        } else try scope.parent.getVariableReferece(name);
+        } else try scope.parent.getVariableReference(name);
     }
     fn trackReferenceFn(scope: *Scope, name: []const u8, ref_type: Scope.DeclReferenceType) Error!void {
         const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);
@@ -666,11 +690,16 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
         .value => |value| value.type,
         .constructor => |constructor| constructor.type,
         .cast => |cast| cast.type,
-        .identifier => |identifier| (try self.current_scope.getVariableReferece(identifier)).type,
+        .identifier => |identifier| (try self.current_scope.getVariableReference(identifier)).type,
         .bin_op => |bin_op| try self.typeOfBinOp(bin_op),
         .u_op => |u_op| try self.typeOfUOp(u_op),
         .indexing => |indexing| (try self.typeOf(indexing.target.*)).constructorStructure().component,
-        else => .{ .unknown = try self.createVal(expr) }, ///////////////////////////////////ne;
+        .call => |call| switch (try self.typeOf(call.callee.*)) {
+            .function => |function| function.rtype.*,
+            .unknown => .unknownempty,
+            else => Error.CallingTheUncallable,
+        },
+        else => .{ .unknown = try self.createVal(expr) },
     };
 }
 fn typeOfUOp(self: *Parser, u_op: UOp) Error!Type {
@@ -744,11 +773,11 @@ pub const Expression = union(enum) {
     }
 };
 pub fn asTypeCreate(self: *Parser, expr: Expression) Error!Type {
-    return if (self.* == .value and self.value.type == .type) self.value.payload.type else .{ .unknown = try self.createVal(expr) };
+    return if (expr == .value and expr.value.type == .type) expr.value.payload.type else .{ .unknown = try self.createVal(expr) };
 }
 pub fn isExprMutable(self: *Parser, expr: Expression) Error!bool {
     return switch (expr) {
-        .identifier => |identifier| (try self.current_scope.getVariableReferece(identifier)).is_mutable,
+        .identifier => |identifier| (try self.current_scope.getVariableReference(identifier)).is_mutable,
         .indexing => |indexing| try self.isExprMutable(indexing.target.*),
         else => false,
     };
@@ -846,22 +875,31 @@ pub const Scope = struct {
         try self.addStatementFn(self, parser, statement);
     }
 
-    pub inline fn getVariableReferece(self: *Scope, name: []const u8) Error!VariableReference {
+    pub inline fn getVariableReference(self: *Scope, name: []const u8) Error!VariableReference {
         return try self.getVariableReferenceFn(self, name);
     }
 
     pub inline fn trackReference(self: *Scope, name: []const u8, ref_type: DeclReferenceType) Error!void {
-        // std.debug.print("TRACKREF\n", .{});
         try self.trackReferenceFn(self, name, ref_type);
-        // @panic("RIaiornstoirns");
+    }
+    pub fn defaltGetVariableReference(T: type) fn (*Scope, []const u8) Error!VariableReference {
+        return struct {
+            pub fn f(scope: *Scope, name: []const u8) Error!VariableReference {
+                const impl: *T = @fieldParentPtr("scope", scope);
+                return for (impl.body.items) |*statement| {
+                    if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
+                        break statement.var_decl.variableReference();
+                } else try scope.parent.getVariableReference(name);
+            }
+        }.f;
     }
 };
 pub const VariableReference = struct {
     is_mutable: bool,
     type: Type,
-    value: *Expression,
+    value: ?*Expression,
     pub fn isComptime(self: VariableReference) bool {
-        return !self.is_mutable and self.value.* == .value;
+        return if (self.value) |v| v.* == .value else false;
     }
 };
 

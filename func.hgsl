@@ -1,5 +1,5 @@
 
-const double = fn(x)f32{
+const double = fn(x){
 	return x*2
 }
 //const double = fn(x)f32=>x*2

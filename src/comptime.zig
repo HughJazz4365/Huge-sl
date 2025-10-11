@@ -26,8 +26,8 @@ fn refine(self: *Parser, expr: Expression) Error!Expression {
     };
 }
 fn refineIdentifier(self: *Parser, identifier: []const u8) Error!Expression {
-    const var_ref = try self.current_scope.getVariableReferece(identifier);
-    return if (var_ref.isComptime()) var_ref.value.* else .{ .identifier = identifier };
+    const var_ref = try self.current_scope.getVariableReference(identifier);
+    return if (var_ref.value) |v| v.* else .{ .identifier = identifier };
 }
 
 fn refineCast(self: *Parser, cast: Parser.Cast) Error!Expression {
@@ -331,7 +331,11 @@ fn refineMul(self: *Parser, left: *Expression, right: *Expression) Error!Express
 
         left.*, right.* = .{ left_expr, right_expr };
         return initial;
-    } else return self.errorOut(Error.InvalidOperands);
+    } else return self.errorOutFmt(
+        Error.InvalidOperands,
+        "Invalid multiplication operands: {f} * {f}",
+        .{ left_type, right_type },
+    );
 }
 fn dotValues(left: Value, right: Value) Error!Value {
     const t, const a, const b = try implicitCastEqualizeValues(left, right);
@@ -468,21 +472,17 @@ fn implicitCastEqualizeValues(a: Value, b: Value) Error!EqualizeResult {
 
     //'first' comes first in Type union
     var reordered = false;
-    std.debug.print("a: {f}, b: {f}\n", .{ a, b });
     var first, const second = blk: {
         const a_tag_value = @intFromEnum(std.meta.activeTag(a.type));
         const b_tag_value = @intFromEnum(std.meta.activeTag(b.type));
-        std.debug.print("atv: {d}, btv: {d}\n", .{ a_tag_value, b_tag_value });
         const should_reorder = a_tag_value > b_tag_value;
         reordered = should_reorder;
         break :blk if (should_reorder) [2]Value{ b, a } else [2]Value{ a, b };
     };
 
-    std.debug.print("first: {f}, second: {f}\n", .{ first, second });
     switch (second.type) {
         .compfloat, .number => first = try implicitCastValue(first, second.type),
         else => {
-            std.debug.print("a: {f}, b: {f}\n", .{ a, b });
             return Error.InvalidOperands;
         },
     }
