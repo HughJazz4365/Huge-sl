@@ -1,6 +1,6 @@
 
-const double = fn(x){
-	return x*2
+const double = fn(x: u32, y) f32{
+	return  y + .{x*2}
 }
 //const double = fn(x)f32=>x*2
 
@@ -8,6 +8,6 @@ const double = fn(x){
 
 const main = entrypoint(.fragment){
 	in exposure: f32
-	out col : vec4 = .{double(exposure)}
+	out col : vec4 = .{double(.{exposure}, 1)}
 }
 

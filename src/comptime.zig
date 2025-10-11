@@ -5,6 +5,13 @@ const Parser = @import("Parser.zig");
 
 const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(i128, -1)) } };
 
+fn errorImplicitCast(self: *Parser, expr: Expression, @"type": Type) Error {
+    return self.errorOutFmt(
+        Error.CannotImplicitlyCast,
+        "Cannot implicitly cast \'{f}\' to \'{f}\'",
+        .{ expr, @"type" },
+    );
+}
 pub fn refineTopLevel(self: *Parser, expr: Expression) Error!Expression {
     const result = try refine(self, expr);
     //can be triggered multiple times from one expr = bad
@@ -274,6 +281,7 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
     // const right = if (bin_op.right.* != .value) return initial else bin_op.right.value;
     return switch (bin_op.op) {
         .@"*" => try refineMul(self, bin_op.left, bin_op.right),
+        .@"+" => try refineAdd(self, bin_op.left, bin_op.right),
         else => .{ .bin_op = bin_op },
         // return switch (bin_op.op) {
         // .@"+" => .{ .value = try addValues(left, right) },
@@ -284,23 +292,21 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
         // else => initial,
     };
 }
+fn refineAdd(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
+    const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@"+" } };
+    var left_expr, var left_type, var right_expr, var right_type = .{ left.*, try self.typeOf(left.*), right.*, try self.typeOf(right.*) };
+
+    if (!equalizeExprTypesIfUnknown(self, &left_expr, &left_type, &right_expr, &right_type)) return initial;
+    //add values
+    left.*, right.* = .{ left_expr, right_expr };
+    return initial;
+}
 fn refineMul(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
     const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@"*" } };
 
-    var left_expr = left.*;
-    var right_expr = right.*;
+    var left_expr, var left_type, var right_expr, var right_type = .{ left.*, try self.typeOf(left.*), right.*, try self.typeOf(right.*) };
 
-    var left_type = try self.typeOf(left_expr);
-    var right_type = try self.typeOf(right_expr);
-
-    if (left_type == .unknown and right_type == .unknown) return initial;
-    if (left_type == .unknown) {
-        left_expr = self.implicitCast(left_expr, right_type) catch return initial;
-        left_type = right_type;
-    } else if (right_type == .unknown) {
-        right_expr = self.implicitCast(right_expr, left_type) catch return initial;
-        right_type = left_type;
-    }
+    if (!equalizeExprTypesIfUnknown(self, &left_expr, &left_type, &right_expr, &right_type)) return initial;
 
     //TODO: matrix bs
     if (left_type == .matrix) {
@@ -336,6 +342,17 @@ fn refineMul(self: *Parser, left: *Expression, right: *Expression) Error!Express
         "Invalid multiplication operands: {f} * {f}",
         .{ left_type, right_type },
     );
+}
+fn equalizeExprTypesIfUnknown(self: *Parser, left_expr: *Expression, left_type: *Type, right_expr: *Expression, right_type: *Type) bool {
+    if (left_type.* == .unknown and right_type.* == .unknown) return false;
+    if (left_type.* == .unknown) {
+        left_expr.* = self.implicitCast(left_expr.*, right_type.*) catch return false;
+        left_type.* = right_type.*;
+    } else if (right_type.* == .unknown) {
+        right_expr.* = self.implicitCast(right_expr.*, left_type.*) catch return false;
+        right_type.* = left_type.*;
+    }
+    return true;
 }
 fn dotValues(left: Value, right: Value) Error!Value {
     const t, const a, const b = try implicitCastEqualizeValues(left, right);
@@ -455,7 +472,7 @@ pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expres
         else => expr,
         .cast => |cast| try implicitCastCast(self, cast, @"type"),
     };
-    return if (@"type".eql(try self.typeOf(result))) result else Error.CannotImplicitlyCast;
+    return if (@"type".eql(try self.typeOf(result))) result else errorImplicitCast(self, result, @"type");
 }
 fn implicitCastCast(self: *Parser, cast: Parser.Cast, @"type": Type) Error!Expression {
     const initial: Expression = .{ .cast = cast };

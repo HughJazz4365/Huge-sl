@@ -54,6 +54,13 @@ pub const Error = error{
     NegativePower, //a ^ (- |r|)
 } || Tokenizer.Error;
 
+pub fn UnexpectedToken(self: *Parser, token: Token) Error {
+    return self.errorOutFmt(
+        Error.UnexpectedToken,
+        "Unexpected token \'{f}\'",
+        .{token},
+    );
+}
 pub fn errorOutDefault(self: *Parser, comptime err: Error) Error {
     return self.errorOutFmt(err, switch (err) {
         Error.MissingInitializer => "Constants must have initializers",
@@ -150,7 +157,10 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
                 if (peek != .@"}") self.tokenizer.skip();
                 break :blk .{ .@"return" = null };
             }
-            break :blk .{ .@"return" = try self.parseExpression(defaultShouldStop) };
+            break :blk .{ .@"return" = try self.implicitCast(
+                try self.refine(try self.parseExpression(defaultShouldStop)),
+                self.current_scope.result_type,
+            ) };
         },
 
         else => try self.parseAssignmentOrIgnore(),
@@ -317,22 +327,16 @@ fn assignmentShouldStop(self: *Parser, token: Token) Error!bool {
     return token == .@"=" or token == .bin_op and peek == .@"=" or self.defaultShouldStop(token) catch unreachable;
 }
 
-fn bracketShouldStop(self: *Parser, token: Token) !bool {
-    _ = self;
+fn bracketShouldStop(_: *Parser, token: Token) !bool {
     return token == .@")";
 }
-
-fn argDeclShouldStop(self: *Parser, token: Token) !bool {
-    _ = self;
+fn argDeclShouldStop(_: *Parser, token: Token) !bool {
     return token == .@")" or token == .@"," or token == .@":";
 }
-fn argShouldStop(self: *Parser, token: Token) !bool {
-    _ = self;
+fn argShouldStop(_: *Parser, token: Token) !bool {
     return token == .@")" or token == .@",";
 }
-
-fn constructorShouldStop(self: *Parser, token: Token) !bool {
-    _ = self;
+fn constructorShouldStop(_: *Parser, token: Token) !bool {
     return token == .@"}" or token == .@",";
 }
 
@@ -341,24 +345,7 @@ fn defaultShouldStop(self: *Parser, token: Token) !bool {
 }
 
 fn parseExpressionSide(self: *Parser) Error!Expression {
-    const token = try self.tokenizer.next();
-    var expr: Expression = switch (token) {
-        .u_op => |u_op| .{ .u_op = .{
-            .op = u_op,
-            .target = try self.createVal(try self.refine(try self.parseExpressionSide())),
-        } },
-        .identifier => |id| .{ .identifier = id },
-        .builtin => |b| .{ .builtin = b },
-        .@"(" => try self.parseExpression(bracketShouldStop),
-        .@"." => switch (try self.tokenizer.next()) {
-            .@"{" => try self.refine(try self.parseUnknownConstructor()),
-            else => return Error.UnexpectedToken,
-        },
-        .@"fn" => try self.parseFunctionTypeOrValue(),
-        .entrypoint => try self.parseEntryPointTypeOrValue(),
-        // .compfloat, .compint => .@"if",
-        else => .{ .value = try self.parseValue(token) },
-    };
+    var expr = try self.parseExpressionSidePrimary();
     var peek: Token = undefined;
     while (true) {
         //parseConstructorFunction that will handle all constructrors
@@ -386,6 +373,26 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
     //if '(' => function call
     //if '.' =>  member access
 
+}
+fn parseExpressionSidePrimary(self: *Parser) Error!Expression {
+    const token = try self.tokenizer.next();
+    return switch (token) {
+        .u_op => |u_op| .{ .u_op = .{
+            .op = u_op,
+            .target = try self.createVal(try self.refine(try self.parseExpressionSide())),
+        } },
+        .identifier => |id| .{ .identifier = id },
+        .builtin => |b| .{ .builtin = b },
+        .@"(" => try self.parseExpression(bracketShouldStop),
+        .@"." => switch (try self.tokenizer.next()) {
+            .@"{" => try self.refine(try self.parseUnknownConstructor()),
+            else => return Error.UnexpectedToken,
+        },
+        .@"fn" => try self.parseFunctionTypeOrValue(),
+        .entrypoint => try self.parseEntryPointTypeOrValue(),
+        // .compfloat, .compint => .@"if",
+        else => .{ .value = try self.parseValue(token) },
+    };
 }
 fn parseFunctionCall(self: *Parser, callee: Expression) Error!Call {
     const @"type" = try self.typeOf(callee);
@@ -478,10 +485,12 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
                     var @"type": Type = .unknownempty;
                     if (try self.tokenizer.peek() == .@":") {
                         self.tokenizer.skip();
+
                         if (try self.tokenizer.peek() == .@"anytype") {
+                            self.tokenizer.skip();
                             set_index = index;
                         } else {
-                            const type_expr = try self.parseExpression(argShouldStop);
+                            const type_expr = try self.parseExpressionRecursive(argShouldStop, false, 0);
                             @"type" = try self.asTypeCreate(type_expr);
                             if (arg_types.items.len > 0) for (arg_types.items[(if (set_index) |si| si + 1 else 0)..]) |*t| {
                                 t.* = @"type";
@@ -494,17 +503,18 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
                 },
                 .unsure => _ = &mode,
             }
-            switch (try self.tokenizer.peek()) {
+            const peek_end = try self.tokenizer.peek();
+            switch (peek_end) {
                 .@")" => {},
                 .@"," => self.tokenizer.skip(),
-                else => return Error.UnexpectedToken,
+                else => return self.UnexpectedToken(peek_end),
             }
             peek = try self.tokenizer.peek();
         }
     }
-    // const rtype: Type = .{ .void = {} };
-    const rtype: Type = .{ .number = .{ .type = .float, .width = .word } };
-    if (arg_types.items.len > 0 and if (set_index) |si| si < arg_types.items.len - 1 else true) for (arg_types.items[if (set_index) |si| si else 0..]) |*t| {
+    const rtype = try self.asTypeCreate(try self.refine(try self.parseExpressionSidePrimary()));
+
+    if (arg_types.items.len > 0 and if (set_index) |si| si < arg_types.items.len - 1 else true) for (arg_types.items[if (set_index) |si| si + 1 else 0..]) |*t| {
         t.* = rtype;
     };
     //determine rtype
@@ -583,7 +593,9 @@ pub const Function = struct {
                 .getVariableReferenceFn = &getVariableReferenceFn,
                 .addStatementFn = &addStatementFn,
                 .trackReferenceFn = &trackReferenceFn,
+
                 .parent = self.current_scope,
+                .result_type = ftype.rtype.*,
             },
         };
     }
@@ -635,6 +647,7 @@ pub const EntryPoint = struct {
                 .getVariableReferenceFn = &getVariableReferenceFn,
                 .addStatementFn = &addStatementFn,
                 .trackReferenceFn = &trackReferenceFn,
+
                 .parent = self.current_scope,
             },
         };
@@ -868,6 +881,7 @@ pub const Scope = struct {
     trackReferenceFn: *const fn (*Scope, []const u8, DeclReferenceType) Error!void = undefined,
 
     parent: *Scope = undefined,
+    result_type: Type = Type{ .void = {} },
 
     pub const DeclReferenceType = enum { track, untrack };
 
@@ -960,3 +974,5 @@ pub const Type = tp.Type;
 pub const FunctionType = tp.FunctionType;
 const UnaryOperator = Tokenizer.UnaryOperator;
 pub const Token = Tokenizer.Token;
+
+pub const pr = std.debug.print;

@@ -116,9 +116,9 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
 }
 pub fn formatToken(token: Token, writer: *std.Io.Writer) !void {
     switch (token) {
-        .identifier => |id| try writer.print("[id]: {s}\n", .{id}),
-        .type_literal => |tl| try writer.print("[type_literal]: {s}\n", .{@tagName(tl)}),
-        inline else => |value, tag| try writer.print("[{s}]: {any}\n", .{ @tagName(tag), value }),
+        .identifier => |id| try writer.print("[id]: {s}", .{id}),
+        .type_literal => |tl| try writer.print("[type_literal]: {f}", .{tl}),
+        inline else => |value, tag| try writer.print("[{s}]: {any}", .{ @tagName(tag), value }),
     }
 }
 const p = std.debug.print;
