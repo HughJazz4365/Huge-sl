@@ -54,7 +54,7 @@ pub const Error = error{
     RecursionNotSupported,
     NegativePower, //a ^ (- |r|)
 } || Tokenizer.Error;
-
+///creates its own arena
 pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
     var self: Parser = .{};
     self.allocator = allocator;

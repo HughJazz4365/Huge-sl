@@ -30,10 +30,9 @@ pub fn compile(
 
     var tokenizer: Tokenizer = .new(source, &error_ctx);
     var parser = Parser.parse(allocator, &tokenizer) catch |err| return error_ctx.outputUpdateIfEmpty(err);
-
     defer parser.deinit();
 
-    // var generator: SpirvGen = .new(&parser);
-    // return try generator.generate();
+    // return try SpirvGen.generate(&parser);
     return &.{};
 }
+pub const minimal_frag = "const main = entrypoint(.fragment){}";

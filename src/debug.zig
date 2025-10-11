@@ -69,7 +69,7 @@ pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
 pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
     switch (value.type) {
         .compint => try writer.print("{d}", .{@as(i128, @bitCast(value.payload.wide))}),
-        .compfloat => try writer.print("{d}", .{@as(f128, @bitCast(value.payload.wide))}),
+        .compfloat => try writer.print("{d}f", .{@as(f128, @bitCast(value.payload.wide))}),
         // .number => |num| try writer.print("{d}"
         .entrypoint => {
             try writer.print("{f}{{\n", .{value.type});

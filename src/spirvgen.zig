@@ -15,8 +15,7 @@ allocator: Allocator,
 arena: Allocator,
 parser: *Parser,
 
-//id of '0' is reserved
-id: u32 = 1,
+id: u32 = 1, //id of '0' is reserved
 
 // spirv module structure
 capabilities: Capabilities = .{}, //flag struct
@@ -37,18 +36,16 @@ current_buf: *List(u32) = undefined,
 current_interfaces: *List(u32) = undefined,
 in_function: bool = false,
 
-pub fn new(parser: *Parser) Generator {
-    return .{
-        .parser = parser,
-        .allocator = parser.allocator,
-        .arena = parser.arena.allocator(),
-    };
-}
 pub fn generateDissasembly() Error![]const u8 {
     //TODO:
     // dissasemble(u32) also
 }
-pub fn generate(self: *Generator) Error![]u32 {
+pub fn generate(parser: *Parser) Error![]u32 {
+    var self: Generator = .{
+        .parser = parser,
+        .allocator = parser.allocator,
+        .arena = parser.arena.allocator(),
+    };
     //generate all the stuff by parsing global scope of parsed data
     for (self.parser.global_scope.body.items) |statement|
         try self.generateStatement(statement);

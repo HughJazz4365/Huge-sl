@@ -8,12 +8,14 @@ pub fn main() !void {
 
     var timer = try std.time.Timer.start();
 
-    // const path = "test.hgsl";
-    const path = "source.hgsl";
+    const path = "test.hgsl";
+    // const path = "source.hgsl";
     // const path = "func.hgsl";
 
     const allocator = std.heap.page_allocator;
 
+    // _ = path;
+    // const compiled = try hgsl.compile(allocator, hgsl.minimal_frag, "minimal", &out_writer.interface);
     const compiled = try hgsl.compileFile(allocator, path, &out_writer.interface);
     defer allocator.free(compiled);
     const measure = timer.read();
