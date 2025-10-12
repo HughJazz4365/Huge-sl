@@ -13,8 +13,11 @@ const name_map: std.StaticStringMap(Builtin) = .initComptime(.{
     .{ "colHex", colHex },
     .{ "reflect", reflect },
 });
+//how to represent builtins?
+// functions/ variables separately?
 const Builtin = struct {
     type: Type,
+    pub fn eval(builtin: Builtin,self: *Parser, args: []Expression)
 };
 
 const reflect: Builtin = .{

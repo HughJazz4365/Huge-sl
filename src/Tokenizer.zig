@@ -292,7 +292,7 @@ pub const Token = union(enum) {
     @"}",
     //keywords
     @"const",
-    @"var",
+    mut,
     in,
     out,
     uniform,

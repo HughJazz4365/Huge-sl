@@ -3,7 +3,7 @@
 in normal: vec3
 in world_pos: vec3
 
-push eye_pos: vec3 //public push constant (exposed to shader system)
+push eye_pos: vec3 = .{0}
 const light_dir = |(2 * vec3{3, -4, 0} * 2) 
 
 const light_color : vec3 = @colHex(0xFA_FA_55)
@@ -12,15 +12,12 @@ const ambient = 0.1 //can be a vec3
 
 const spec_pow = 30
 const spec_intensity = 1
-
 const main = entrypoint(.fragment){
 	const albedo : vec3 = .{1,1,1}
 	const diffuse = -light_dir " normal
 
 	const view_dir = |(eye_pos - world_pos)
-	var specular = |@reflect(-light_dir, normal) " view_dir
-	specular ^= spec_pow
-	specular *= spec_intensity
+	mut specular = (|@reflect(-light_dir, normal) " view_dir) ^ spec_pow * spec_intensity
 
-	out color: vec4 = .{(albedo * (diffuse + ambient + specular)), 1}
+	out out_color: vec4 = .{(albedo * (diffuse + ambient + specular)), 1}
 }

@@ -22,27 +22,26 @@ pub const Error = error{
 
     UnexpectedToken,
 
-    InvalidBuiltin,
-    UndeclaredVariable,
-    VariableRedeclaration,
-    RepeatingArgumentNames,
-
+    RecursionNotSupported,
+    UnclosedScope,
     IncompleteStatement,
-    MutatingImmutableVariable,
     MissingFunctionBody,
-    StageInputCantHaveInitialValue,
-    UnexpectedInitializer,
-    MissingInitializer,
-    VariableTypeAndQualifierDontMatch,
-    InvalidCall,
 
-    CallingTheUncallable,
+    VariableRedeclaration,
+    MissingInitializer,
+    RepeatingArgumentNames,
+    VariableTypeAndQualifierDontMatch,
+    UnexpectedInitializer,
+
+    MutatingImmutableVariable,
+    UndeclaredVariable,
+    InvalidCall,
+    InvalidBuiltin,
     NonMatchingArgumentCount,
 
     CannotImplicitlyCast,
     CannotExplicitlyCast,
     CannotInferType,
-    VariableOfUnknownType,
 
     InvalidOperands,
     InvalidUnaryOperationTarget,
@@ -51,7 +50,6 @@ pub const Error = error{
 
     NumericError,
     OutOfBoundsAccess,
-    RecursionNotSupported,
     NegativePower, //a ^ (- |r|)
 } || Tokenizer.Error;
 ///creates its own arena
@@ -128,7 +126,7 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
 
     return switch (token) {
         .eof => null,
-        .@"const", .@"var", .uniform, .push, .shared, .out, .in => blk: {
+        .@"const", .mut, .uniform, .push, .shared, .out, .in => blk: {
             self.tokenizer.skip();
             break :blk .{ .var_decl = try self.parseVarDecl(token) };
         },
@@ -184,6 +182,11 @@ fn parseVarDecl(self: *Parser, token: Token) Error!VariableDeclaration {
     if (name_token != .identifier)
         return self.errorOutFmt(Error.UnexpectedToken, "Expected variable name after qualifier", .{});
 
+    blk: {
+        _ = self.current_scope.getVariableReference(self, name_token.identifier) catch break :blk;
+        return self.errorOutFmt(Error.VariableRedeclaration, "Variable redeclaration: '{s}'", .{name_token.identifier});
+    }
+
     var @"type": Type = .unknownempty;
 
     //type is explicitly specified
@@ -211,7 +214,7 @@ fn parseVarDecl(self: *Parser, token: Token) Error!VariableDeclaration {
             if (@"type".isEmpty()) @"type" = try self.typeOf(expr);
             break :blk expr;
         },
-        else => return Error.UnexpectedToken,
+        else => return self.errorOut(Error.UnexpectedToken),
     };
 
     try self.matchVariableTypeWithQualifier(@"type", qualifier);
@@ -225,9 +228,9 @@ fn parseVarDecl(self: *Parser, token: Token) Error!VariableDeclaration {
 fn matchVariableTypeWithQualifier(self: *Parser, @"type": Type, qualifier: Qualifier) Error!void {
     switch (@"type") {
         // .buffer => onply uniform etc
-        .entrypoint => if (qualifier != .@"const") return self.errorOutFmt(
+        .entrypoint, .function => if (qualifier != .@"const") return self.errorOutFmt(
             Error.VariableTypeAndQualifierDontMatch,
-            "Entry points must be const and not {s}",
+            "Functions and entry points must only be 'const' and not '{s}'",
             .{@tagName(qualifier)},
         ),
         else => {},
@@ -273,7 +276,7 @@ pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, should
     while (!try should_stop(self, token)) {
         if (token != .bin_op) {
             std.debug.print("UT: {f}, left: {f}\n", .{ token, left });
-            return Error.UnexpectedToken;
+            return self.errorOut(Error.UnexpectedToken);
         }
 
         const op = token.bin_op;
@@ -331,7 +334,7 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
                 self.tokenizer.skip();
                 expr = try self.parseCastOrConstructor(expr.asType());
                 continue;
-            } else return Error.UnexpectedToken;
+            } else return self.errorOut(Error.UnexpectedToken);
         }
         if (peek == .@"(") { //call
             self.tokenizer.skip();
@@ -362,7 +365,7 @@ fn parseExpressionSidePrimary(self: *Parser) Error!Expression {
         .@"(" => try self.parseExpression(bracketShouldStop),
         .@"." => switch (try self.tokenizer.next()) {
             .@"{" => try self.refine(try self.parseUnknownConstructor()),
-            else => return Error.UnexpectedToken,
+            else => return self.errorOut(Error.UnexpectedToken),
         },
         .@"fn" => try self.parseFunctionTypeOrValue(),
         .entrypoint => try self.parseEntryPointTypeOrValue(),
@@ -377,10 +380,10 @@ fn parseFunctionCall(self: *Parser, callee: Expression) Error!Call {
     const args = try self.parseExpressionSequence(.@")");
 
     if (@"type" == .unknown) return .{ .callee = callee_ptr, .args = args };
-    if (@"type" != .function) return Error.InvalidCall;
+    if (@"type" != .function) return self.errorOut(Error.InvalidCall);
     const ft = @"type".function;
 
-    if (ft.arg_types.len != args.len) return Error.NonMatchingArgumentCount;
+    if (ft.arg_types.len != args.len) return self.errorOut(Error.NonMatchingArgumentCount);
     for (ft.arg_types, args) |t, *arg| arg.* = try self.implicitCast(arg.*, t);
     return .{ .callee = callee_ptr, .args = args };
 }
@@ -395,7 +398,7 @@ fn parseUnknownConstructor(self: *Parser) Error!Expression {
 fn parseCastOrConstructor(self: *Parser, @"type": Type) Error!Expression {
     const components = try self.parseExpressionSequence(.@"}");
 
-    if (components.len == 0) return Error.InvalidConstructor;
+    if (components.len == 0) return self.errorOut(Error.InvalidConstructor);
 
     return if (components.len == 1) .{ .cast = .{
         .type = @"type",
@@ -448,11 +451,11 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
                     try arg_types.append(self.arena.allocator(), try self.asTypeCreate(type_expr));
                 },
                 .value => {
-                    if (peek != .identifier) return Error.UnexpectedToken;
+                    if (peek != .identifier) return self.errorOut(Error.UnexpectedToken);
                     const name = peek.identifier;
                     self.tokenizer.skip();
 
-                    for (arg_names.items) |past_name| if (util.strEql(name, past_name)) return Error.RepeatingArgumentNames;
+                    for (arg_names.items) |past_name| if (util.strEql(name, past_name)) return self.errorOut(Error.RepeatingArgumentNames);
                     blk: {
                         _ = self.global_scope.getVariableReference(self, name) catch break :blk;
                         return self.errorOutFmt(Error.VariableRedeclaration, "Function argument name '{s}' aliases with a global variable", .{name});
@@ -507,7 +510,7 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
         } };
     } else {
         var ptr: *Function = try self.createVal(Function.new(self, ftype, try arg_names.toOwnedSlice(self.arena.allocator())));
-        if (try self.tokenizer.peek() != .@"{") return Error.MissingFunctionBody;
+        if (try self.tokenizer.peek() != .@"{") return self.errorOut(Error.MissingFunctionBody);
         self.tokenizer.skip();
 
         try self.parseScope(&ptr.scope);
@@ -519,7 +522,7 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
     }
 }
 fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
-    if (try self.tokenizer.next() != .@"(") return Error.UnexpectedToken;
+    if (try self.tokenizer.next() != .@"(") return self.errorOut(Error.UnexpectedToken);
     var token = try self.tokenizer.next();
     while (token != .@")") token = try self.tokenizer.next();
 
@@ -547,7 +550,7 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
             self.tokenizer.skip();
             break;
         }
-    }
+    } else return self.errorOut(Error.UnclosedScope);
 }
 
 pub const Function = struct {
@@ -687,7 +690,7 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
         .call => |call| switch (try self.typeOf(call.callee.*)) {
             .function => |function| function.rtype.*,
             .unknown => .unknownempty,
-            else => Error.CallingTheUncallable,
+            else => Error.InvalidCall,
         },
         else => .{ .unknown = try self.createVal(expr) },
     };
@@ -840,7 +843,7 @@ pub const GlobalScope = struct {
 
     fn addStatementFn(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
         const global_scope: *GlobalScope = @fieldParentPtr("scope", scope);
-        if (!(try parser.isStatementComplete(statement))) return Error.IncompleteStatement;
+        if (!(try parser.isStatementComplete(statement))) return parser.errorOut(Error.IncompleteStatement);
         try global_scope.body.append(parser.arena.allocator(), statement);
     }
     fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
@@ -908,7 +911,7 @@ fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
         .in => .{ .in = .smooth },
         .out => .{ .out = .smooth },
         .@"const" => .@"const",
-        .@"var" => .@"var",
+        .mut => .mut,
         .uniform => .{ .uniform = .private },
         .push => .{ .push = .private },
         .shared => .shared,
@@ -917,7 +920,7 @@ fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
 }
 pub const Qualifier = union(enum) {
     @"const",
-    @"var",
+    mut,
 
     uniform: bi.UniformAccessQualifier,
     push: bi.UniformAccessQualifier,
@@ -931,7 +934,7 @@ pub const Qualifier = union(enum) {
     }
     pub fn isMutable(self: Qualifier) bool {
         return switch (self) {
-            .@"var", .shared, .out => true,
+            .mut, .shared, .out => true,
             .@"const", .in, .uniform, .push => false,
         };
     }

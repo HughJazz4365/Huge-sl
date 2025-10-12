@@ -1,5 +1,6 @@
 const std = @import("std");
 const tp = @import("type.zig");
+const bi = @import("builtin.zig");
 const util = @import("util.zig");
 const Parser = @import("Parser.zig");
 
@@ -29,9 +30,23 @@ fn refine(self: *Parser, expr: Expression) Error!Expression {
         .cast => |cast| try refineCast(self, cast),
         .indexing => |indexing| try refineIndexing(self, indexing),
         .identifier => |identifier| try refineIdentifier(self, identifier),
+        .call => |call| try refineCall(self, call),
         else => expr,
     };
 }
+fn refineCall(self: *Parser, call: Parser.Call) Error!Expression {
+    const initial: Expression = .{ .call = call };
+    if (call.callee == .builtin) {
+        for (call.args) |arg| if (arg != .value) return initial;
+        return try refineBuiltinCall(self, call.callee.builtin, call.args);
+    }
+
+    return initial;
+}
+fn refineBuiltinCall(self: *Parser, builtin_name: []const u8, args: []Expression) Error!Expression {
+    const bulitin = try bi.getBuiltin(builtin_name);
+}
+
 fn refineIdentifier(self: *Parser, identifier: []const u8) Error!Expression {
     const var_ref = try self.current_scope.getVariableReference(self, identifier);
     return var_ref.value;
@@ -305,11 +320,11 @@ fn refineMul(self: *Parser, left: *Expression, right: *Expression) Error!Express
         //mat x mat
         // mat x vec
         // mar x scalar
-        return Error.CallingTheUncallable;
+        return Error.InvalidInput;
     } else if (right_type == .matrix) {
         //vec x mat
         //scalar x mat
-        return Error.CallingTheUncallable;
+        return Error.InvalidInput;
     } else if (left_type == .vector or right_type == .vector) {
         if (right_type == .vector) {
             std.mem.swap(Type, &left_type, &right_type);

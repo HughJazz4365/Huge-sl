@@ -8,8 +8,8 @@ pub fn main() !void {
 
     var timer = try std.time.Timer.start();
 
-    const path = "test.hgsl";
-    // const path = "source.hgsl";
+    // const path = "test.hgsl";
+    const path = "source.hgsl";
     // const path = "func.hgsl";
 
     const allocator = std.heap.page_allocator;
