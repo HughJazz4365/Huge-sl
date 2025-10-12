@@ -121,6 +121,10 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
         self.tokenizer.skip();
         token = try self.tokenizer.peek();
     }
+    if (self.defaultShouldStop(token) catch unreachable) {
+        self.tokenizer.skip();
+        return null;
+    }
 
     return switch (token) {
         .eof => null,
