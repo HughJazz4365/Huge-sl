@@ -12,32 +12,35 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
     const initial: Expression = .{ .call = .{ .callee = callee_ptr, .args = args } };
     return switch (bf) {
         .col_hex => blk: {
+            //not create val if we dont have to
+            const hex = try self.createVal(try self.turnIntoIntermediateVariableIfNeeded(args[0]));
+
             const components = try self.arena.allocator().alloc(Expression, 3);
             for (0..3) |i| {
-                components[i] = .{ .bin_op = .{
-                    .left = try self.createVal(Expression{ .cast = .{
-                        .type = f32_type,
-                        .target = try self.createVal(Expression{ .bin_op = .{
-                            .left = try self.createVal(Expression{ .bin_op = .{
-                                .left = &args[0],
-                                .op = .@">>",
-                                .right = try self.createVal(Expression{ .value = .{
-                                    .type = u32_type,
-                                    .payload = .{ .wide = util.fit(u128, @as(u32, i * 8)) },
-                                } }),
+                components[i] = .{ .cast = .{
+                    .type = f32_type,
+                    .expr = try self.createVal(Expression{ .bin_op = .{
+                        .left = try self.createVal(Expression{ .bin_op = .{
+                            .left = hex,
+                            .op = .@">>",
+                            .right = try self.createVal(Expression{ .value = .{
+                                .type = u32_type,
+                                .payload = .{ .wide = util.fit(u128, @as(u32, @intCast(i * 8))) },
                             } }),
-                            .op = .@"|",
-                            .right = oxAA,
                         } }),
+                        .op = .@"|",
+                        .right = @constCast(&oxFF),
                     } }),
-                    .op = .@"*",
-                    .right = inv_oxAA,
                 } };
             }
 
-            break :blk try self.implicitCast(ct.refineDescend(.{ .constructor = .{
-                .type = vec3_type,
-                .components = components,
+            break :blk try self.implicitCast(try ct.refineDescend(self, .{ .bin_op = .{
+                .left = try self.createVal(Expression{ .constructor = .{
+                    .type = vec3_type,
+                    .components = components,
+                } }),
+                .op = .@"*",
+                .right = @constCast(&inv_oxFF),
             } }), vec3_type);
         },
         else => initial,
@@ -48,9 +51,8 @@ pub fn typeOfBuiltInCall(self: *Parser, bf: BuiltinFunction, args: []Expression)
     const @"type": Type = switch (bf) {
         .col_hex => vec3_type,
         .reflect => try self.typeOf(args[0]),
-        // else => .{ .unknown = try self.createVal(Expression{ .builtin = .{ .function = bf } }) },
     };
-    std.debug.print("@{s} => {f}\n", .{ @tagName(bf), @"type" });
+    // std.debug.print("@{s} => {f}\n", .{ @tagName(bf), @"type" });
 
     return @"type";
 }
@@ -80,13 +82,13 @@ const BuiltinFunction = enum {
         };
     }
 };
-const oxAA = Expression{ .value = .{
+const oxFF = Expression{ .value = .{
     .type = .compint,
-    .payload = .{ .wide = 0xAA },
+    .payload = .{ .wide = 0xFF },
 } };
-const inv_oxAA = Expression{ .value = .{
+const inv_oxFF = Expression{ .value = .{
     .type = .compfloat,
-    .payload = .{ .wide = util.fit(u128, @as(f128, 1.0 / 0xAA)) },
+    .payload = .{ .wide = util.fit(u128, @as(f128, 1.0 / 255.0)) },
 } };
 const u32_type: Type = .{ .number = .{ .type = .uint, .width = .word } };
 const f32_type: Type = .{ .number = .{ .type = .float, .width = .word } };

@@ -46,11 +46,11 @@ pub fn refineDescend(self: *Parser, expr: Expression) Error!Expression {
             break :blk try refine(self, expr);
         },
         .cast => |cast| blk: {
-            cast.target.* = try refineDescend(self, cast.target.*);
+            cast.expr.* = try refineDescend(self, cast.expr.*);
             break :blk try refine(self, expr);
         },
         .constructor => |constructor| blk: {
-            constructor.target.* = try refineDescend(self, constructor.target.*);
+            for (constructor.components) |*c| c.* = try refineDescend(self, c.*);
             break :blk try refine(self, expr);
         },
         else => refine(self, expr),
