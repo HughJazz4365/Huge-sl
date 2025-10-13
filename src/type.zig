@@ -10,7 +10,6 @@ pub const Type = union(enum) {
     //intermediate compile time types
     unknown: *const Expression,
 
-    enum_literal,
     compint,
     compfloat,
 
@@ -40,12 +39,6 @@ pub const Type = union(enum) {
     pub fn ToZig(comptime @"type": Type) type {
         return switch (@"type") {
             inline else => |value| if (@hasDecl(@TypeOf(value), "ToZig")) value.ToZig() else @compileError("cant convert type to zig"),
-        };
-    }
-    pub fn isComplete(self: Type) bool {
-        return switch (self) {
-            .unknown, .enum_literal => false,
-            else => true,
         };
     }
     pub fn isScalar(self: Type) bool {
@@ -83,6 +76,7 @@ pub const Type = union(enum) {
             .vector => |vector| .{ .component = .{ .number = vector.component }, .len = @intFromEnum(vector.len) },
             .array => |array| .{ .component = array.child.*, .len = array.len },
             .matrix => |matrix| .{ .component = .{ .vector = matrix.columnVector() }, .len = @intFromEnum(matrix.n) },
+            .unknown => .{ .component = .unknownempty, .len = 1 },
             else => .{ .component = self },
         };
     }

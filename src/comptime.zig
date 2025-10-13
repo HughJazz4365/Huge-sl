@@ -22,7 +22,41 @@ pub fn refineTopLevel(self: *Parser, expr: Expression) Error!Expression {
     }
     return result;
 }
-fn refine(self: *Parser, expr: Expression) Error!Expression {
+pub fn refineDescend(self: *Parser, expr: Expression) Error!Expression {
+    return switch (expr) {
+        .bin_op => |bin_op| blk: {
+            bin_op.left.* = try refineDescend(self, bin_op.left.*);
+            bin_op.right.* = try refineDescend(self, bin_op.right.*);
+            break :blk try refine(self, expr);
+        },
+        .call => |call| blk: {
+            call.callee.* = try refineDescend(self, call.callee.*);
+            break :blk try refine(self, expr);
+        },
+        .u_op => |u_op| blk: {
+            u_op.target.* = try refineDescend(self, u_op.target.*);
+            break :blk try refine(self, expr);
+        },
+        .member_access => |member_access| blk: {
+            member_access.target.* = try refineDescend(self, member_access.target.*);
+            break :blk try refine(self, expr);
+        },
+        .indexing => |indexing| blk: {
+            indexing.target.* = try refineDescend(self, indexing.target.*);
+            break :blk try refine(self, expr);
+        },
+        .cast => |cast| blk: {
+            cast.target.* = try refineDescend(self, cast.target.*);
+            break :blk try refine(self, expr);
+        },
+        .constructor => |constructor| blk: {
+            constructor.target.* = try refineDescend(self, constructor.target.*);
+            break :blk try refine(self, expr);
+        },
+        else => refine(self, expr),
+    };
+}
+pub fn refine(self: *Parser, expr: Expression) Error!Expression {
     return switch (expr) {
         .bin_op => |bin_op| try refineBinOp(self, bin_op),
         .u_op => |u_op| try refineUOp(self, u_op),
@@ -36,15 +70,9 @@ fn refine(self: *Parser, expr: Expression) Error!Expression {
 }
 fn refineCall(self: *Parser, call: Parser.Call) Error!Expression {
     const initial: Expression = .{ .call = call };
-    if (call.callee == .builtin) {
-        for (call.args) |arg| if (arg != .value) return initial;
-        return try refineBuiltinCall(self, call.callee.builtin, call.args);
-    }
+    if (call.callee.* == .builtin and call.callee.builtin == .function) return try bi.refineBuiltinCall(self, call.callee.builtin.function, call.args, call.callee);
 
     return initial;
-}
-fn refineBuiltinCall(self: *Parser, builtin_name: []const u8, args: []Expression) Error!Expression {
-    const bulitin = try bi.getBuiltin(builtin_name);
 }
 
 fn refineIdentifier(self: *Parser, identifier: []const u8) Error!Expression {

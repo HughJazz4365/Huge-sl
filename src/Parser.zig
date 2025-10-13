@@ -361,7 +361,7 @@ fn parseExpressionSidePrimary(self: *Parser) Error!Expression {
             .target = try self.createVal(try self.refine(try self.parseExpressionSide())),
         } },
         .identifier => |id| .{ .identifier = id },
-        .builtin => |b| .{ .builtin = b },
+        .builtin => |builtin| .{ .builtin = try bi.getBuiltin(builtin) },
         .@"(" => try self.parseExpression(bracketShouldStop),
         .@"." => switch (try self.tokenizer.next()) {
             .@"{" => try self.refine(try self.parseUnknownConstructor()),
@@ -683,50 +683,50 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
         .constructor => |constructor| constructor.type,
         .cast => |cast| cast.type,
         .identifier => |identifier| (try self.current_scope.getVariableReference(self, identifier)).type,
-        .builtin => |b| (try bi.getBuiltin(b)).type,
-        .bin_op => |bin_op| try self.typeOfBinOp(bin_op),
-        .u_op => |u_op| try self.typeOfUOp(u_op),
+        .builtin => |builtin| try bi.typeOfBuiltin(self, builtin),
+        .bin_op => |bin_op| switch (bin_op.op) {
+            .@"^", .@"|", .@"&", .@">>" => try self.typeOf(bin_op.left.*), //temp
+            .@"+", .@"-" => blk: {
+                const left = try self.typeOf(bin_op.left.*);
+                const right = try self.typeOf(bin_op.right.*);
+                break :blk if (left.eql(right)) left else .unknownempty;
+            },
+            .@"*" => blk: {
+                var deep = try self.typeOf(bin_op.left.*);
+                var shallow = try self.typeOf(bin_op.right.*);
+                if (deep == .unknown or shallow == .unknown) return .unknownempty;
+                if (shallow.depth() > deep.depth()) std.mem.swap(Type, &deep, &shallow);
+
+                const result: Type = if ((deep == .matrix and shallow == .number) or
+                    (deep == .vector and shallow == .number) or
+                    shallow.eql(deep))
+                    deep
+                else if (deep == .matrix and shallow == .vector) shallow else .unknownempty;
+
+                break :blk result;
+            },
+            .@"\"", .@"'" => blk: {
+                const left_type = try self.typeOf(bin_op.left.*);
+                const right_type = try self.typeOf(bin_op.right.*);
+                break :blk if (left_type == .vector and left_type.eql(right_type)) left_type.constructorStructure().component else .unknownempty;
+            },
+
+            else => @panic("unknown bin op type"),
+        },
+        .u_op => |u_op| switch (u_op.op) {
+            else => try self.typeOf(u_op.target.*),
+        },
         .indexing => |indexing| (try self.typeOf(indexing.target.*)).constructorStructure().component,
-        .call => |call| switch (try self.typeOf(call.callee.*)) {
-            .function => |function| function.rtype.*,
-            .unknown => .unknownempty,
-            else => Error.InvalidCall,
+        .call => |call| blk: {
+            if (call.callee.* == .builtin)
+                break :blk try bi.typeOfBuiltInCall(self, call.callee.builtin.function, call.args);
+            break :blk switch (try self.typeOf(call.callee.*)) {
+                .function => |function| function.rtype.*,
+                .unknown => .unknownempty,
+                else => Error.InvalidCall,
+            };
         },
         else => .{ .unknown = try self.createVal(expr) },
-    };
-}
-fn typeOfUOp(self: *Parser, u_op: UOp) Error!Type {
-    return switch (u_op.op) {
-        else => try self.typeOf(u_op.target.*),
-    };
-}
-fn typeOfBinOp(self: *Parser, bin_op: BinOp) Error!Type {
-    return switch (bin_op.op) {
-        .@"^" => try self.typeOf(bin_op.left.*), //temp
-        .@"+", .@"-" => blk: {
-            const left = try self.typeOf(bin_op.left.*);
-            const right = try self.typeOf(bin_op.right.*);
-            break :blk if (left.eql(right)) left else .unknownempty;
-        },
-        .@"*" => blk: {
-            var deep = try self.typeOf(bin_op.left.*);
-            var shallow = try self.typeOf(bin_op.right.*);
-            if (deep == .unknown or shallow == .unknown) return .unknownempty;
-            if (shallow.depth() > deep.depth()) std.mem.swap(Type, &deep, &shallow);
-
-            const result: Type = if ((deep == .matrix and shallow == .number) or
-                (deep == .vector and shallow == .number) or
-                shallow.eql(deep))
-                deep
-            else if (deep == .matrix and shallow == .vector) shallow else .unknownempty;
-
-            break :blk result;
-        },
-        .@"\"", .@"'" => blk: {
-            const left_type = try self.typeOf(bin_op.left.*);
-            const right_type = try self.typeOf(bin_op.right.*);
-            break :blk if (left_type == .vector and left_type.eql(right_type)) left_type.constructorStructure().component else .unknownempty;
-        },
     };
 }
 
@@ -738,7 +738,7 @@ pub fn isExpressionComptime(self: *Parser, expr: Expression) Error!bool {
 pub const Expression = union(enum) {
     call: Call,
     identifier: []const u8,
-    builtin: []const u8,
+    builtin: bi.Builtin,
 
     value: Value,
 

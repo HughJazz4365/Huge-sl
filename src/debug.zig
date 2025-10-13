@@ -30,7 +30,9 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
             if (v.component.type == .float) "" else v.component.type.prefix(),
             @intFromEnum(v.len),
         }),
-        .unknown => try writer.print("[UNKNOWNTYPE]", .{}),
+        .unknown => |unknown| if (unknown.isEmpty()) {
+            try writer.print("@TypeOf({f})", .{unknown.*});
+        } else try writer.print("@UnknownType", .{}),
         .function => |f| {
             try writer.print("fn(", .{});
             for (f.arg_types, 0..) |at, i| try writer.print("{f}{s}", .{ at, if (i + 1 < f.arg_types.len) ", " else "" });
@@ -43,7 +45,9 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
 pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
     switch (expr) {
         .identifier => |id| try writer.print("{s}", .{id}),
-        .builtin => |b| try writer.print("@{s}", .{b}),
+        .builtin => |builtin| switch (builtin) {
+            inline else => |val| try writer.print("@{s}", .{@tagName(val)}),
+        },
         .value => |v| try writer.print("{f}", .{v}),
         .bin_op => |bin_op| try writer.print("({f} {s} {f})", .{ bin_op.left, @tagName(bin_op.op), bin_op.right }),
         .u_op => |u_op| try writer.print("{s}{f}", .{ @tagName(u_op.op), u_op.target }),
@@ -103,7 +107,7 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
             try writer.print("[EMPTY]", .{})
         else
             try writer.print("{f}", .{value.payload.type}),
-        .unknown => try writer.print("[?Value]", .{}),
+        .unknown, .void => try writer.print("[EMPTY]", .{}),
         .function => {
             try writer.print("{f}{{\n", .{value.type});
 
