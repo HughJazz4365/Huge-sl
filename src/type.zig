@@ -55,7 +55,7 @@ pub const Type = union(enum) {
 
     pub fn depth(self: Type) u32 {
         return switch (self) {
-            .array => |array| 1 + array.child.depth(),
+            .array => |array| 1 + array.component.depth(),
             .vector => 1,
             .matrix => 2,
             else => 0,
@@ -65,7 +65,7 @@ pub const Type = union(enum) {
         return switch (self) {
             .number => |number| @intFromEnum(number.width) >> 3,
             .vector => |vector| (Type.size(.{ .number = vector.component }) * @intFromEnum(vector.len) + 15) / 16 * 16,
-            .array => |array| array.child.size() * array.len,
+            .array => |array| array.component.size() * array.len,
             .matrix => |matrix| Type.size(.{ .vector = matrix.columnVector() }) * @intFromEnum(matrix.n),
             .bool => 1,
             else => 0,
@@ -74,7 +74,7 @@ pub const Type = union(enum) {
     pub fn constructorStructure(self: Type) ConstructorStructure {
         return switch (self) {
             .vector => |vector| .{ .component = .{ .number = vector.component }, .len = @intFromEnum(vector.len) },
-            .array => |array| .{ .component = array.child.*, .len = array.len },
+            .array => |array| .{ .component = array.component.*, .len = array.len },
             .matrix => |matrix| .{ .component = .{ .vector = matrix.columnVector() }, .len = @intFromEnum(matrix.n) },
             .unknown => .{ .component = .unknownempty, .len = 1 },
             else => .{ .component = self },
@@ -105,10 +105,10 @@ pub const Matrix = struct {
     }
 };
 pub const Array = struct {
-    child: *const Type,
+    component: *const Type,
     len: u32,
     pub fn ToZig(comptime arr: Array) type {
-        return [arr.len](arr.child.*).ToZig();
+        return [arr.len](arr.component.*).ToZig();
     }
 };
 
@@ -120,7 +120,7 @@ pub const Vector = struct {
     }
     pub fn literalComp(comptime vec: Vector) []const u8 {
         if (vec.component.width != .word) @compileError(std.fmt.comptimePrint(
-            "no builtin literal for vector with child bitwidth of {d}",
+            "no builtin literal for vector with component bitwidth of {d}",
             .{vec.component.width},
         ));
 

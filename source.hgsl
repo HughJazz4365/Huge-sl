@@ -6,7 +6,7 @@ in world_pos: vec3
 push eye_pos: vec3 = .{0}
 const light_dir = |(2 * vec3{3, -4, 0} * 2) 
 
-const light_color : vec3 = @colHex(0xFA_FA_55)
+const light_color : vec3 = @colHex(0xFA_FD_55)
 
 const ambient = 0.1 //can be a vec3
 

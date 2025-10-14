@@ -1,12 +1,26 @@
 const std = @import("std");
 
+pub fn numericCast(T: type, from: anytype) T {
+    const F = @TypeOf(from);
+    if (T == bool) return numericCast(u1, from) > 0;
+    if (F == bool) return numericCast(T, @intFromBool(from));
+
+    const from_tinfo = @typeInfo(F);
+    const to_tinfo = @typeInfo(T);
+    return //
+    if (to_tinfo == .int) (if (from_tinfo == .int) @intCast(from) else if (from_tinfo == .float) @intFromFloat(from) else @compileError("Invalid types for numeric cast")) else //
+    if (to_tinfo == .float) (if (from_tinfo == .float) @floatCast(from) else if (from_tinfo == .int) @floatFromInt(from) else @compileError("Invalid types for numeric cast")) else //
+    @compileError("Invalid types for numeric cast");
+}
 pub fn extract(T: type, from: anytype) T {
+    if (T == bool) return extract(u8, from) > 0;
     const F = @TypeOf(from);
     if (@typeInfo(F) != .int or @typeInfo(F).int.signedness == .signed) @compileError("invalid from type - " ++ @typeName(F));
     const U = @Type(.{ .int = .{ .bits = @sizeOf(T) * 8, .signedness = .unsigned } });
     return @bitCast(uintCast(U, from));
 }
 pub fn fit(T: type, value: anytype) T {
+    if (@TypeOf(value) == bool) return fit(T, @as(u8, @intFromBool(value)));
     if (@typeInfo(T) != .int or @typeInfo(T).int.signedness == .signed) @compileError("invalid fit type - " ++ @typeName(T));
     const U = @Type(.{ .int = .{ .bits = @sizeOf(@TypeOf(value)) * 8, .signedness = .unsigned } });
     return uintCast(T, @as(U, @bitCast(value)));

@@ -4,7 +4,7 @@ const bi = @import("builtin.zig");
 const util = @import("util.zig");
 const Parser = @import("Parser.zig");
 
-const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(i128, -1)) } };
+const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(CI, -1)) } };
 
 fn errorImplicitCast(self: *Parser, expr: Expression, @"type": Type) Error {
     return self.errorOutFmt(
@@ -22,6 +22,7 @@ pub fn refineTopLevel(self: *Parser, expr: Expression) Error!Expression {
     }
     return result;
 }
+//remove that
 pub fn refineDescend(self: *Parser, expr: Expression) Error!Expression {
     return switch (expr) {
         .bin_op => |bin_op| blk: {
@@ -57,6 +58,7 @@ pub fn refineDescend(self: *Parser, expr: Expression) Error!Expression {
     };
 }
 pub fn refine(self: *Parser, expr: Expression) Error!Expression {
+    // std.debug.print("R: {f}\n", .{expr});
     return switch (expr) {
         .bin_op => |bin_op| try refineBinOp(self, bin_op),
         .u_op => |u_op| try refineUOp(self, u_op),
@@ -88,9 +90,39 @@ fn refineCast(self: *Parser, cast: Parser.Cast) Error!Expression {
         const type_of = try self.typeOf(cast.expr.*);
         if (!isExplicitlyCastable(type_of, cast.type)) return Error.CannotExplicitlyCast;
 
-        if (cast.type == .vector and type_of.depth() == 0)
-            return try splatCast(self, cast.expr, cast.type);
-        return initial;
+        switch (cast.type) {
+            .vector, .array, .matrix => {
+                if (isExplicitlyCastable(type_of.constructorStructure().component, cast.type.constructorStructure().component))
+                    return try splatCast(self, cast.expr, cast.type);
+            },
+            else => {},
+        }
+        return if (cast.type != .unknown and cast.expr.* == .value) .{ .value = try castValue(cast.expr.value, cast.type) } else initial;
+    };
+}
+fn castValue(value: Value, to: Type) Error!Value {
+    return switch (to) {
+        .number => |number| switch (number.type) {
+            inline else => |nt| switch (number.width) {
+                inline else => |width| blk: {
+                    const totype: Type = .{ .number = .{ .type = nt, .width = width } };
+                    const T = totype.ToZig();
+                    break :blk switch (value.type) {
+                        .bool => .{ .type = totype, .payload = .{ .wide = util.fit(WIDE, util.numericCast(T, util.extract(bool, value.payload.wide))) } },
+                        .number => |from_number| switch (from_number.type) {
+                            inline else => |from_nt| switch (from_number.width) {
+                                inline else => |from_width| .{ .type = totype, .payload = .{ .wide = util.fit(WIDE, util.numericCast(T, util.extract(
+                                    (Type{ .number = .{ .type = from_nt, .width = from_width } }).ToZig(),
+                                    value.payload.wide,
+                                ))) } },
+                            },
+                        },
+                        else => return Error.CannotExplicitlyCast,
+                    };
+                },
+            },
+        },
+        else => return Error.CannotExplicitlyCast,
     };
 }
 fn isExplicitlyCastable(from: Type, to: Type) bool {
@@ -102,7 +134,8 @@ fn isExplicitlyCastable(from: Type, to: Type) bool {
             .number, .compint, .compfloat, .bool, .@"enum" => true,
             else => false,
         },
-        .array => |array| from == .vector and array.len == @intFromEnum(from.vector.len),
+        .array => |array| from.constructorStructure().len == @intFromEnum(from.vector.len) and
+            isExplicitlyCastable(from.constructorStructure().component, array.component.*),
         else => false,
     };
 }
@@ -145,8 +178,8 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
     const index_value = indexing.index.value;
     const target_value = indexing.target.value;
     const index: usize = switch (index_value.type) {
-        .compint => @intCast(util.extract(i128, index_value.payload.wide)),
-        .compfloat => castFloatNoRound(usize, util.extract(f128, index_value.payload.wide)) catch return Error.InvalidIndex,
+        .compint => @intCast(util.extract(CI, index_value.payload.wide)),
+        .compfloat => @intCast(util.extract(CI, (try implicitCastValue(indexing.index.value, .compint)).payload.wide)),
         .number => |number| switch (number.width) {
             inline else => |width| @intCast(util.extract(
                 (Type{ .number = .{ .width = width, .type = .uint } }).ToZig(),
@@ -166,7 +199,7 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
         .type = structure.component,
         .payload = switch (structure.component) {
             .number, .compint, .compfloat => blk: {
-                var wide: u128 = 0;
+                var wide: WIDE = 0;
                 @memcpy(@as([*]u8, @ptrCast(&wide)), ptr[0..component_size]);
                 break :blk .{ .wide = wide };
             },
@@ -175,10 +208,6 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
     } };
 }
 
-fn castFloatNoRound(T: type, float: anytype) error{NotAWholeNumber}!T {
-    if (@floor(float) != float) return error.NotAWholeNumber;
-    return @intFromFloat(float);
-}
 fn refineConstructor(self: *Parser, constructor: Parser.Constructor) Error!Expression {
     const initial: Expression = .{ .constructor = constructor };
     const @"type": Type = constructor.type;
@@ -266,7 +295,7 @@ const ElementIterator = struct {
             if (self.index >= structure.len) return null;
             const ptr = try parser.createVal(Expression{ .value = .{
                 .type = .compint,
-                .payload = .{ .wide = util.fit(u128, self.index) },
+                .payload = .{ .wide = util.fit(WIDE, self.index) },
             } });
             self.index += 1;
             return try refine(parser, .{ .indexing = .{ .target = self.expr, .index = ptr } });
@@ -318,6 +347,7 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
         .@"*" => try refineMul(self, bin_op.left, bin_op.right),
         .@"+" => try refineAdd(self, bin_op.left, bin_op.right),
         .@">>" => try refineRightShift(self, bin_op.left, bin_op.right),
+        .@"&" => try refineAnd(self, bin_op.left, bin_op.right),
         else => .{ .bin_op = bin_op },
         // .@"-" => .{ .value = try addValues(left, try mulValues(self, right, minusonecompint)) },
         // .@"^" => .{ .value = try powValues(left, right) },
@@ -325,6 +355,63 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
         // else => initial,
     };
 }
+//expand into or/and/xor
+fn refineAnd(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
+    const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@"&" } };
+    var left_expr, var left_type, var right_expr, var right_type = .{ left.*, try self.typeOf(left.*), right.*, try self.typeOf(right.*) };
+
+    if (!equalizeExprTypesIfUnknown(self, &left_expr, &left_type, &right_expr, &right_type)) return initial;
+    if (right_type == .vector or left_type == .vector) {
+        if (!left_type.eql(right_type) or left_type.vector.component.type == .float) return self.errorOut(Error.InvalidOperands);
+    } else if (left_type.isScalar() and right_type.isScalar()) {
+        try equalizeScalarTypes(self, &left_expr, &left_type, &right_expr, &right_type);
+        if (left_type == .number and left_type.number.type == .float) return self.errorOut(Error.InvalidOperands);
+        if (left_type == .compfloat) {
+            left_expr = try self.implicitCast(left_expr, .compint);
+            right_expr = try self.implicitCast(right_expr, .compint);
+        }
+    } else if (left_type != .bool and right_type != .bool) return self.errorOut(Error.InvalidOperands);
+    if (left_expr == .value and right_expr == .value) return .{ .value = try andValues(left_expr.value, right_expr.value) };
+    left.*, right.* = .{ left_expr, right_expr };
+    return initial;
+}
+fn andValues(left: Value, right: Value) Error!Value {
+    return switch (left.type) {
+        .bool => .{ .type = .bool, .payload = .{
+            .wide = util.fit(WIDE, util.extract(bool, left.payload.wide) and util.extract(bool, right.payload.wide)),
+        } },
+        .compint => .{ .type = .compint, .payload = .{
+            .wide = util.fit(WIDE, util.extract(CI, left.payload.wide) & util.extract(CI, right.payload.wide)),
+        } },
+        .number, .vector => switch (if (left.type == .vector) left.type.vector.component.type else left.type.number.type) {
+            inline else => |nt| switch (if (left.type == .vector) left.type.vector.component.width else left.type.number.width) {
+                inline else => |width| blk: {
+                    if (nt == .float) unreachable;
+                    if (left.type == .number) {
+                        const comptype = Type{ .number = .{ .width = width, .type = nt } };
+                        const T = comptype.ToZig();
+                        break :blk .{ .type = comptype, .payload = .{
+                            .wide = util.fit(WIDE, util.extract(T, left.payload.wide) & util.extract(T, right.payload.wide)),
+                        } };
+                    }
+                    inline for (@typeInfo(tp.VectorLen).@"enum".fields) |ef| {
+                        if (@as(tp.VectorLen, @enumFromInt(ef.value)) == left.type.vector.len) {
+                            const comptype = Type{ .vector = .{ .len = @enumFromInt(ef.value), .component = .{ .width = width, .type = nt } } };
+                            const T = comptype.ToZig();
+                            const left_ptr: *T = @ptrCast(@alignCast(@constCast(left.payload.ptr)));
+                            const right_ptr: *T = @ptrCast(@alignCast(@constCast(right.payload.ptr)));
+                            left_ptr.* = left_ptr.* & right_ptr.*;
+                            break :blk left;
+                        }
+                    }
+                    unreachable;
+                },
+            },
+        },
+        else => unreachable,
+    };
+}
+//add left shift// allow left argument to be signed
 fn refineRightShift(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
     const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@">>" } };
     var left_expr, var left_type, var right_expr, var right_type = .{ left.*, try self.typeOf(left.*), right.*, try self.typeOf(right.*) };
@@ -334,11 +421,12 @@ fn refineRightShift(self: *Parser, left: *Expression, right: *Expression) Error!
     if (left_type == .vector or right_type == .vector) {
         if (!left_type.eql(right_type) or left_type.vector.component.type != .uint) return self.errorOut(Error.InvalidOperands);
     } else {
+        //rewrite that scope
         const u32_type: Type = .{ .number = .{ .type = .uint, .width = .word } };
         if (left_type == .compfloat or left_type == .compint) {
             left_expr = .{ .value = try implicitCastValue(left_expr.value, u32_type) };
             left_type = u32_type;
-        } else if (left_type != .number or left_type.number.type != .uint)
+        } else if (left_type != .number or left_type.number.type == .uint)
             return self.errorOut(Error.InvalidOperands);
 
         if (right_type == .compfloat or right_type == .compint) {
@@ -374,7 +462,7 @@ fn rightShiftValues(self: *Parser, left: Value, right: Value) Error!Value {
                 const left_value: T = util.extract(T, left.payload.wide);
                 const right_value: T = util.extract(T, right.payload.wide);
                 if (right_value > @intFromEnum(width)) return self.errorOut(Error.InvalidBitshift);
-                break :blk .{ .type = left.type, .payload = .{ .wide = util.fit(u128, left_value >> @truncate(right_value)) } };
+                break :blk .{ .type = left.type, .payload = .{ .wide = util.fit(WIDE, left_value >> @truncate(right_value)) } };
             },
         },
         else => unreachable,
@@ -467,7 +555,7 @@ fn equalizeScalarTypes(self: *Parser, left_expr: *Expression, left_type: *Type, 
 //                 const right_ptr: *T = @ptrCast(@alignCast(@constCast(b.ptr)));
 
 //                 left_ptr[0] = @reduce(.Add, left_ptr.* * right_ptr.*);
-//                 return .{ .type = .{ .number = t.vector.component }, .payload = .{ .wide = util.fit(u128, left_ptr[0]) } };
+//                 return .{ .type = .{ .number = t.vector.component }, .payload = .{ .wide = util.fit(WIDE, left_ptr[0]) } };
 //             },
 //         },
 //     }
@@ -476,11 +564,11 @@ fn equalizeScalarTypes(self: *Parser, left_expr: *Expression, left_type: *Type, 
 // fn powValues(left: Value, right: Value) Error!Value {
 //     const t, const a, const b = try implicitCastEqualizeValues(left, right);
 //     const payload: Parser.ValuePayload = switch (t) {
-//         .compint => .{ .wide = util.fit(u128, std.math.powi(i128, util.extract(i128, a.wide), util.extract(i128, b.wide)) catch return Error.NumericError) },
-//         .compfloat => .{ .wide = util.fit(u128, @as(f128, @floatCast(std.math.pow(
+//         .compint => .{ .wide = util.fit(WIDE, std.math.powi(CI, util.extract(CI, a.wide), util.extract(CI, b.wide)) catch return Error.NumericError) },
+//         .compfloat => .{ .wide = util.fit(WIDE, @as(CF, @floatCast(std.math.pow(
 //             f64,
-//             @floatCast(util.extract(f128, a.wide)),
-//             @floatCast(util.extract(f128, b.wide)),
+//             @floatCast(util.extract(CF, a.wide)),
+//             @floatCast(util.extract(CF, b.wide)),
 //         )))) },
 //         //number , vector
 //         else => return Error.InvalidOperands,
@@ -503,8 +591,8 @@ fn mulVecOrScalarValues(self: *Parser, left: Value, right: Value) Error!Value {
 
     const t, const a, const b = .{ left_value.type, left_value.payload, right_value.payload };
     const payload: Parser.ValuePayload = switch (t) {
-        .compint => .{ .wide = util.fit(u128, util.extract(i128, a.wide) * util.extract(i128, b.wide)) },
-        .compfloat => .{ .wide = util.fit(u128, util.extract(f128, a.wide) * util.extract(f128, b.wide)) },
+        .compint => .{ .wide = util.fit(WIDE, util.extract(CI, a.wide) * util.extract(CI, b.wide)) },
+        .compfloat => .{ .wide = util.fit(WIDE, util.extract(CF, a.wide) * util.extract(CF, b.wide)) },
         //number , vector
         .vector => |vector| switch (vector.len) {
             inline else => |len| switch (vector.component.type) {
@@ -523,7 +611,7 @@ fn mulVecOrScalarValues(self: *Parser, left: Value, right: Value) Error!Value {
     };
     return .{ .type = t, .payload = payload };
 }
-fn splatNumber(self: *Parser, vector_type: tp.Vector, wide: u128) Error!Value {
+fn splatNumber(self: *Parser, vector_type: tp.Vector, wide: WIDE) Error!Value {
     return switch (vector_type.len) {
         inline else => |l| switch (vector_type.component.type) {
             inline else => |nt| switch (vector_type.component.width) {
@@ -547,8 +635,8 @@ fn splatNumber(self: *Parser, vector_type: tp.Vector, wide: u128) Error!Value {
 }
 fn addValues(t: Type, left: Parser.ValuePayload, right: Parser.ValuePayload) Error!Value {
     const payload: Parser.ValuePayload = switch (t) {
-        .compint => .{ .wide = @bitCast(@as(i128, @bitCast(left.wide)) + @as(i128, @bitCast(right.wide))) },
-        .compfloat => .{ .wide = @bitCast(@as(f128, @bitCast(left.wide)) + @as(f128, @bitCast(right.wide))) },
+        .compint => .{ .wide = util.fit(WIDE, util.extract(CI, left.wide) + util.extract(CI, right.wide)) },
+        .compfloat => .{ .wide = util.fit(WIDE, util.extract(CF, left.wide) + util.extract(CF, right.wide)) },
         //number , vector
         else => return Error.InvalidOperands,
     };
@@ -582,21 +670,28 @@ pub fn implicitCastValue(value: Value, target: Type) Error!Value {
     if (value.type.eql(target)) return value;
 
     return switch (target) {
+        .compint => if (value.type == .compfloat)
+            .{ .type = .compint, .payload = .{ .wide = util.fit(WIDE, @as(CI, @intFromFloat(blk: {
+                const float = util.extract(CF, value.payload.wide);
+                break :blk if (@floor(float) == float) float else return Error.CannotImplicitlyCast;
+            }))) } }
+        else
+            Error.CannotImplicitlyCast,
         .compfloat => if (value.type == .compint)
-            .{ .type = .compfloat, .payload = .{ .wide = @bitCast(@as(f128, @floatFromInt(@as(i128, @bitCast(value.payload.wide))))) } }
+            .{ .type = .compfloat, .payload = .{ .wide = util.fit(WIDE, @as(CF, @floatFromInt(util.extract(CI, value.payload.wide)))) } }
         else
             Error.CannotImplicitlyCast,
         //@PREVENT ROUNDING COMPTIME FLOATS WHEN CASING TO INTEGER
         .number => |number| .{ .type = target, .payload = .{ .wide = try switch (number.type) {
             inline else => |t| switch (number.width) {
                 inline else => |w| switch (value.type) {
-                    .compint => util.fit(u128, numberCast(
+                    .compint => util.fit(WIDE, numberCast(
                         comptime (tp.Number{ .type = t, .width = w }).ToZig(),
-                        util.extract(i128, value.payload.wide),
+                        util.extract(CI, value.payload.wide),
                     )),
-                    .compfloat => util.fit(u128, numberCast(
+                    .compfloat => util.fit(WIDE, numberCast(
                         comptime (tp.Number{ .type = t, .width = w }).ToZig(),
-                        util.extract(f128, value.payload.wide),
+                        util.extract(CF, value.payload.wide),
                     )),
                     else => Error.CannotImplicitlyCast,
                 },
@@ -622,6 +717,9 @@ fn numberCast(T: type, value: anytype) T {
 
 const EqualizeResult = std.meta.Tuple(&.{ Type, Parser.ValuePayload, Parser.ValuePayload });
 
+const CI = Parser.CI;
+const CF = Parser.CF;
+const WIDE = Parser.WIDE;
 const Error = Parser.Error;
 const Expression = Parser.Expression;
 const Value = Parser.Value;

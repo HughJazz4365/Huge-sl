@@ -7,6 +7,10 @@ const util = @import("util.zig");
 const Parser = @This();
 const Tokenizer = @import("Tokenizer.zig");
 
+pub const CF = f64;
+pub const CI = i128;
+pub const WIDE = u128;
+
 tokenizer: *Tokenizer = undefined,
 
 allocator: Allocator = undefined,
@@ -672,8 +676,8 @@ fn parseValue(self: *Parser, token: Token) Error!Value {
     //true, false
     _ = self;
     return switch (token) {
-        .compint => |compint| .{ .type = .compint, .payload = .{ .wide = @bitCast(compint) } },
-        .compfloat => |compfloat| .{ .type = .compfloat, .payload = .{ .wide = @bitCast(compfloat) } },
+        .compint => |compint| .{ .type = .compint, .payload = .{ .wide = util.fit(WIDE, compint) } },
+        .compfloat => |compfloat| .{ .type = .compfloat, .payload = .{ .wide = util.fit(WIDE, compfloat) } },
         .type_literal => |tl| .{ .type = .type, .payload = .{ .type = tl } },
         else => Error.UnexpectedToken,
     };
@@ -948,7 +952,7 @@ pub const Value = struct {
 };
 
 pub const ValuePayload = union {
-    wide: u128,
+    wide: WIDE,
     type: Type,
     ptr: *const anyopaque,
 };

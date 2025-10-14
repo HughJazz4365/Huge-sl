@@ -17,7 +17,7 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
 
             const components = try self.arena.allocator().alloc(Expression, 3);
             for (0..3) |i| {
-                components[i] = .{ .cast = .{
+                components[2 - i] = .{ .cast = .{
                     .type = f32_type,
                     .expr = try self.createVal(Expression{ .bin_op = .{
                         .left = try self.createVal(Expression{ .bin_op = .{
@@ -25,7 +25,7 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
                             .op = .@">>",
                             .right = try self.createVal(Expression{ .value = .{
                                 .type = u32_type,
-                                .payload = .{ .wide = util.fit(u128, @as(u32, @intCast(i * 8))) },
+                                .payload = .{ .wide = util.fit(Parser.WIDE, @as(u32, @intCast(i * 8))) },
                             } }),
                         } }),
                         .op = .@"&",
@@ -88,7 +88,7 @@ const oxFF = Expression{ .value = .{
 } };
 const inv_oxFF = Expression{ .value = .{
     .type = .compfloat,
-    .payload = .{ .wide = util.fit(u128, @as(f128, 1.0 / 255.0)) },
+    .payload = .{ .wide = util.fit(Parser.WIDE, @as(Parser.CF, 1.0 / 255.0)) },
 } };
 const u32_type: Type = .{ .number = .{ .type = .uint, .width = .word } };
 const f32_type: Type = .{ .number = .{ .type = .float, .width = .word } };

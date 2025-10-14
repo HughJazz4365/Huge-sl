@@ -136,10 +136,10 @@ fn getNumberLiteralRaw(self: *Tokenizer, bytes: []const u8) Error!?FatToken {
     if (count - off - @as(usize, @intFromBool(dot)) == 0)
         return null;
     return .{ .len = count, .token = if (dot) .{ .compfloat = blk: {
-        const f = std.fmt.parseFloat(f128, bytes[off..count]) catch return self.errorInvalidNumberLiteral(bytes[0..count], true);
+        const f = std.fmt.parseFloat(Parser.CF, bytes[off..count]) catch return self.errorInvalidNumberLiteral(bytes[0..count], true);
         break :blk if (neg) -f else f;
     } } else .{ .compint = blk: {
-        const i = std.fmt.parseInt(i128, bytes[off..count], base) catch return self.errorInvalidNumberLiteral(bytes[0..count], false);
+        const i = std.fmt.parseInt(Parser.CI, bytes[off..count], base) catch return self.errorInvalidNumberLiteral(bytes[0..count], false);
         break :blk if (neg) -i else i;
     } } };
 }
@@ -270,8 +270,8 @@ pub const Token = union(enum) {
     builtin: []const u8,
 
     type_literal: tp.Type,
-    compint: i128,
-    compfloat: f128,
+    compint: Parser.CI,
+    compfloat: Parser.CF,
 
     bin_op: BinaryOperator,
     u_op: UnaryOperator,

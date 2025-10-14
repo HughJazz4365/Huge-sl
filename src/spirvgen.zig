@@ -332,7 +332,7 @@ fn generateValueID(self: *Generator, value: Parser.Value) Error!u32 {
                             slice[i] = try self.generateValueID(.{
                                 .type = .{ .number = compt.vector.component },
                                 .payload = .{
-                                    .wide = util.fit(u128, @as(*const T, @ptrCast(@alignCast(value.payload.ptr)))[i]),
+                                    .wide = util.fit(Parser.WIDE, @as(*const T, @ptrCast(@alignCast(value.payload.ptr)))[i]),
                                 },
                             });
 
