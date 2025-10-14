@@ -342,10 +342,10 @@ pub const BinaryOperator = util.SortEnumDecending(
         @"'", //dot
         @"\"", //dot clamped
 
-        @"|",
-        @"&",
-        @"<<",
-        @">>",
+        @"|", // int | sameint
+        @"&", // int | sameint
+        @"<<", // int << uint
+        @">>", // int << uint
     },
 );
 pub fn bindingPower(bin_op: BinaryOperator) u8 {

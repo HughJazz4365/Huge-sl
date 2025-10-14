@@ -28,7 +28,7 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
                                 .payload = .{ .wide = util.fit(u128, @as(u32, @intCast(i * 8))) },
                             } }),
                         } }),
-                        .op = .@"|",
+                        .op = .@"&",
                         .right = @constCast(&oxFF),
                     } }),
                 } };

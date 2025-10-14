@@ -51,6 +51,7 @@ pub const Error = error{
     NumericError,
     OutOfBoundsAccess,
     NegativePower, //a ^ (- |r|)
+    InvalidBitshift,
 } || Tokenizer.Error;
 ///creates its own arena
 pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
