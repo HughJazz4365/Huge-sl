@@ -690,11 +690,10 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
         .identifier => |identifier| (try self.current_scope.getVariableReference(self, identifier)).type,
         .builtin => |builtin| try bi.typeOfBuiltin(self, builtin),
         .bin_op => |bin_op| switch (bin_op.op) {
-            .@"^", .@"|", .@"&", .@">>" => try self.typeOf(bin_op.left.*), //temp
-            .@"+", .@"-" => blk: {
-                const left = try self.typeOf(bin_op.left.*);
-                const right = try self.typeOf(bin_op.right.*);
-                break :blk if (left.eql(right)) left else .unknownempty;
+            .@"+", .@"-", .@"^", .@"|", .@"&", .@">>" => blk: {
+                const left_type = try self.typeOf(bin_op.left.*);
+                const right_type = try self.typeOf(bin_op.right.*);
+                break :blk if (left_type == .unknown or right_type == .unknown) .unknownempty else left_type;
             },
             .@"*" => blk: {
                 var deep = try self.typeOf(bin_op.left.*);
