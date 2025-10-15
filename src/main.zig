@@ -6,8 +6,6 @@ pub fn main() !void {
     var out_writer = std.fs.File.stdout().writer(&buf);
     _ = &out_writer;
 
-    var timer = try std.time.Timer.start();
-
     // const path = "test.hgsl";
     const path = "source.hgsl";
     // const path = "func.hgsl";
@@ -18,9 +16,6 @@ pub fn main() !void {
     // const compiled = try hgsl.compile(allocator, hgsl.minimal_frag, "minimal", &out_writer.interface);
     const compiled = try hgsl.compileFile(allocator, path, &out_writer.interface);
     defer allocator.free(compiled);
-    const measure = timer.read();
-    // _ = measure;
-    std.debug.print("time {any} ms.\n", .{@as(f64, @floatFromInt(measure)) / 1_000_000});
 
     //write spirv binary to a file
     const out_file = try std.fs.cwd().openFile("out.spv", .{ .mode = .write_only });

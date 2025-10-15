@@ -334,36 +334,68 @@ const keywords: []const TokenTag = blk: {
     break :blk slice;
 };
 pub const BinaryOperator = util.SortEnumDecending(
-    enum {
-        @"*",
+    enum(u8) {
+        //regular
         @"+",
         @"-",
-        @"^",
-        @"'", //dot
-        @"\"", //dot clamped
+        @"*",
+        @"/",
 
-        @"|", // int | sameint
-        @"&", // int | sameint
-        @"<<", // int << uint
-        @">>", // int << uint
+        @"^", //pow
+        @"%", //mod
+
+        //bitwise
+        @"|", // bitwise/logical or
+        @"&", // bitwise/logical and
+        @"^^", // bitwise/logical xor
+        @"<<",
+        @">>",
+
+        //relational
+        @"==",
+        @"!=",
+        @">",
+        @"<",
+        @"<=",
+        @">=",
+
+        //custom
+        @"<>", //distance
+        @"><", //cross
+        @"**", //dot
+        @"***", //dot clamped
     },
 );
 pub fn bindingPower(bin_op: BinaryOperator) u8 {
     return switch (bin_op) {
-        .@"\"", .@"'" => 20,
+        .@"><" => 55,
+        .@"***", .@"**" => 50,
+        .@"<>" => 40,
         .@"^" => 15,
         .@"*" => 10,
         .@"<<", .@">>" => 9,
         .@"&" => 8,
-        .@"|" => 7,
+        .@"|", .@"^^" => 7,
         .@"+", .@"-" => 5,
+        else => 1,
     };
 }
 pub const UnaryOperator = util.SortEnumDecending(
     enum {
+        //regular
         @"-",
         @"+",
-        @"|", //normalize
 
+        //bitwise
+        @"!", //bitwise/logical not
+
+        //custom
+        @"|", //abs
+        @"\\", //sqrt
+        @"\\\\", //inverse sqrt
+
+        @";", //normalize
+        @"~", //magnitude
+        @"~~", //sqr magnitude
     },
 );

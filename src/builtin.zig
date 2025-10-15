@@ -11,6 +11,7 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
     if (args.len != bf.argumentCount()) return self.errorOut(Error.NonMatchingArgumentCount);
     const initial: Expression = .{ .call = .{ .callee = callee_ptr, .args = args } };
     return switch (bf) {
+        //remove in favour of unpackUnorm4x8 instruction
         .col_hex => blk: {
             //not create val if we dont have to
             const hex = try self.createVal(try self.turnIntoIntermediateVariableIfNeeded(args[0]));

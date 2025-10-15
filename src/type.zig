@@ -29,7 +29,7 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
 
                 break :blk result;
             },
-            .@"\"", .@"'" => blk: {
+            .@"***", .@"**" => blk: {
                 const left_type = try self.typeOf(bin_op.left.*);
                 const right_type = try self.typeOf(bin_op.right.*);
                 break :blk if (left_type == .vector and Type.eql(left_type, right_type)) left_type.constructorStructure().component else .unknownempty;
@@ -47,12 +47,12 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
             break :blk switch (try self.typeOf(call.callee.*)) {
                 .function => |function| function.rtype.*,
                 .unknown => .unknownempty,
-                else => Error.InvalidCall,
+                else => return Error.InvalidCall,
             };
         },
         else => .{ .unknown = try self.createVal(expr) },
     };
-    std.debug.print("T: {f}, E: {f}\n", .{ result, expr });
+    // std.debug.print("T: {f}, E: {f}\n", .{ result, expr });
     return result;
 }
 pub const Type = union(enum) {

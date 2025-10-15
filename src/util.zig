@@ -46,7 +46,16 @@ pub fn strStartsComp(haystack: []const u8, comptime needle: []const u8) bool {
     return if (haystack.len < needle.len) false else inline for (needle, haystack[0..needle.len]) |n, h| (if (n != h) break false) else true;
 }
 pub fn SortEnumDecending(Enum: type) type {
-    return Enum;
+    const Type = std.builtin.Type;
+    const tinfo = @typeInfo(Enum).@"enum";
+    var enum_fields: [tinfo.fields.len]Type.EnumField = undefined;
+    @memcpy(&enum_fields, tinfo.fields);
+    std.sort.insertion(Type.EnumField, &enum_fields, {}, struct {
+        pub fn f(_: anytype, a: Type.EnumField, b: Type.EnumField) bool {
+            return a.name.len > b.name.len;
+        }
+    }.f);
+    return @Type(.{ .@"enum" = .{ .decls = &.{}, .fields = &enum_fields, .tag_type = tinfo.tag_type, .is_exhaustive = tinfo.is_exhaustive } });
 }
 pub fn matchToEnum(Enum: type, str: []const u8) ?Enum {
     return inline for (@typeInfo(Enum).@"enum".fields) |ef| {

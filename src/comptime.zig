@@ -316,7 +316,7 @@ fn refineUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
     return switch (u_op.op) {
         .@"-" => .{ .value = try mulVecOrScalarValues(self, target, minusonecompint) },
         .@"+" => u_op.target.*,
-        .@"|" => blk: {
+        .@";" => blk: {
             const @"type" = try self.typeOf(u_op.target.*);
             if (@"type" != .vector or @"type".vector.component.type != .float)
                 return self.errorOutFmt(Error.InvalidUnaryOperationTarget, "Only floating point vectors can be normalized", .{});
@@ -324,8 +324,7 @@ fn refineUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
             normalizeValue(u_op.target.value);
             break :blk u_op.target.*;
         },
-        // else => initial,
-        // .@"-" => .{ .value = try addValues(left, try mulValues(right, minusonecompint)) },
+        else => initial,
     };
 }
 fn normalizeValue(value: Parser.Value) void {
@@ -345,19 +344,18 @@ fn normalizeValue(value: Parser.Value) void {
 fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
     return switch (bin_op.op) {
         .@"*" => try refineMul(self, bin_op.left, bin_op.right),
-        .@"+" => try refineAdd(self, bin_op.left, bin_op.right),
+        .@"+", .@"-" => try refineAddOrSub(self, @enumFromInt(@intFromEnum(bin_op.op)), bin_op.left, bin_op.right),
         .@">>" => try refineRightShift(self, bin_op.left, bin_op.right),
-        .@"&" => try refineAnd(self, bin_op.left, bin_op.right),
+        .@"&", .@"|", .@"^^" => try refineAndOrXor(self, @enumFromInt(@intFromEnum(bin_op.op)), bin_op.left, bin_op.right),
         else => .{ .bin_op = bin_op },
-        // .@"-" => .{ .value = try addValues(left, try mulValues(self, right, minusonecompint)) },
         // .@"^" => .{ .value = try powValues(left, right) },
         // .@"'", .@"\"" => .{ .value = try dotValues(left, right) },
         // else => initial,
     };
 }
 //expand into or/and/xor
-fn refineAnd(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
-    const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@"&" } };
+fn refineAndOrXor(self: *Parser, op: AndOrXorOp, left: *Expression, right: *Expression) Error!Expression {
+    const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = @enumFromInt(@intFromEnum(op)) } };
     var left_expr, var left_type, var right_expr, var right_type = .{ left.*, try self.typeOf(left.*), right.*, try self.typeOf(right.*) };
 
     if (!equalizeExprTypesIfUnknown(self, &left_expr, &left_type, &right_expr, &right_type)) return initial;
@@ -371,46 +369,11 @@ fn refineAnd(self: *Parser, left: *Expression, right: *Expression) Error!Express
             right_expr = try self.implicitCast(right_expr, .compint);
         }
     } else if (left_type != .bool and right_type != .bool) return self.errorOut(Error.InvalidOperands);
-    if (left_expr == .value and right_expr == .value) return .{ .value = try andValues(left_expr.value, right_expr.value) };
+    if (left_expr == .value and right_expr == .value) return .{ .value = try andValues(@enumFromInt(@intFromEnum(op)), left_expr.value.type, left_expr.value.payload, right_expr.value.payload) };
     left.*, right.* = .{ left_expr, right_expr };
     return initial;
 }
-fn andValues(left: Value, right: Value) Error!Value {
-    return switch (left.type) {
-        .bool => .{ .type = .bool, .payload = .{
-            .wide = util.fit(WIDE, util.extract(bool, left.payload.wide) and util.extract(bool, right.payload.wide)),
-        } },
-        .compint => .{ .type = .compint, .payload = .{
-            .wide = util.fit(WIDE, util.extract(CI, left.payload.wide) & util.extract(CI, right.payload.wide)),
-        } },
-        .scalar, .vector => switch (if (left.type == .vector) left.type.vector.component.type else left.type.scalar.type) {
-            inline else => |st| switch (if (left.type == .vector) left.type.vector.component.width else left.type.scalar.width) {
-                inline else => |width| blk: {
-                    if (st == .float) unreachable;
-                    if (left.type == .scalar) {
-                        const comptype = Type{ .scalar = .{ .width = width, .type = st } };
-                        const T = comptype.ToZig();
-                        break :blk .{ .type = comptype, .payload = .{
-                            .wide = util.fit(WIDE, util.extract(T, left.payload.wide) & util.extract(T, right.payload.wide)),
-                        } };
-                    }
-                    inline for (@typeInfo(tp.VectorLen).@"enum".fields) |ef| {
-                        if (@as(tp.VectorLen, @enumFromInt(ef.value)) == left.type.vector.len) {
-                            const comptype = Type{ .vector = .{ .len = @enumFromInt(ef.value), .component = .{ .width = width, .type = st } } };
-                            const T = comptype.ToZig();
-                            const left_ptr: *T = @ptrCast(@alignCast(@constCast(left.payload.ptr)));
-                            const right_ptr: *T = @ptrCast(@alignCast(@constCast(right.payload.ptr)));
-                            left_ptr.* = left_ptr.* & right_ptr.*;
-                            break :blk left;
-                        }
-                    }
-                    unreachable;
-                },
-            },
-        },
-        else => unreachable,
-    };
-}
+
 //add left shift// allow left argument to be signed
 fn refineRightShift(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
     const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@">>" } };
@@ -468,15 +431,15 @@ fn rightShiftValues(self: *Parser, left: Value, right: Value) Error!Value {
         else => unreachable,
     };
 }
-fn refineAdd(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
-    const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@"+" } };
+fn refineAddOrSub(self: *Parser, op: AddOrSubOp, left: *Expression, right: *Expression) Error!Expression {
+    const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = @enumFromInt(@intFromEnum(op)) } };
     var left_expr, var left_type, var right_expr, var right_type = .{ left.*, try self.typeOf(left.*), right.*, try self.typeOf(right.*) };
 
     if (!equalizeExprTypesIfUnknown(self, &left_expr, &left_type, &right_expr, &right_type)) return initial;
     if (left_type.isNumber() or right_type.isNumber()) try equalizeScalarTypes(self, &left_expr, &left_type, &right_expr, &right_type);
     if (!left_type.eql(right_type)) return self.errorInvalidOperandTypes(left_type, .@"+", right_type);
     //add values
-    if (left_expr == .value and right_expr == .value) return .{ .value = try addValues(left_expr.value.type, left_expr.value.payload, right_expr.value.payload) };
+    if (left_expr == .value and right_expr == .value) return .{ .value = try addOrSubValues(op, left_expr.value.type, left_expr.value.payload, right_expr.value.payload) };
     left.*, right.* = .{ left_expr, right_expr };
     return initial;
 }
@@ -633,15 +596,7 @@ fn splatScalar(self: *Parser, vector_type: tp.Vector, wide: WIDE) Error!Value {
         },
     };
 }
-fn addValues(t: Type, left: Parser.ValuePayload, right: Parser.ValuePayload) Error!Value {
-    const payload: Parser.ValuePayload = switch (t) {
-        .compint => .{ .wide = util.fit(WIDE, util.extract(CI, left.wide) + util.extract(CI, right.wide)) },
-        .compfloat => .{ .wide = util.fit(WIDE, util.extract(CF, left.wide) + util.extract(CF, right.wide)) },
-        //number , vector
-        else => return Error.InvalidOperands,
-    };
-    return .{ .type = t, .payload = payload };
-}
+
 pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expression {
     if (@"type" == .unknown) return expr;
 
@@ -701,6 +656,74 @@ pub fn implicitCastValue(value: Value, target: Type) Error!Value {
     };
 }
 
+const addOrSubValues = createEvalNumericBinOpSameTypeFunction(AddOrSubOp, struct {
+    pub fn add(op: AddOrSubOp, left: anytype, right: anytype) void {
+        const tinfo = @typeInfo(@TypeOf(right));
+        if (tinfo == .int or tinfo == .float or tinfo == .vector) {
+            left.* = if (op == .@"+")
+                left.* + right
+            else
+                left.* - right;
+        } else unreachable;
+    }
+}.add);
+
+const AddOrSubOp = enum(u8) {
+    @"+" = @intFromEnum(BinaryOperator.@"+"),
+    @"-" = @intFromEnum(BinaryOperator.@"-"),
+};
+const andValues = createEvalNumericBinOpSameTypeFunction(AndOrXorOp, struct {
+    pub fn _and(op: AndOrXorOp, left: anytype, right: anytype) void {
+        const T = @TypeOf(right);
+        const tinfo = @typeInfo(T);
+        if (T == bool) {
+            left.* = switch (op) {
+                .@"&" => left.* and right,
+                .@"|" => left.* or right,
+                .@"^^" => left.* != right,
+            };
+        } else if (tinfo == .int or (tinfo == .vector and @typeInfo(tinfo.vector.child) == .int)) {
+            left.* = switch (op) {
+                .@"&" => left.* & right,
+                .@"|" => left.* | right,
+                .@"^^" => left.* ^ right,
+            };
+        } else unreachable;
+    }
+}._and);
+const AndOrXorOp = enum(u8) {
+    @"|" = @intFromEnum(BinaryOperator.@"|"),
+    @"&" = @intFromEnum(BinaryOperator.@"&"),
+    @"^^" = @intFromEnum(BinaryOperator.@"^^"),
+};
+fn createEvalNumericBinOpSameTypeFunction(Ctx: type, eval_fn: fn (Ctx, anytype, anytype) void) fn (Ctx, Type, Payload, Payload) Error!Value {
+    return struct {
+        pub fn f(ctx: Ctx, t: Type, left: Payload, right: Payload) Error!Value {
+            return .{
+                .type = t,
+                .payload = switch (t) {
+                    .bool => evalWide(bool, ctx, left, right),
+                    .compfloat => evalWide(CF, ctx, left, right),
+                    .compint => evalWide(CI, ctx, left, right),
+                    .scalar => |scalar| switch (scalar.type) {
+                        inline else => |st| switch (t.scalar.width) {
+                            inline else => |width| evalWide((Type{ .scalar = .{ .type = st, .width = width } }).ToZig(), ctx, left, right),
+                        },
+                    },
+
+                    else => return Error.InvalidOperands,
+                },
+            };
+        }
+        fn evalWide(T: type, ctx: Ctx, left: Payload, right: Payload) Payload {
+            var res = util.extract(T, left.wide);
+            eval_fn(ctx, &res, util.extract(T, right.wide));
+            return .{ .wide = util.fit(WIDE, res) };
+        }
+    }.f;
+}
+fn test_eval_fn(_: void, _: anytype, _: anytype) void {}
+
 const EqualizeResult = std.meta.Tuple(&.{ Type, Parser.ValuePayload, Parser.ValuePayload });
 
 const CI = Parser.CI;
@@ -709,4 +732,6 @@ const WIDE = Parser.WIDE;
 const Error = Parser.Error;
 const Expression = Parser.Expression;
 const Value = Parser.Value;
+const Payload = Parser.ValuePayload;
+const BinaryOperator = @import("Tokenizer.zig").BinaryOperator;
 const Type = tp.Type;
