@@ -111,7 +111,7 @@ pub inline fn addStatement(self: *Parser, statement: Statement) Error!void {
 }
 pub fn isStatementComplete(self: *Parser, statement: Statement) Error!bool {
     return switch (statement) {
-        .var_decl => |var_decl| (var_decl.type.eql(try self.typeOf(var_decl.initializer)) or
+        .var_decl => |var_decl| (Type.eql(var_decl.type, try self.typeOf(var_decl.initializer)) or
             var_decl.initializer.isEmpty()) and
             var_decl.type != .unknown,
         else => true,
@@ -144,7 +144,7 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
                 break :blk .{ .@"return" = null };
             }
             break :blk .{ .@"return" = try self.implicitCast(
-                try self.refine(try self.parseExpression(defaultShouldStop)),
+                try self.parseExpression(defaultShouldStop),
                 self.current_scope.result_type,
             ) };
         },
@@ -164,7 +164,7 @@ fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
     } else null;
     self.tokenizer.skip(); //will always be '=' since we checked for it in 'shouldStop'
 
-    var value = try self.refine(try self.parseExpression(defaultShouldStop));
+    var value = try self.parseExpression(defaultShouldStop);
 
     if (modifier) |mod| {
         const create_value = try self.createVal(value);
@@ -290,7 +290,7 @@ pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, should
 
         self.tokenizer.skip();
 
-        const right = try self.refine(try self.parseExpressionRecursive(should_stop, false, Tokenizer.bindingPower(op)));
+        const right = try self.parseExpressionRecursive(should_stop, false, Tokenizer.bindingPower(op));
         const add_left = try self.createVal(left);
         //go right
         left = try self.refine(.{ .bin_op = .{
@@ -420,7 +420,7 @@ fn parseExpressionSequence(self: *Parser, comptime until: Token) Error![]Express
 
     var token = try self.tokenizer.peek();
     while (!std.meta.eql(token, until)) {
-        const expr = try self.refine(try self.parseExpressionRecursive(should_stop, false, 0));
+        const expr = try self.parseExpressionRecursive(should_stop, false, 0);
         try list.append(self.arena.allocator(), expr);
         if (try self.tokenizer.peek() == .@",") self.tokenizer.skip();
         token = try self.tokenizer.peek();
@@ -452,7 +452,7 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
         while (peek != .@")") {
             switch (mode) {
                 .type => {
-                    const type_expr = try self.refine(try self.parseExpression(argDeclShouldStop));
+                    const type_expr = try self.parseExpression(argDeclShouldStop);
                     try arg_types.append(self.arena.allocator(), try self.asTypeCreate(type_expr));
                 },
                 .value => {
@@ -667,7 +667,7 @@ pub const EntryPoint = struct {
     }
 };
 
-pub const ShaderStageInfo = union(tp.ShaderStage) {
+pub const ShaderStageInfo = union(tp.ExecutionModel) {
     vertex,
     fragment,
     compute: [3]u32,
@@ -680,57 +680,6 @@ fn parseValue(self: *Parser, token: Token) Error!Value {
         .compfloat => |compfloat| .{ .type = .compfloat, .payload = .{ .wide = util.fit(WIDE, compfloat) } },
         .type_literal => |tl| .{ .type = .type, .payload = .{ .type = tl } },
         else => Error.UnexpectedToken,
-    };
-}
-pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
-    return switch (expr) {
-        .value => |value| value.type,
-        .constructor => |constructor| constructor.type,
-        .cast => |cast| cast.type,
-        .identifier => |identifier| (try self.current_scope.getVariableReference(self, identifier)).type,
-        .builtin => |builtin| try bi.typeOfBuiltin(self, builtin),
-        .bin_op => |bin_op| switch (bin_op.op) {
-            .@"+", .@"-", .@"^", .@"|", .@"&", .@">>" => blk: {
-                const left_type = try self.typeOf(bin_op.left.*);
-                const right_type = try self.typeOf(bin_op.right.*);
-                break :blk if (left_type == .unknown or right_type == .unknown) .unknownempty else left_type;
-            },
-            .@"*" => blk: {
-                var deep = try self.typeOf(bin_op.left.*);
-                var shallow = try self.typeOf(bin_op.right.*);
-                if (deep == .unknown or shallow == .unknown) return .unknownempty;
-                if (shallow.depth() > deep.depth()) std.mem.swap(Type, &deep, &shallow);
-
-                const result: Type = if ((deep == .matrix and shallow == .number) or
-                    (deep == .vector and shallow == .number) or
-                    shallow.eql(deep))
-                    deep
-                else if (deep == .matrix and shallow == .vector) shallow else .unknownempty;
-
-                break :blk result;
-            },
-            .@"\"", .@"'" => blk: {
-                const left_type = try self.typeOf(bin_op.left.*);
-                const right_type = try self.typeOf(bin_op.right.*);
-                break :blk if (left_type == .vector and left_type.eql(right_type)) left_type.constructorStructure().component else .unknownempty;
-            },
-
-            else => @panic("unknown bin op type"),
-        },
-        .u_op => |u_op| switch (u_op.op) {
-            else => try self.typeOf(u_op.target.*),
-        },
-        .indexing => |indexing| (try self.typeOf(indexing.target.*)).constructorStructure().component,
-        .call => |call| blk: {
-            if (call.callee.* == .builtin)
-                break :blk try bi.typeOfBuiltInCall(self, call.callee.builtin.function, call.args);
-            break :blk switch (try self.typeOf(call.callee.*)) {
-                .function => |function| function.rtype.*,
-                .unknown => .unknownempty,
-                else => Error.InvalidCall,
-            };
-        },
-        else => .{ .unknown = try self.createVal(expr) },
     };
 }
 
@@ -994,6 +943,7 @@ const Allocator = std.mem.Allocator;
 const BinaryOperator = Tokenizer.BinaryOperator;
 pub const refine = ct.refineTopLevel;
 pub const implicitCast = ct.implicitCast;
+pub const typeOf = tp.typeOf;
 pub const Type = tp.Type;
 pub const FunctionType = tp.FunctionType;
 const UnaryOperator = Tokenizer.UnaryOperator;

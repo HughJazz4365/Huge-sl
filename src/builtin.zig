@@ -90,8 +90,8 @@ const inv_oxFF = Expression{ .value = .{
     .type = .compfloat,
     .payload = .{ .wide = util.fit(Parser.WIDE, @as(Parser.CF, 1.0 / 255.0)) },
 } };
-const u32_type: Type = .{ .number = .{ .type = .uint, .width = .word } };
-const f32_type: Type = .{ .number = .{ .type = .float, .width = .word } };
+const u32_type: Type = .{ .scalar = .{ .type = .uint, .width = .word } };
+const f32_type: Type = .{ .scalar = .{ .type = .float, .width = .word } };
 const vec3_type: Type = .{ .vector = .{ .len = ._3, .component = .{ .type = .float, .width = .word } } };
 
 const Type = tp.Type;

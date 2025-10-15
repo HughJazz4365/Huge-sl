@@ -25,7 +25,7 @@ pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
 pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
     switch (t) {
         .entrypoint => |ep| try writer.print("entrypoint(.{s})", .{@tagName(ep)}),
-        .number => |n| try writer.print("{s}{d}", .{ n.type.prefix(), @intFromEnum(n.width) }),
+        .scalar => |n| try writer.print("{s}{d}", .{ n.type.prefix(), @intFromEnum(n.width) }),
         .vector => |v| try writer.print("{s}vec{d}", .{
             if (v.component.type == .float) "" else v.component.type.prefix(),
             @intFromEnum(v.len),
@@ -74,7 +74,6 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
     switch (value.type) {
         .compint => try writer.print("{d}", .{util.extract(Parser.CI, value.payload.wide)}),
         .compfloat => try writer.print("{d}f", .{util.extract(Parser.CF, value.payload.wide)}),
-        // .number => |num| try writer.print("{d}"
         .entrypoint => {
             try writer.print("{f}{{\n", .{value.type});
 
@@ -82,15 +81,12 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
             for (entry_point.body.items) |statement| try writer.print("{f}\n", .{statement});
             try writer.print("}}\n", .{});
         },
-        .number => |number| switch (number.type) {
-            inline else => |@"type"| switch (number.width) {
+        .scalar => |scalar| switch (scalar.type) {
+            inline else => |st| switch (scalar.width) {
                 inline else => |width| try writer.print("[{f}]|{d}|", .{
                     value.type,
-                    util.extract((tp.Number{ .type = @"type", .width = width }).ToZig(), value.payload.wide),
+                    util.extract((tp.Scalar{ .type = st, .width = width }).ToZig(), value.payload.wide),
                 }),
-                // inline else => |width| try writer.print("{d}", .{
-                //     ct.wideAs((tp.Number{ .type = @"type", .width = width }).ToZig(), value.payload.wide),
-                // }),
             },
         },
         .vector => |vector| switch (vector.len) {
