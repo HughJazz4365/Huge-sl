@@ -347,9 +347,9 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
         .@"+", .@"-" => try refineAddOrSub(self, @enumFromInt(@intFromEnum(bin_op.op)), bin_op.left, bin_op.right),
         .@">>" => try refineRightShift(self, bin_op.left, bin_op.right),
         .@"&", .@"|", .@"^^" => try refineAndOrXor(self, @enumFromInt(@intFromEnum(bin_op.op)), bin_op.left, bin_op.right),
+        .@"**", .@"***" => if (bin_op.left.* == .value and bin_op.right.* == .value) .{ .value = try dotValues(bin_op.op == .@"***", bin_op.left.value.type, bin_op.left.value.payload, bin_op.right.value.payload) } else .{ .bin_op = bin_op },
         else => .{ .bin_op = bin_op },
         // .@"^" => .{ .value = try powValues(left, right) },
-        // .@"'", .@"\"" => .{ .value = try dotValues(left, right) },
         // else => initial,
     };
 }
@@ -656,15 +656,36 @@ pub fn implicitCastValue(value: Value, target: Type) Error!Value {
     };
 }
 
-const addOrSubValues = createEvalNumericBinOpSameTypeFunction(AddOrSubOp, struct {
-    pub fn add(op: AddOrSubOp, left: anytype, right: anytype) void {
-        const tinfo = @typeInfo(@TypeOf(right));
-        if (tinfo == .int or tinfo == .float or tinfo == .vector) {
-            left.* = if (op == .@"+")
-                left.* + right
-            else
-                left.* - right;
+const dotValues = createEvalNumericBinOpSameTypeFunction(bool, struct {
+    pub fn dot(clamped: bool, @"type": Type, left: anytype, right: anytype, result: *Value) void {
+        const T = @TypeOf(right);
+        const tinfo = @typeInfo(T);
+
+        const res = if (tinfo == .vector) blk: {
+            const unclamped = @reduce(.Add, left.* * right);
+            break :blk if (clamped) @max(unclamped, 0) else unclamped;
         } else unreachable;
+        result.* = .{ .type = .{ .scalar = @"type".vector.component }, .payload = .{ .wide = util.fit(WIDE, res) } };
+    }
+}.dot);
+const addOrSubValues = createEvalNumericBinOpSameTypeFunction(AddOrSubOp, struct {
+    pub fn add(op: AddOrSubOp, @"type": Type, left: anytype, right: anytype, result: *Value) void {
+        const T = @TypeOf(right);
+        const tinfo = @typeInfo(T);
+        const l = if (tinfo == .vector) left.* else left;
+        const res: T = if (tinfo == .int or tinfo == .float or tinfo == .vector)
+            (if (op == .@"+")
+                l + right
+            else
+                l - right)
+        else
+            unreachable;
+        if (tinfo == .vector) {
+            left.* = res;
+            result.* = .{ .type = @"type", .payload = .{ .ptr = @ptrCast(@alignCast(@constCast(left))) } };
+        } else {
+            result.* = .{ .type = @"type", .payload = .{ .wide = util.fit(WIDE, res) } };
+        }
     }
 }.add);
 
@@ -673,22 +694,26 @@ const AddOrSubOp = enum(u8) {
     @"-" = @intFromEnum(BinaryOperator.@"-"),
 };
 const andValues = createEvalNumericBinOpSameTypeFunction(AndOrXorOp, struct {
-    pub fn _and(op: AndOrXorOp, left: anytype, right: anytype) void {
+    pub fn _and(op: AndOrXorOp, @"type": Type, left: anytype, right: anytype, result: *Value) void {
         const T = @TypeOf(right);
         const tinfo = @typeInfo(T);
-        if (T == bool) {
-            left.* = switch (op) {
-                .@"&" => left.* and right,
-                .@"|" => left.* or right,
-                .@"^^" => left.* != right,
-            };
-        } else if (tinfo == .int or (tinfo == .vector and @typeInfo(tinfo.vector.child) == .int)) {
-            left.* = switch (op) {
-                .@"&" => left.* & right,
-                .@"|" => left.* | right,
-                .@"^^" => left.* ^ right,
-            };
+        const l = if (tinfo == .vector) left.* else left;
+
+        const res: T = if (T == bool) switch (op) {
+            .@"&" => l and right,
+            .@"|" => l or right,
+            .@"^^" => l != right,
+        } else if (tinfo == .int or (tinfo == .vector and @typeInfo(tinfo.vector.child) == .int)) switch (op) {
+            .@"&" => l & right,
+            .@"|" => l | right,
+            .@"^^" => l ^ right,
         } else unreachable;
+        if (tinfo == .vector) {
+            left.* = res;
+            result.* = .{ .type = @"type", .payload = .{ .ptr = @ptrCast(@alignCast(@constCast(left))) } };
+        } else {
+            result.* = .{ .type = @"type", .payload = .{ .wide = util.fit(WIDE, res) } };
+        }
     }
 }._and);
 const AndOrXorOp = enum(u8) {
@@ -696,33 +721,48 @@ const AndOrXorOp = enum(u8) {
     @"&" = @intFromEnum(BinaryOperator.@"&"),
     @"^^" = @intFromEnum(BinaryOperator.@"^^"),
 };
-fn createEvalNumericBinOpSameTypeFunction(Ctx: type, eval_fn: fn (Ctx, anytype, anytype) void) fn (Ctx, Type, Payload, Payload) Error!Value {
+fn createEvalNumericBinOpSameTypeFunction(Ctx: type, eval_fn: fn (Ctx, Type, anytype, anytype, *Value) void) fn (Ctx, Type, Payload, Payload) Error!Value {
     return struct {
         pub fn f(ctx: Ctx, t: Type, left: Payload, right: Payload) Error!Value {
-            return .{
-                .type = t,
-                .payload = switch (t) {
-                    .bool => evalWide(bool, ctx, left, right),
-                    .compfloat => evalWide(CF, ctx, left, right),
-                    .compint => evalWide(CI, ctx, left, right),
-                    .scalar => |scalar| switch (scalar.type) {
-                        inline else => |st| switch (t.scalar.width) {
-                            inline else => |width| evalWide((Type{ .scalar = .{ .type = st, .width = width } }).ToZig(), ctx, left, right),
+            return switch (t) {
+                .bool => evalWide(bool, ctx, t, left, right),
+                .compfloat => evalWide(CF, ctx, t, left, right),
+                .compint => evalWide(CI, ctx, t, left, right),
+                .scalar => |scalar| switch (scalar.type) {
+                    inline else => |st| switch (t.scalar.width) {
+                        inline else => |width| evalWide((Type{ .scalar = .{ .type = st, .width = width } }).ToZig(), ctx, t, left, right),
+                    },
+                },
+                .vector => |vector| switch (vector.len) {
+                    inline else => |len| switch (vector.component.type) {
+                        inline else => |st| switch (vector.component.width) {
+                            inline else => |width| blk: {
+                                const T = (Type{ .vector = .{ .len = len, .component = .{ .type = st, .width = width } } }).ToZig();
+                                var res: Value = undefined;
+                                const left_ptr: *T = @ptrCast(@alignCast(@constCast(left.ptr)));
+                                const right_val: T = @as(*const T, @ptrCast(@alignCast(right.ptr))).*;
+                                eval_fn(ctx, t, left_ptr, right_val, &res);
+                                break :blk res;
+                            },
                         },
                     },
+                },
 
-                    else => return Error.InvalidOperands,
+                else => {
+                    std.debug.print("T: {f}\n", .{t});
+
+                    return Error.InvalidOperands;
                 },
             };
         }
-        fn evalWide(T: type, ctx: Ctx, left: Payload, right: Payload) Payload {
-            var res = util.extract(T, left.wide);
-            eval_fn(ctx, &res, util.extract(T, right.wide));
-            return .{ .wide = util.fit(WIDE, res) };
+
+        fn evalWide(T: type, ctx: Ctx, @"type": Type, left: Payload, right: Payload) Value {
+            var res: Value = undefined;
+            eval_fn(ctx, @"type", util.extract(T, left.wide), util.extract(T, right.wide), &res);
+            return res;
         }
     }.f;
 }
-fn test_eval_fn(_: void, _: anytype, _: anytype) void {}
 
 const EqualizeResult = std.meta.Tuple(&.{ Type, Parser.ValuePayload, Parser.ValuePayload });
 
