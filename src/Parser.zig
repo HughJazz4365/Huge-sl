@@ -506,7 +506,6 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
         .rtype = try self.createVal(rtype),
         .arg_types = try arg_types.toOwnedSlice(self.arena.allocator()),
     };
-    std.debug.print("FTYPE: {f}\n", .{Type{ .function = ftype }});
     if (mode == .unsure) @panic("UNSURE FUNC");
     if (mode == .type) {
         return .{ .value = .{

@@ -1,5 +1,12 @@
 const std = @import("std");
-
+const Type = std.builtin.Type;
+pub fn FlagStructFromUnion(Union: type, comptime dv: bool) type {
+    const union_fields = @typeInfo(Union).@"union".fields;
+    var struct_fields: [union_fields.len]Type.StructField = undefined;
+    for (&struct_fields, union_fields) |*sf, uf|
+        sf.* = .{ .alignment = 0, .type = bool, .default_value_ptr = @ptrCast(&dv), .is_comptime = false, .name = uf.name };
+    return @Type(.{ .@"struct" = .{ .decls = &.{}, .fields = &struct_fields, .layout = .@"packed", .is_tuple = false } });
+}
 pub fn numericCast(T: type, from: anytype) T {
     const F = @TypeOf(from);
     if (T == bool) return numericCast(u1, from) > 0;
@@ -46,7 +53,6 @@ pub fn strStartsComp(haystack: []const u8, comptime needle: []const u8) bool {
     return if (haystack.len < needle.len) false else inline for (needle, haystack[0..needle.len]) |n, h| (if (n != h) break false) else true;
 }
 pub fn SortEnumDecending(Enum: type) type {
-    const Type = std.builtin.Type;
     const tinfo = @typeInfo(Enum).@"enum";
     var enum_fields: [tinfo.fields.len]Type.EnumField = undefined;
     @memcpy(&enum_fields, tinfo.fields);

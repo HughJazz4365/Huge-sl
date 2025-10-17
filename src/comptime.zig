@@ -465,12 +465,17 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
         .@">>" => try refineRightShift(self, bin_op.left, bin_op.right),
         .@"&", .@"|", .@"^^" => try refineAndOrXor(self, @enumFromInt(@intFromEnum(bin_op.op)), bin_op.left, bin_op.right),
         .@"**", .@"***" => if (bin_op.left.* == .value and bin_op.right.* == .value) .{ .value = try dotValues(bin_op.op == .@"***", bin_op.left.value.type, bin_op.left.value.payload, bin_op.right.value.payload) } else .{ .bin_op = bin_op },
+        .@"^" => try refinePow(self, bin_op.left, bin_op.right),
         else => .{ .bin_op = bin_op },
-        // .@"^" => .{ .value = try powValues(left, right) },
         // else => initial,
     };
 }
-//expand into or/and/xor
+//we might allow pow instruction for integers?? through casting to float and then back
+fn refinePow(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
+    const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@"^" } };
+    _ = self;
+    return initial;
+}
 fn refineAndOrXor(self: *Parser, op: AndOrXorOp, left: *Expression, right: *Expression) Error!Expression {
     const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = @enumFromInt(@intFromEnum(op)) } };
     var left_expr, var left_type, var right_expr, var right_type = .{ left.*, try self.typeOf(left.*), right.*, try self.typeOf(right.*) };
@@ -620,41 +625,6 @@ fn equalizeScalarTypes(self: *Parser, left_expr: *Expression, left_type: *Type, 
     left_type.* = result_type;
     right_type.* = result_type;
 }
-// fn dotValues(left: Value, right: Value) Error!Value {
-//     const t, const a, const b = try implicitCastEqualizeValues(left, right);
-//     if (t != .vector or t.vector.component.type != .float) return Error.InvalidOperands;
-//     // return self.errorOutFmt(Error.InvalidUnaryOperationTarget, "Only floating point vectors can be normalized", .{});
-//     switch (t.vector.len) {
-//         inline else => |len| switch (t.vector.component.width) {
-//             inline else => |width| {
-//                 const comptype: Type = .{ .vector = .{ .len = len, .component = .{ .type = .float, .width = width } } };
-//                 const T = comptype.ToZig();
-//                 // const Elem = (Type{ .number = comptype.component }).ToZig();
-
-//                 const left_ptr: *T = @ptrCast(@alignCast(@constCast(a.ptr)));
-//                 const right_ptr: *T = @ptrCast(@alignCast(@constCast(b.ptr)));
-
-//                 left_ptr[0] = @reduce(.Add, left_ptr.* * right_ptr.*);
-//                 return .{ .type = .{ .number = t.vector.component }, .payload = .{ .wide = util.fit(WIDE, left_ptr[0]) } };
-//             },
-//         },
-//     }
-//     unreachable;
-// }
-// fn powValues(left: Value, right: Value) Error!Value {
-//     const t, const a, const b = try implicitCastEqualizeValues(left, right);
-//     const payload: Parser.ValuePayload = switch (t) {
-//         .compint => .{ .wide = util.fit(WIDE, std.math.powi(CI, util.extract(CI, a.wide), util.extract(CI, b.wide)) catch return Error.NumericError) },
-//         .compfloat => .{ .wide = util.fit(WIDE, @as(CF, @floatCast(std.math.pow(
-//             f64,
-//             @floatCast(util.extract(CF, a.wide)),
-//             @floatCast(util.extract(CF, b.wide)),
-//         )))) },
-//         //number , vector
-//         else => return Error.InvalidOperands,
-//     };
-//     return .{ .type = t, .payload = payload };
-// }
 
 fn mulVecOrScalarValues(self: *Parser, left: Value, right: Value) Error!Value {
     var left_value = left;
@@ -754,6 +724,20 @@ pub fn implicitCastValue(value: Value, target: Type) Error!Value {
         else => Error.CannotImplicitlyCast,
     };
 }
+const powValues = createEvalNumericBinOpSameTypeFunction(void, struct {
+    pub fn pow(_: void, @"type": Type, left: anytype, right: anytype, result: *Value) void {
+        const T = @TypeOf(right);
+        const tinfo = @typeInfo(T);
+        const l = if (tinfo == .vector) left.* else left;
+        const res: T = if (tinfo == .int or tinfo == .float or tinfo == .vector) std.math.pow(T, l, right) else unreachable;
+        if (tinfo == .vector) {
+            left.* = res;
+            result.* = .{ .type = @"type", .payload = .{ .ptr = @ptrCast(@alignCast(@constCast(left))) } };
+        } else {
+            result.* = .{ .type = @"type", .payload = .{ .wide = util.fit(WIDE, res) } };
+        }
+    }
+}.pow);
 
 const mulValuesSameType = createEvalNumericBinOpSameTypeFunction(void, struct {
     pub fn mul(_: void, @"type": Type, left: anytype, right: anytype, result: *Value) void {
