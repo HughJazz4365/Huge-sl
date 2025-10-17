@@ -5,7 +5,7 @@ const double = fn(x) f32{
 
 
 const main = entrypoint(.fragment){
-	in exposure: f32
+	const exposure: f32 = 43.8
 	const T = u32
 	out col : vec4 = .{double(exposure)}
 }

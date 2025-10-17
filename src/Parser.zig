@@ -141,7 +141,7 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
             const peek = try self.tokenizer.peek();
             if (self.defaultShouldStop(peek) catch unreachable) {
                 if (peek != .@"}") self.tokenizer.skip();
-                break :blk .{ .@"return" = null };
+                break :blk .{ .@"return" = .empty };
             }
             break :blk .{ .@"return" = try self.implicitCast(
                 try self.parseExpression(defaultShouldStop),
@@ -248,7 +248,7 @@ pub const Statement = union(enum) {
     assignment: Assignment,
     //   [target expr] {binop} [=] [value expr]
     ignore: Expression,
-    @"return": ?Expression,
+    @"return": Expression,
     // @"break": ?Expression,
     pub const format = debug.formatStatement;
 };
@@ -601,6 +601,19 @@ pub const Function = struct {
             }
         } else for (function.arg_names) |n| if (util.strEql(n, name)) return;
         return Error.UndeclaredVariable;
+    }
+    fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
+        const function: *Function = @fieldParentPtr("scope", scope);
+        return for (function.body.items) |*statement| {
+            if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
+                break statement.var_decl.variableReference();
+        } else for (function.type.arg_types, function.arg_names) |t, n| {
+            if (util.strEql(name, n)) break .{
+                .is_mutable = false,
+                .type = t,
+                .value = .{ .identifier = name },
+            };
+        } else try parser.global_scope.getVariableReference(parser, name);
     }
 };
 

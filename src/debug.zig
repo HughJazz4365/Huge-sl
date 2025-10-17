@@ -14,9 +14,9 @@ pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
             ass.value,
         }),
 
-        .@"return" => |@"return"| {
+        .@"return" => |returned| {
             try writer.print("return", .{});
-            if (@"return") |r| try writer.print(" {f}", .{r});
+            if (!returned.isEmpty()) try writer.print(" {f}", .{returned});
         },
         else => try writer.print("[{s}]", .{@tagName(statement)}),
     }

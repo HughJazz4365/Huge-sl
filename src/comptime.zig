@@ -58,7 +58,6 @@ pub fn refineDescend(self: *Parser, expr: Expression) Error!Expression {
     };
 }
 pub fn refine(self: *Parser, expr: Expression) Error!Expression {
-    // std.debug.print("R: {f}\n", .{expr});
     return switch (expr) {
         .bin_op => |bin_op| try refineBinOp(self, bin_op),
         .u_op => |u_op| try refineUOp(self, u_op),
@@ -94,76 +93,100 @@ fn callFunctionComptime(self: *Parser, call: Parser.Call) Error!Expression {
     //at this point function is pure, non generic and all argument are of known type
     // for now assume that function can return early
     // recursion handled at definition time
-    var dispatch = FunctionDispatch.new(self, function, call.args);
+    var dispatch = try FunctionDispatch.new(self, &function, call.args);
     defer dispatch.deinit(self);
 
     const last_scope = self.current_scope;
     self.current_scope = &dispatch.scope;
+    defer self.current_scope = last_scope;
+
     for (function.body.items) |statement| {
-        self.addStatement(statement);
-        if (dispatch.returned_expr) |returned| return returned;
+        try self.addStatement(statement);
+        if (!dispatch.returned_expr.isEmpty()) return dispatch.returned_expr.*;
     }
-    self.current_scope = last_scope;
+
     return initial;
 }
 const FunctionDispatch = struct {
-    scope: Scope,
-
-    var_decls: List(DispatchVariable),
+    var_decls: []DispatchVariable,
+    var_decl_count: usize = 0,
 
     args: []Value,
-    function: Function,
+    function: *const Function,
 
-    returned_expr: ?Expression = null,
+    returned_expr: *const Expression = &Expression.empty,
+    scope: Scope,
 
-    pub fn new(parser: *Parser, function: Function, args: []Expression) Error!FunctionDispatch {
+    pub fn new(parser: *Parser, function: *const Function, args: []Expression) Error!FunctionDispatch {
         return .{
             .scope = .{
-                .addStatementFn = addStatementFn,
-                .trackReferenceFn = trackReferenceFn,
-                .getVariableReferenceFn = getVariableReferenceFn,
-                .parent = parser.current_scope,
+                .addStatementFn = &addStatementFn,
+                .trackReferenceFn = &trackReferenceFn,
+                .getVariableReferenceFn = &getVariableReferenceFn,
                 .result_type = function.type.rtype.*,
             },
-            .var_decls = try List(DispatchVariable).initCapacity(parser.allocator, function.body.items.len),
+            .var_decls = try parser.arena.allocator().alloc(DispatchVariable, function.body.items.len),
             .function = function,
-            .args = args,
+            .args = blk: {
+                const slice = try parser.arena.allocator().alloc(Value, args.len);
+                for (slice, args) |*v, arg| v.* = arg.value;
+                break :blk slice;
+            },
         };
     }
     pub fn deinit(self: *FunctionDispatch, parser: *Parser) void {
-        self.var_decls.deinit(parser.allocator);
+        parser.arena.allocator().free(self.args);
+        parser.arena.allocator().free(self.var_decls);
     }
     fn addStatementFn(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
-        //only add var decls
         const dispatch: *FunctionDispatch = @fieldParentPtr("scope", scope);
 
-        const refined_statement = refineStatement(parser, statement);
+        const refined_statement = try refineStatementDispatch(parser, statement);
         if (!(try parser.isStatementComplete(refined_statement))) return parser.errorOut(Error.IncompleteStatement);
 
-        if (refined_statement == .@"return") {
-            dispatch.returned_expr = refined_statement.@"return".*;
-        } else {
-            const index = dispatch.body_len;
-            if (index >= dispatch.body.len) @panic("more statements in dispatch than in decl??");
-            dispatch.body[index] = refined_statement;
-            dispatch.body_len += 1;
+        switch (refined_statement) {
+            .var_decl => |var_decl| {
+                dispatch.var_decls[dispatch.var_decl_count] = .{
+                    .name = var_decl.name,
+                    .value = var_decl.initializer.value,
+                };
+                dispatch.var_decl_count += 1;
+            },
+            // .assignment => |assignment| (for (dispatch.var_decls.items) |*vd| (break vd) else unreachable).value = expr.value.value,
+            .@"return" => |expr| dispatch.returned_expr = try parser.createVal(expr),
+            else => {},
         }
     }
-    fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!Parser.VariableReference {
+    fn getVariableReferenceFn(scope: *Scope, _: *Parser, name: []const u8) Error!Parser.VariableReference {
         const dispatch: *FunctionDispatch = @fieldParentPtr("scope", scope);
-        return for (dispatch.body) |*statement| {} else for (dispatch.args, dispatch.function.arg_names) |arg, arg_name| {
-            if (util.strEql(name, arg_name)) break .{
-                .is_mutable = false,
-                .type = arg,
-                .value = .{ .value = arg },
-            };
-        } else try parser.global_scope.getVariableReference(parser, name);
-        //outer scope reference should always be immutable if the function is pure
+        const val = for (dispatch.var_decls) |vd|
+            (if (util.strEql(vd.name, name)) break vd.value)
+        else for (dispatch.function.arg_names, dispatch.args) |arg_name, arg|
+            (if (util.strEql(arg_name, name)) break arg)
+        else
+            unreachable;
+        // else
+        //     unreachable;
+        return .{ .is_mutable = true, .type = val.type, .value = .{ .value = val } };
     }
-    fn trackReferenceFn(_: *Scope, _: []const u8, _: Parser.DeclReferenceType) Error!void {}
-    fn refineStatement(self: *Parser, statement: Statement) Error!Statement {
-        _ = self;
-        return statement;
+    fn trackReferenceFn(_: *Scope, _: []const u8, _: Parser.Scope.DeclReferenceType) Error!void {}
+    fn refineStatementDispatch(self: *Parser, statement: Statement) Error!Statement {
+        return switch (statement) {
+            .var_decl => |var_decl| blk: {
+                var vd = var_decl;
+                if (vd.type == .unknown) vd.type = try self.asTypeCreate(try refineDescend(self, vd.type.unknown.*));
+                vd.initializer = try self.implicitCast(try refineDescend(self, vd.initializer), vd.type);
+
+                break :blk .{ .var_decl = vd };
+            },
+            // .assignment => |assignment| blk: {
+            // },
+            .@"return" => |returned| if (!returned.isEmpty())
+                .{ .@"return" = try self.implicitCast(try refineDescend(self, returned), self.current_scope.result_type) }
+            else
+                statement,
+            else => statement,
+        };
     }
 };
 
@@ -647,27 +670,9 @@ fn mulVecOrScalarValues(self: *Parser, left: Value, right: Value) Error!Value {
         try implicitCastValue(right_value, left_value.type);
 
     const t, const a, const b = .{ left_value.type, left_value.payload, right_value.payload };
-    const payload: Parser.ValuePayload = switch (t) {
-        .compint => .{ .wide = util.fit(WIDE, util.extract(CI, a.wide) * util.extract(CI, b.wide)) },
-        .compfloat => .{ .wide = util.fit(WIDE, util.extract(CF, a.wide) * util.extract(CF, b.wide)) },
-        //number , vector
-        .vector => |vector| switch (vector.len) {
-            inline else => |len| switch (vector.component.type) {
-                inline else => |num_type| switch (vector.component.width) {
-                    inline else => |width| blk: {
-                        const V = (tp.Vector{ .len = len, .component = .{ .type = num_type, .width = width } }).ToZig();
-                        const a_ptr: *V = @ptrCast(@alignCast(@constCast(a.ptr)));
-                        const b_ptr: *const V = @ptrCast(@alignCast(b.ptr));
-
-                        break :blk .{ .ptr = @ptrCast(@alignCast(try self.createVal(a_ptr.* * b_ptr.*))) };
-                    },
-                },
-            },
-        },
-        else => return Error.InvalidOperands,
-    };
-    return .{ .type = t, .payload = payload };
+    return try mulValuesSameType({}, t, a, b);
 }
+
 fn splatScalar(self: *Parser, vector_type: tp.Vector, wide: WIDE) Error!Value {
     return switch (vector_type.len) {
         inline else => |l| switch (vector_type.component.type) {
@@ -750,6 +755,23 @@ pub fn implicitCastValue(value: Value, target: Type) Error!Value {
     };
 }
 
+const mulValuesSameType = createEvalNumericBinOpSameTypeFunction(void, struct {
+    pub fn mul(_: void, @"type": Type, left: anytype, right: anytype, result: *Value) void {
+        const T = @TypeOf(right);
+        const tinfo = @typeInfo(T);
+        const l = if (tinfo == .vector) left.* else left;
+        const res: T = if (tinfo == .int or tinfo == .float or tinfo == .vector)
+            l * right
+        else
+            unreachable;
+        if (tinfo == .vector) {
+            left.* = res;
+            result.* = .{ .type = @"type", .payload = .{ .ptr = @ptrCast(@alignCast(@constCast(left))) } };
+        } else {
+            result.* = .{ .type = @"type", .payload = .{ .wide = util.fit(WIDE, res) } };
+        }
+    }
+}.mul);
 const dotValues = createEvalNumericBinOpSameTypeFunction(bool, struct {
     pub fn dot(clamped: bool, @"type": Type, left: anytype, right: anytype, result: *Value) void {
         const T = @TypeOf(right);
