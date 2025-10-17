@@ -7,8 +7,8 @@ pub fn main() !void {
     _ = &out_writer;
 
     // const path = "test.hgsl";
-    const path = "source.hgsl";
-    // const path = "func.hgsl";
+    // const path = "source.hgsl";
+    const path = "func.hgsl";
 
     const allocator = std.heap.page_allocator;
 

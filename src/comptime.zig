@@ -72,11 +72,105 @@ pub fn refine(self: *Parser, expr: Expression) Error!Expression {
 }
 fn refineCall(self: *Parser, call: Parser.Call) Error!Expression {
     const initial: Expression = .{ .call = call };
-    if (call.callee.* == .builtin and call.callee.builtin == .function) return try bi.refineBuiltinCall(self, call.callee.builtin.function, call.args, call.callee);
+    const callee_type = try self.typeOf(call.callee.*);
+    if (callee_type == .unknown) return initial;
+    if (callee_type != .function) return self.errorOut(Error.InvalidCall);
 
-    return initial;
+    return if (call.callee.* == .builtin and call.callee.builtin == .function)
+        try bi.refineBuiltinCall(self, call.callee.builtin.function, call.args, call.callee) //
+    else if (call.callee.* == .value) try callFunctionComptime(self, call) //
+    else initial;
 }
 
+fn callFunctionComptime(self: *Parser, call: Parser.Call) Error!Expression {
+    const initial: Expression = .{ .call = call };
+    const function: Function = @as(*const Function, @ptrCast(@alignCast(call.callee.value.payload.ptr))).*;
+    if (!function.is_pure) return initial;
+
+    for (call.args, function.type.arg_types) |arg, arg_type| {
+        if (arg != .value and !arg.isEmpty()) return initial;
+        if (arg_type == .unknown) @panic("TODO: 'Generic' functions");
+    }
+    //at this point function is pure, non generic and all argument are of known type
+    // for now assume that function can return early
+    // recursion handled at definition time
+    var dispatch = FunctionDispatch.new(self, function, call.args);
+    defer dispatch.deinit(self);
+
+    const last_scope = self.current_scope;
+    self.current_scope = &dispatch.scope;
+    for (function.body.items) |statement| {
+        self.addStatement(statement);
+        if (dispatch.returned_expr) |returned| return returned;
+    }
+    self.current_scope = last_scope;
+    return initial;
+}
+const FunctionDispatch = struct {
+    scope: Scope,
+
+    var_decls: List(DispatchVariable),
+
+    args: []Value,
+    function: Function,
+
+    returned_expr: ?Expression = null,
+
+    pub fn new(parser: *Parser, function: Function, args: []Expression) Error!FunctionDispatch {
+        return .{
+            .scope = .{
+                .addStatementFn = addStatementFn,
+                .trackReferenceFn = trackReferenceFn,
+                .getVariableReferenceFn = getVariableReferenceFn,
+                .parent = parser.current_scope,
+                .result_type = function.type.rtype.*,
+            },
+            .var_decls = try List(DispatchVariable).initCapacity(parser.allocator, function.body.items.len),
+            .function = function,
+            .args = args,
+        };
+    }
+    pub fn deinit(self: *FunctionDispatch, parser: *Parser) void {
+        self.var_decls.deinit(parser.allocator);
+    }
+    fn addStatementFn(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
+        //only add var decls
+        const dispatch: *FunctionDispatch = @fieldParentPtr("scope", scope);
+
+        const refined_statement = refineStatement(parser, statement);
+        if (!(try parser.isStatementComplete(refined_statement))) return parser.errorOut(Error.IncompleteStatement);
+
+        if (refined_statement == .@"return") {
+            dispatch.returned_expr = refined_statement.@"return".*;
+        } else {
+            const index = dispatch.body_len;
+            if (index >= dispatch.body.len) @panic("more statements in dispatch than in decl??");
+            dispatch.body[index] = refined_statement;
+            dispatch.body_len += 1;
+        }
+    }
+    fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!Parser.VariableReference {
+        const dispatch: *FunctionDispatch = @fieldParentPtr("scope", scope);
+        return for (dispatch.body) |*statement| {} else for (dispatch.args, dispatch.function.arg_names) |arg, arg_name| {
+            if (util.strEql(name, arg_name)) break .{
+                .is_mutable = false,
+                .type = arg,
+                .value = .{ .value = arg },
+            };
+        } else try parser.global_scope.getVariableReference(parser, name);
+        //outer scope reference should always be immutable if the function is pure
+    }
+    fn trackReferenceFn(_: *Scope, _: []const u8, _: Parser.DeclReferenceType) Error!void {}
+    fn refineStatement(self: *Parser, statement: Statement) Error!Statement {
+        _ = self;
+        return statement;
+    }
+};
+
+const DispatchVariable = struct {
+    name: []const u8,
+    value: Value,
+};
 fn refineIdentifier(self: *Parser, identifier: []const u8) Error!Expression {
     const var_ref = try self.current_scope.getVariableReference(self, identifier);
     return var_ref.value;
@@ -773,5 +867,10 @@ const Error = Parser.Error;
 const Expression = Parser.Expression;
 const Value = Parser.Value;
 const Payload = Parser.ValuePayload;
+const Statement = Parser.Statement;
+const Function = Parser.Function;
+const Scope = Parser.Scope;
 const BinaryOperator = @import("Tokenizer.zig").BinaryOperator;
 const Type = tp.Type;
+const List = std.ArrayList;
+const VariableDeclaration = Parser.VariableDeclaration;

@@ -329,7 +329,7 @@ fn defaultShouldStop(self: *Parser, token: Token) !bool {
 }
 
 fn parseExpressionSide(self: *Parser) Error!Expression {
-    var expr = try self.parseExpressionSidePrimary();
+    var expr = try self.refine(try self.parseExpressionSidePrimary());
     var peek: Token = undefined;
     while (true) {
         //parseConstructorFunction that will handle all constructrors
@@ -337,7 +337,7 @@ fn parseExpressionSide(self: *Parser) Error!Expression {
         if (peek == .@"{") { //constructor
             if (try self.typeOf(expr) == .type) {
                 self.tokenizer.skip();
-                expr = try self.parseCastOrConstructor(expr.asType());
+                expr = try self.parseCastOrConstructor(try self.asTypeCreate(expr));
                 continue;
             } else return self.errorOut(Error.UnexpectedToken);
         }
@@ -562,8 +562,8 @@ pub const Function = struct {
     arg_names: [][]const u8,
     type: tp.FunctionType,
 
-    has_side_effects: bool = false,
-    //is generic
+    //not dependant on nor mutates any global variables
+    is_pure: bool = true,
 
     body: List(Statement) = .empty,
     scope: Scope,
@@ -601,19 +601,6 @@ pub const Function = struct {
             }
         } else for (function.arg_names) |n| if (util.strEql(n, name)) return;
         return Error.UndeclaredVariable;
-    }
-    fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
-        const function: *Function = @fieldParentPtr("scope", scope);
-        return for (function.body.items) |*statement| {
-            if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
-                break statement.var_decl.variableReference();
-        } else for (function.type.arg_types, function.arg_names) |t, n| {
-            if (util.strEql(name, n)) break .{
-                .is_mutable = false,
-                .type = t,
-                .value = .{ .identifier = name },
-            };
-        } else try parser.global_scope.getVariableReference(parser, name);
     }
 };
 
@@ -725,12 +712,23 @@ pub const Expression = union(enum) {
     pub fn shouldTurnIntoIntermediate(self: Expression) bool {
         return self != .value;
     }
-    pub fn asType(self: *Expression) Type {
-        return if (self.* == .value and self.value.type == .type) self.value.payload.type else .{ .unknown = self };
-    }
 };
 pub fn asTypeCreate(self: *Parser, expr: Expression) Error!Type {
-    return if (expr == .value and expr.value.type == .type) expr.value.payload.type else .{ .unknown = try self.createVal(expr) };
+    var as_type = try self.asType(@constCast(&expr));
+    if (as_type == .unknown) as_type.unknown = try self.createVal(expr);
+    return as_type;
+}
+pub fn asType(self: *Parser, expr: *Expression) Error!Type {
+    const unknown: Type = .{ .unknown = expr };
+    return switch (expr.*) {
+        .value => |value| if (value.type == .type) value.payload.type else unknown,
+        .identifier => |identifier| blk: {
+            const var_ref = try self.current_scope.getVariableReference(self, identifier);
+            break :blk if (var_ref.type == .type and var_ref.value == .value) var_ref.value.value.payload.type else unknown;
+        },
+        .builtin => @panic("TODO: asType of builtin"),
+        else => unknown,
+    };
 }
 pub fn isExprMutable(self: *Parser, expr: Expression) Error!bool {
     return switch (expr) {

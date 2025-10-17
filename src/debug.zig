@@ -64,7 +64,9 @@ pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
         .cast => |cast| try writer.print("{f}{{ {f} }}", .{ cast.type, cast.expr.* }),
         .indexing => |indexing| try writer.print("{f}[{f}]", .{ indexing.target, indexing.index }),
         .call => |call| {
-            try writer.print("{f}(", .{call.callee.*});
+            if (call.callee.* == .value and call.callee.value.type == .function) {
+                try writer.print("[FUNCTIONVALUE](", .{});
+            } else try writer.print("{f}(", .{call.callee.*});
             for (call.args, 0..) |arg, i| try writer.print("{f}{s}", .{ arg, if (i + 1 < call.args.len) ", " else ")" });
         },
         inline else => |_, tag| try writer.print("{s}", .{@tagName(tag)}),
@@ -103,14 +105,18 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
             try writer.print("[EMPTY]", .{})
         else
             try writer.print("{f}", .{value.payload.type}),
-        .unknown, .void => try writer.print("[EMPTY]", .{}),
         .function => {
             try writer.print("{f}{{\n", .{value.type});
 
             const func: *const Parser.Function = @ptrCast(@alignCast(value.payload.ptr));
-            for (func.body.items) |statement| try writer.print("{f}\n", .{statement});
+            for (func.body.items, 0..) |statement, i|
+                if (i < 2) (try writer.print("{f}\n", .{statement})) else {
+                    try writer.print("...\n", .{});
+                    break;
+                };
             try writer.print("}}\n", .{});
         },
+        .unknown, .void => try writer.print("[EMPTY]", .{}),
         else => try writer.print("[{s}]", .{@tagName(value.type)}),
     }
 }
