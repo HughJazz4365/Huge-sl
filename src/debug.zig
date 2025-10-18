@@ -7,7 +7,7 @@ const Parser = @import("Parser.zig");
 pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
     switch (statement) {
         .var_decl => |var_decl| {
-            try writer.print("{s} {s} : {f} = {f}", .{ @tagName(var_decl.qualifier), var_decl.name, var_decl.type, var_decl.initializer });
+            try writer.print("{s} {s}[refs: {d}] : {f} = {f}", .{ @tagName(var_decl.qualifier), var_decl.name, var_decl.reference_count, var_decl.type, var_decl.initializer });
         },
         .assignment => |ass| try writer.print("{f} = {f}", .{
             ass.target,

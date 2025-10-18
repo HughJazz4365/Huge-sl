@@ -68,10 +68,8 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
     self.global_scope = .new();
     self.current_scope = &self.global_scope.scope;
 
-    while (try self.parseStatement()) |statement| {
-        try self.global_scope.addStatement(&self, statement);
-        std.debug.print("{f}\n", .{statement});
-    }
+    while (try self.parseStatement()) |statement| try self.addStatement(statement);
+    for (self.global_scope.body.items) |statement| std.debug.print("{f}\n", .{statement});
     return self;
 }
 pub fn deinit(self: *Parser) void {
@@ -81,12 +79,13 @@ pub fn turnIntoIntermediateVariableIfNeeded(self: *Parser, expr: Expression) Err
     if (!expr.shouldTurnIntoIntermediate()) return expr;
 
     const name = try self.createIntermediateVariableName();
-    try self.addStatement(.{ .var_decl = .{
+    const statement: Statement = .{ .var_decl = .{
         .qualifier = .@"const",
         .name = name,
         .type = try self.typeOf(expr),
         .initializer = expr,
-    } });
+    } };
+    try self.addStatement(statement);
     return .{ .identifier = name };
 }
 pub fn createIntermediateVariableName(self: *Parser) Error![]u8 {
@@ -123,6 +122,7 @@ pub fn create(self: *Parser, T: type) !*T {
 
 pub inline fn addStatement(self: *Parser, statement: Statement) Error!void {
     try self.current_scope.addStatement(self, statement);
+    try self.trackReferencesInStatement(statement);
 }
 pub fn isStatementComplete(self: *Parser, statement: Statement) Error!bool {
     return switch (statement) {
@@ -167,6 +167,17 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
         else => try self.parseAssignmentOrIgnore(),
     };
     return statement;
+}
+pub fn trackReferencesInStatement(self: *Parser, statement: Statement) Error!void {
+    switch (statement) {
+        .var_decl => |var_decl| try ct.trackReferencesDescend(self, var_decl.initializer),
+        .assignment => |assignment| {
+            try ct.trackReferencesDescend(self, assignment.target);
+            try ct.trackReferencesDescend(self, assignment.value);
+        },
+        .ignore => |expr| try ct.trackReferencesDescend(self, expr),
+        else => {},
+    }
 }
 fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
     const target = try self.parseExpressionRecursive(assignmentShouldStop, false, 0);
@@ -977,7 +988,7 @@ const ShouldStopFn = fn (*Parser, Token) Error!bool;
 const List = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const BinaryOperator = Tokenizer.BinaryOperator;
-pub const refine = ct.refineTopLevel;
+pub const refine = ct.refine;
 pub const implicitCast = ct.implicitCast;
 pub const typeOf = tp.typeOf;
 pub const Type = tp.Type;

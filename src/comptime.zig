@@ -13,49 +13,26 @@ fn errorImplicitCast(self: *Parser, expr: Expression, @"type": Type) Error {
         .{ expr, @"type" },
     );
 }
-pub fn refineTopLevel(self: *Parser, expr: Expression) Error!Expression {
-    const result = try refine(self, expr);
-    //can be triggered multiple times from one expr = bad
-    if (expr == .identifier and result == .identifier and util.strEql(expr.identifier, result.identifier)) {
-        // std.debug.print("exprref: {f}\n", .{result});
-        try self.current_scope.trackReference(result.identifier, .track);
-    }
-    return result;
-}
 pub fn refineDescend(self: *Parser, expr: Expression) Error!Expression {
-    return switch (expr) {
-        .bin_op => |bin_op| blk: {
-            bin_op.left.* = try refineDescend(self, bin_op.left.*);
-            bin_op.right.* = try refineDescend(self, bin_op.right.*);
-            break :blk try refine(self, expr);
-        },
-        .call => |call| blk: {
-            call.callee.* = try refineDescend(self, call.callee.*);
-            break :blk try refine(self, expr);
-        },
-        .u_op => |u_op| blk: {
-            u_op.target.* = try refineDescend(self, u_op.target.*);
-            break :blk try refine(self, expr);
-        },
-        .member_access => |member_access| blk: {
-            member_access.target.* = try refineDescend(self, member_access.target.*);
-            break :blk try refine(self, expr);
-        },
-        .indexing => |indexing| blk: {
-            indexing.target.* = try refineDescend(self, indexing.target.*);
-            break :blk try refine(self, expr);
-        },
-        .cast => |cast| blk: {
-            cast.expr.* = try refineDescend(self, cast.expr.*);
-            break :blk try refine(self, expr);
-        },
-        .constructor => |constructor| blk: {
-            for (constructor.components) |*c| c.* = try refineDescend(self, c.*);
-            break :blk try refine(self, expr);
-        },
-        else => refine(self, expr),
-    };
+    var e = expr;
+    try refineDescendPtr(self, &e);
+    return e;
 }
+const refineDescendPtr = createProcessExpressionDescendFunction(struct {
+    pub fn f(self: *Parser, expr_ptr: *Expression) Error!void {
+        expr_ptr.* = try refine(self, expr_ptr.*);
+    }
+}.f);
+pub fn trackReferencesDescend(self: *Parser, expr: Expression) Error!void {
+    try trackReferencesDescendPtr(self, @constCast(&expr));
+}
+pub const trackReferencesDescendPtr = createProcessExpressionDescendFunction(struct {
+    pub fn f(self: *Parser, expr_ptr: *Expression) Error!void {
+        // std.debug.print("TRACK: {f}\n", .{expr_ptr.*});
+        if (expr_ptr.* == .identifier) try self.current_scope.trackReference(expr_ptr.identifier, .track);
+    }
+}.f);
+
 pub fn refine(self: *Parser, expr: Expression) Error!Expression {
     return switch (expr) {
         .bin_op => |bin_op| try refineBinOp(self, bin_op),
@@ -935,6 +912,29 @@ fn createEvalNumericBinOpSameTypeFunction(Ctx: type, eval_fn: fn (Ctx, Type, any
             return res;
         }
     }.f;
+}
+fn createProcessExpressionDescendFunction(process: fn (*Parser, *Expression) Error!void) fn (*Parser, *Expression) Error!void {
+    return struct {
+        pub fn p(self: *Parser, expr: *Expression) Error!void {
+            switch (expr.*) {
+                .bin_op => |bin_op| {
+                    try p(self, bin_op.left);
+                    try p(self, bin_op.right);
+                },
+                .call => |call| {
+                    try p(self, call.callee);
+                    for (call.args) |*arg| try p(self, arg);
+                },
+                .u_op => |u_op| try p(self, u_op.target),
+                .member_access => |member_access| try p(self, member_access.target),
+                .indexing => |indexing| try p(self, indexing.target),
+                .cast => |cast| try p(self, cast.expr),
+                .constructor => |constructor| for (constructor.components) |*c| try p(self, c),
+                else => {},
+            }
+            try process(self, expr);
+        }
+    }.p;
 }
 
 const EqualizeResult = std.meta.Tuple(&.{ Type, Parser.ValuePayload, Parser.ValuePayload });
