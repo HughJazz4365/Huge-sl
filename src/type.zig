@@ -9,33 +9,29 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
         .cast => |cast| cast.type,
         .identifier => |identifier| (try self.current_scope.getVariableReference(self, identifier)).type,
         .builtin => |builtin| try bi.typeOfBuiltin(self, builtin),
-        .bin_op => |bin_op| switch (bin_op.op) {
-            .@"+", .@"-", .@"^", .@"|", .@"&", .@">>" => blk: {
-                const left_type = try self.typeOf(bin_op.left.*);
-                const right_type = try self.typeOf(bin_op.right.*);
-                break :blk if (left_type == .unknown or right_type == .unknown) .unknownempty else left_type;
-            },
-            .@"*" => blk: {
-                var deep = try self.typeOf(bin_op.left.*);
-                var shallow = try self.typeOf(bin_op.right.*);
-                if (deep == .unknown or shallow == .unknown) return .unknownempty;
-                if (shallow.depth() > deep.depth()) std.mem.swap(Type, &deep, &shallow);
+        .bin_op => |bin_op| blk: {
+            const left_type = try self.typeOf(bin_op.left.*);
+            const right_type = try self.typeOf(bin_op.right.*);
+            if (left_type == .unknown or right_type == .unknown) return .unknownempty;
+            break :blk switch (bin_op.op) {
+                .@"+", .@"-", .@"^", .@"|", .@"&", .@">>" => left_type,
+                .@"*" => clk: {
+                    var deep = left_type;
+                    var shallow = right_type;
+                    if (shallow.depth() > deep.depth()) std.mem.swap(Type, &deep, &shallow);
 
-                const result: Type = if ((deep == .matrix and shallow == .scalar) or
-                    (deep == .vector and shallow == .scalar) or
-                    Type.eql(shallow, deep))
-                    deep
-                else if (deep == .matrix and shallow == .vector) shallow else .unknownempty;
+                    const result: Type = if ((deep == .matrix and shallow == .scalar) or
+                        (deep == .vector and shallow == .scalar) or
+                        Type.eql(shallow, deep))
+                        deep
+                    else if (deep == .matrix and shallow == .vector) shallow else .unknownempty;
 
-                break :blk result;
-            },
-            .@"***", .@"**" => blk: {
-                const left_type = try self.typeOf(bin_op.left.*);
-                const right_type = try self.typeOf(bin_op.right.*);
-                break :blk if (left_type == .vector and Type.eql(left_type, right_type)) left_type.constructorStructure().component else .unknownempty;
-            },
+                    break :clk result;
+                },
+                .@"***", .@"**" => if (left_type == .vector and Type.eql(left_type, right_type)) left_type.constructorStructure().component else .unknownempty,
 
-            else => @panic("unknown bin op type"),
+                else => @panic("unknown bin op type"),
+            };
         },
         .u_op => |u_op| switch (u_op.op) {
             else => try self.typeOf(u_op.target.*),

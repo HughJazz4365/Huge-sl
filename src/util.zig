@@ -1,5 +1,12 @@
 const std = @import("std");
 const Type = std.builtin.Type;
+
+pub fn pow(T: type, left: T, right: T) T {
+    return if (T == f16)
+        @floatCast(std.math.pow(f32, @floatCast(left), @floatCast(right)))
+    else
+        std.math.pow(T, left, right);
+}
 pub fn FlagStructFromUnion(Union: type, comptime dv: bool) type {
     const union_fields = @typeInfo(Union).@"union".fields;
     var struct_fields: [union_fields.len]Type.StructField = undefined;

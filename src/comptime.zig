@@ -22,7 +22,6 @@ pub fn refineTopLevel(self: *Parser, expr: Expression) Error!Expression {
     }
     return result;
 }
-//remove that
 pub fn refineDescend(self: *Parser, expr: Expression) Error!Expression {
     return switch (expr) {
         .bin_op => |bin_op| blk: {
@@ -153,7 +152,7 @@ const FunctionDispatch = struct {
                 dispatch.var_decl_count += 1;
             },
             // .assignment => |assignment| (for (dispatch.var_decls.items) |*vd| (break vd) else unreachable).value = expr.value.value,
-            .@"return" => |expr| dispatch.returned_expr = try parser.createVal(expr),
+            .@"return" => |expr| dispatch.returned_expr = if (expr == .value) try parser.createVal(expr) else @panic("function dispatch didnt fully evaluate func"),
             else => {},
         }
     }
@@ -473,7 +472,24 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
 //we might allow pow instruction for integers?? through casting to float and then back
 fn refinePow(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
     const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@"^" } };
-    _ = self;
+    var left_expr, var left_type, var right_expr, var right_type = .{ left.*, try self.typeOf(left.*), right.*, try self.typeOf(right.*) };
+
+    if (!equalizeExprTypesIfUnknown(self, &left_expr, &left_type, &right_expr, &right_type)) return initial;
+    if (left_type == .vector or right_type == .vector) {
+        const result_type = if (left_type == .vector) left_type else right_type;
+        left_expr = try self.implicitCast(left_expr, result_type);
+        left_type = result_type;
+
+        right_expr = try self.implicitCast(right_expr, result_type);
+        right_type = result_type;
+    } else if (left_type.isNumber() and right_type.isNumber()) {
+        try equalizeScalarTypes(self, &left_expr, &left_type, &right_expr, &right_type);
+    } else return self.errorOut(Error.InvalidOperands);
+
+    if (left_expr == .value and right_expr == .value)
+        return .{ .value = try powValues({}, left_expr.value.type, left_expr.value.payload, right_expr.value.payload) };
+
+    left.*, right.* = .{ left_expr, right_expr };
     return initial;
 }
 fn refineAndOrXor(self: *Parser, op: AndOrXorOp, left: *Expression, right: *Expression) Error!Expression {
@@ -728,8 +744,13 @@ const powValues = createEvalNumericBinOpSameTypeFunction(void, struct {
     pub fn pow(_: void, @"type": Type, left: anytype, right: anytype, result: *Value) void {
         const T = @TypeOf(right);
         const tinfo = @typeInfo(T);
-        const l = if (tinfo == .vector) left.* else left;
-        const res: T = if (tinfo == .int or tinfo == .float or tinfo == .vector) std.math.pow(T, l, right) else unreachable;
+        var l = if (tinfo == .vector) left.* else left;
+        const res: T = if (tinfo == .int or tinfo == .float)
+            util.pow(T, l, right)
+        else if (tinfo == .vector) blk: {
+            for (0..tinfo.vector.len) |i| l[i] = util.pow(tinfo.vector.child, l[i], right[i]);
+            break :blk l;
+        } else unreachable;
         if (tinfo == .vector) {
             left.* = res;
             result.* = .{ .type = @"type", .payload = .{ .ptr = @ptrCast(@alignCast(@constCast(left))) } };

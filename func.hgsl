@@ -1,12 +1,11 @@
 
-const double = fn(x) f32{
-	return  x^5 * 2
-}
 
 
 const main = entrypoint(.fragment){
-	const exposure: f32 = 43.8
+	const doStuff = fn(x) f32{return x^5*2
+	}
+	const exposure: f32 = 2
 	const T = u32
-	out col : vec4 = .{double(exposure)}
+	out col : vec4 = .{doStuff(exposure)}
 }
 
