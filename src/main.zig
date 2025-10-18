@@ -11,14 +11,14 @@ pub fn main() !void {
     // _ = path;
     // const compiled = try hgsl.compile(allocator, hgsl.minimal_frag, "minimal", &out_writer.interface);
     for ([_][]const u8{
-        "source.hgsl",
         "func.hgsl",
+        "source.hgsl",
     }) |path| {
         std.debug.print("======{s}=======\n", .{path});
-        // var timer = try std.time.Timer.start();
+        var timer = try std.time.Timer.start();
         const compiled = try hgsl.compileFile(allocator, path, &out_writer.interface);
         defer allocator.free(compiled);
-        // std.debug.print("Time: {d}ms\n", .{@as(f64, @floatFromInt(timer.read())) / 1_000_000.0});
+        std.debug.print("Time: {d}ms\n", .{@as(f64, @floatFromInt(timer.read())) / 1_000_000.0});
 
         //write spirv binary to a file
         const out_file = try std.fs.cwd().openFile("out.spv", .{ .mode = .write_only });

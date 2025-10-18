@@ -241,6 +241,31 @@ fn castValue(value: Value, to: Type) Error!Value {
         else => return Error.CannotExplicitlyCast,
     };
 }
+fn isScalarOrEachVectorComponentsEqualToNumber(value: Value, comptime number: comptime_int) bool {
+    return if (!value.type.isNumber() and value.type != .vector) false else switch (value.type) {
+        .compint => util.extract(CI, value.payload.wide) == number,
+        .compfloat => util.extract(CF, value.payload.wide) == number,
+        .scalar => |scalar| switch (scalar.type) {
+            inline else => |st| switch (scalar.width) {
+                inline else => |width| util.extract((Type{ .scalar = .{ .type = st, .width = width } }).ToZig(), value.payload.wide) == number,
+            },
+        },
+        .vector => |vector| switch (vector.len) {
+            inline else => |len| switch (vector.component.type) {
+                inline else => |st| switch (vector.component.width) {
+                    inline else => |width| blk: {
+                        const T = (Type{ .vector = .{ .len = len, .component = .{ .type = st, .width = width } } }).ToZig();
+                        const ptr: *T = @ptrCast(@alignCast(@constCast(value.payload.ptr)));
+                        break :blk for (0..@intFromEnum(len)) |i| {
+                            if (ptr[i] != number) break false;
+                        } else true;
+                    },
+                },
+            },
+        },
+        else => unreachable,
+    };
+}
 fn isExplicitlyCastable(from: Type, to: Type) bool {
     return switch (to) {
         .scalar, .compint, .compfloat, .bool, .@"enum" => to.isNumber() or to == .bool or to == .@"enum",
@@ -608,20 +633,35 @@ fn refineMul(self: *Parser, left: *Expression, right: *Expression) Error!Express
 
         if (left_expr == .value and right_expr == .value)
             return .{ .value = try mulVecOrScalarValues(self, left_expr.value, right_expr.value) };
-        left.*, right.* = .{ left_expr, right_expr };
-        return initial;
     } else if (left_type.isNumber()) {
         try equalizeScalarTypes(self, &left_expr, &left_type, &right_expr, &right_type);
         if (left_expr == .value and right_expr == .value)
             return .{ .value = try mulVecOrScalarValues(self, left_expr.value, right_expr.value) };
-
-        left.*, right.* = .{ left_expr, right_expr };
-        return initial;
     } else return self.errorOutFmt(
         Error.InvalidOperands,
         "Invalid multiplication operands: {f} * {f}",
         .{ left_type, right_type },
     );
+
+    left.*, right.* = .{ left_expr, right_expr };
+    return resolvePatternsMul(self, left, right);
+}
+fn resolvePatternsMul(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
+    return inline for (0..2) |i| {
+        const curr = if (i == 0) left else right;
+        if (curr.* == .value) {
+            const other = if (i == 0) right else left;
+            const other_type = try self.typeOf(other.*);
+            if (isScalarOrEachVectorComponentsEqualToNumber(curr.value, 0)) break .{ .value = try implicitCastValue(
+                minusonecompint,
+                if (curr.value.type.depth() > other_type.depth()) curr.value.type else other_type,
+            ) };
+            if (isScalarOrEachVectorComponentsEqualToNumber(curr.value, 1)) break if (curr.value.type.depth() > other_type.depth())
+                try splatCast(self, other, curr.value.type)
+            else
+                other.*;
+        }
+    } else .{ .bin_op = .{ .left = left, .right = right, .op = .@"*" } };
 }
 fn equalizeExprTypesIfUnknown(self: *Parser, left_expr: *Expression, left_type: *Type, right_expr: *Expression, right_type: *Type) bool {
     if (left_type.* == .unknown and right_type.* == .unknown) return false;

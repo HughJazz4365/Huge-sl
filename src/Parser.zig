@@ -1,4 +1,5 @@
 const std = @import("std");
+const zigbuiltin = @import("builtin");
 const debug = @import("debug.zig");
 const bi = @import("builtin.zig");
 const ct = @import("comptime.zig");
@@ -88,13 +89,26 @@ pub fn turnIntoIntermediateVariableIfNeeded(self: *Parser, expr: Expression) Err
     return .{ .identifier = name };
 }
 pub fn createIntermediateVariableName(self: *Parser) Error![]u8 {
-    const prefix = "IV ";
-    const slice = try self.arena.allocator().alloc(u8, prefix.len + 4);
-    @memcpy(slice[0..prefix.len], prefix);
-    const byteptr: [*]const u8 = @ptrCast(@alignCast(&self.intermediate_value_index));
-    inline for (0..4) |i| slice[slice.len - (4 - i)] = byteptr[i];
-    self.intermediate_value_index += 1;
-    return slice;
+    if (zigbuiltin.mode == .Debug) {
+        const prefix = "IV #";
+        var digit_buf: [6]u8 = @splat(0);
+        var writer: std.Io.Writer = .fixed(&digit_buf);
+        if (self.intermediate_value_index >= std.math.powi(u32, 10, digit_buf.len) catch unreachable) @panic("too many IV`s");
+        writer.print("{d}", .{self.intermediate_value_index}) catch unreachable;
+        const slice = try self.arena.allocator().alloc(u8, prefix.len + writer.buffered().len);
+        @memcpy(slice[0..prefix.len], prefix);
+        @memcpy(slice[prefix.len..], writer.buffered());
+        self.intermediate_value_index += 1;
+        return slice;
+    } else {
+        const prefix = "IV ";
+        const slice = try self.arena.allocator().alloc(u8, prefix.len + 4);
+        @memcpy(slice[0..prefix.len], prefix);
+        const byteptr: [*]const u8 = @ptrCast(@alignCast(&self.intermediate_value_index));
+        inline for (0..4) |i| slice[slice.len - (4 - i)] = byteptr[i];
+        self.intermediate_value_index += 1;
+        return slice;
+    }
 }
 
 pub fn createVal(self: *Parser, value: anytype) !*@TypeOf(value) {
@@ -129,7 +143,7 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
         return null;
     }
 
-    return switch (token) {
+    const statement: ?Statement = switch (token) {
         .eof => null,
         .@"const", .mut, .uniform, .push, .shared, .out, .in => blk: {
             self.tokenizer.skip();
@@ -144,13 +158,14 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
                 break :blk .{ .@"return" = .empty };
             }
             break :blk .{ .@"return" = try self.implicitCast(
-                try self.parseExpression(defaultShouldStop),
+                try self.parseExpression(defaultShouldStop, false),
                 self.current_scope.result_type,
             ) };
         },
 
         else => try self.parseAssignmentOrIgnore(),
     };
+    return statement;
 }
 fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
     const target = try self.parseExpressionRecursive(assignmentShouldStop, false, 0);
@@ -164,7 +179,7 @@ fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
     } else null;
     self.tokenizer.skip(); //will always be '=' since we checked for it in 'shouldStop'
 
-    var value = try self.parseExpression(defaultShouldStop);
+    var value = try self.parseExpression(defaultShouldStop, false);
 
     if (modifier) |mod| {
         const create_value = try self.createVal(value);
@@ -215,7 +230,7 @@ fn parseVarDecl(self: *Parser, token: Token) Error!VariableDeclaration {
             if (!qualifier.canHaveInitializer())
                 return self.errorOutFmt(Error.UnexpectedInitializer, "Variable with \'{s}\' qualifier cant have initializers", .{@tagName(qualifier)});
 
-            const expr = try self.implicitCast(try self.parseExpression(defaultShouldStop), @"type");
+            const expr = try self.implicitCast(try self.parseExpression(defaultShouldStop, false), @"type");
             if (@"type".isEmpty()) @"type" = try self.typeOf(expr);
             break :blk expr;
         },
@@ -272,10 +287,10 @@ pub const VariableDeclaration = struct {
     }
 };
 
-pub fn parseExpression(self: *Parser, should_stop: ShouldStopFn) Error!Expression {
-    return try self.parseExpressionRecursive(should_stop, true, 0);
+pub fn parseExpression(self: *Parser, should_stop: ShouldStopFn, consume_end: bool) Error!Expression {
+    return try self.parseExpressionRecursive(should_stop, consume_end, 0);
 }
-pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, should_consume_end: bool, last_bp: u8) Error!Expression {
+pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, consume_end: bool, last_bp: u8) Error!Expression {
     var left = try self.refine(try self.parseExpressionSide());
     var token = try self.tokenizer.peek();
     while (!try should_stop(self, token)) {
@@ -301,7 +316,7 @@ pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, should
 
         token = try self.tokenizer.peek();
     }
-    if (should_consume_end) self.tokenizer.skip();
+    if (consume_end) self.tokenizer.skip();
 
     return left;
 }
@@ -367,7 +382,7 @@ fn parseExpressionSidePrimary(self: *Parser) Error!Expression {
         } },
         .identifier => |id| .{ .identifier = id },
         .builtin => |builtin| .{ .builtin = try bi.getBuiltin(builtin) },
-        .@"(" => try self.parseExpression(bracketShouldStop),
+        .@"(" => try self.parseExpression(bracketShouldStop, true),
         .@"." => switch (try self.tokenizer.next()) {
             .@"{" => try self.refine(try self.parseUnknownConstructor()),
             else => return self.errorOut(Error.UnexpectedToken),
@@ -452,7 +467,7 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
         while (peek != .@")") {
             switch (mode) {
                 .type => {
-                    const type_expr = try self.parseExpression(argDeclShouldStop);
+                    const type_expr = try self.parseExpression(argDeclShouldStop, true);
                     try arg_types.append(self.arena.allocator(), try self.asTypeCreate(type_expr));
                 },
                 .value => {
@@ -550,7 +565,10 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
     defer self.current_scope = self.current_scope.parent;
     while (try self.parseStatement()) |statement| {
         try self.addStatement(statement);
-        if (try self.tokenizer.peek() == .@"}") {
+        const peek = while (try self.tokenizer.peek() == .endl) {
+            self.tokenizer.skip();
+        } else self.tokenizer.peek() catch unreachable;
+        if (peek == .@"}") {
             self.tokenizer.skip();
             break;
         }
