@@ -52,6 +52,7 @@ pub const Error = error{
     InvalidUnaryOperationTarget,
     InvalidConstructor,
     InvalidIndex,
+    InvalidIndexingTarget,
 
     NumericError,
     OutOfBoundsAccess,
@@ -282,10 +283,18 @@ pub const VariableDeclaration = struct {
         return .{
             .is_mutable = self.qualifier.isMutable(),
             .type = self.type,
-            .value = if (self.initializer.isEmpty() or self.initializer != .value) .{ .identifier = self.name } else self.initializer,
+            .value = if (isComptimePassable(self.initializer)) self.initializer else .{ .identifier = self.name },
         };
     }
 };
+pub fn isComptimePassable(expr: Expression) bool {
+    return switch (expr) {
+        .identifier, .value => !expr.isEmpty(),
+        .constructor => |constructor| for (constructor.components) |c| (if (!isComptimePassable(c)) break false) else true,
+        .cast => |cast| isComptimePassable(cast.expr.*),
+        else => false,
+    };
+}
 
 pub fn parseExpression(self: *Parser, should_stop: ShouldStopFn, consume_end: bool) Error!Expression {
     return try self.parseExpressionRecursive(should_stop, consume_end, 0);
@@ -856,7 +865,6 @@ pub const Scope = struct {
     result_type: Type = Type{ .void = {} },
 
     pub const DeclReferenceType = enum { track, untrack };
-
     pub inline fn addStatement(self: *Scope, parser: *Parser, statement: Statement) Error!void {
         try self.addStatementFn(self, parser, statement);
     }

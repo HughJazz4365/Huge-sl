@@ -294,59 +294,72 @@ fn splatCast(self: *Parser, expr_ptr: *Expression, @"type": Type) Error!Expressi
 }
 fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
     const initial: Expression = .{ .indexing = indexing };
-    _ = self;
-    // if ((indexing.index.* == .value and indexing.target.* == .bin_op) and
-    //     (indexing.target.bin_op.left.* == .value or indexing.target.bin_op.right.* == .value))
-    // {
-    //     //if index is comptime and one of operads is comptime
-    //     //(a * b)[i] => (a[i] * b[i])
-    //     const create_left = try self.createVal(try refine(self, Expression{ .indexing = .{
-    //         .index = indexing.index,
-    //         .target = indexing.target.bin_op.left,
-    //     } }));
-    //     const create_right = try self.createVal(try refine(self, Expression{ .indexing = .{
-    //         .index = indexing.index,
-    //         .target = indexing.target.bin_op.right,
-    //     } }));
-    //     return try refine(self, .{ .bin_op = .{
-    //         .left = create_left,
-    //         .right = create_right,
-    //         .op = indexing.target.bin_op.op,
-    //     } });
-    // }
-    if (!(indexing.index.* == .value and indexing.target.* == .value)) return initial;
+    const index_type = try self.typeOf(indexing.index.*);
+    const target_type = try self.typeOf(indexing.target.*);
+    if (target_type == .unknown) return initial;
 
-    const index_value = indexing.index.value;
-    const target_value = indexing.target.value;
-    const index: usize = switch (index_value.type) {
-        .compint => @intCast(util.extract(CI, index_value.payload.wide)),
-        .compfloat => @intCast(util.extract(CI, (try implicitCastValue(indexing.index.value, .compint)).payload.wide)),
+    const target_cs = target_type.constructorStructure();
+    if (target_cs.len == 1) return self.errorOut(Error.InvalidIndexingTarget);
+
+    const index: u32 = sw: switch (index_type) {
+        .unknown => return initial,
+        .compint => blk: {
+            const ci = util.extract(CI, indexing.index.value.payload.wide);
+            if (ci < 0 or ci >= std.math.maxInt(u32)) return self.errorOut(Error.InvalidIndex);
+            break :blk @intCast(ci);
+        },
+        .compfloat => continue :sw blk: {
+            indexing.target.* = .{ .value = try implicitCastValue(indexing.index.value, .compint) };
+            break :blk .compint;
+        },
         .scalar => |scalar| switch (scalar.width) {
-            inline else => |width| @intCast(util.extract(
-                (Type{ .scalar = .{ .width = width, .type = .uint } }).ToZig(),
-                index_value.payload.wide,
-            )),
-        },
-        else => return Error.InvalidIndex,
-    };
-
-    const structure = target_value.type.constructorStructure();
-    if (structure.len <= index) return Error.OutOfBoundsAccess;
-
-    const component_size = structure.component.size();
-    var ptr: [*]const u8 = @ptrCast(target_value.payload.ptr);
-    ptr += component_size * index;
-    return .{ .value = .{
-        .type = structure.component,
-        .payload = switch (structure.component) {
-            .scalar, .compint, .compfloat => blk: {
-                var wide: WIDE = 0;
-                @memcpy(@as([*]u8, @ptrCast(&wide)), ptr[0..component_size]);
-                break :blk .{ .wide = wide };
+            inline else => |width| switch (scalar.type) {
+                inline else => |st| blk: {
+                    if (st != .uint) return self.errorOut(Error.InvalidIndex) else //
+                    if (indexing.index.* != .value) return initial else {
+                        const T = @Type(.{ .int = .{ .signedness = .unsigned, .bits = @intFromEnum(width) } });
+                        const i = util.extract(T, indexing.index.value.payload.wide);
+                        if (T == u64 and i >= std.math.maxInt(u32)) return self.errorOut(Error.InvalidIndex);
+                        break :blk @intCast(i);
+                    }
+                },
             },
-            else => .{ .ptr = ptr },
         },
-    } };
+        else => return self.errorOut(Error.InvalidIndex),
+    };
+    return sw: switch (indexing.target.*) {
+        .identifier => |identifier| {
+            const current_scope = self.current_scope;
+            const var_ref = try current_scope.getVariableReference(self, identifier);
+            continue :sw if (var_ref.value == .identifier and util.strEql(var_ref.value.identifier, identifier)) .empty else var_ref.value;
+        },
+
+        .constructor => |constructor| if (index >= constructor.components.len)
+            return self.errorOut(Error.OutOfBoundsAccess)
+        else
+            constructor.components[index],
+        .value => |value| blk: {
+            if (index >= target_cs.len) return self.errorOut(Error.OutOfBoundsAccess);
+            const component_size = target_cs.component.size();
+            var ptr: [*]const u8 = @ptrCast(value.payload.ptr);
+            ptr += component_size * index;
+            break :blk .{ .value = .{
+                .type = target_cs.component,
+                .payload = switch (target_cs.component) {
+                    .scalar, .compint, .compfloat => clk: {
+                        var wide: WIDE = 0;
+                        @memcpy(@as([*]u8, @ptrCast(&wide)), ptr[0..component_size]);
+                        break :clk .{ .wide = wide };
+                    },
+                    else => .{ .ptr = ptr },
+                },
+            } };
+        },
+        else => blk: {
+            indexing.index.* = .{ .value = .{ .type = tp.u32_type, .payload = .{ .wide = util.fit(WIDE, index) } } };
+            break :blk initial;
+        },
+    };
 }
 
 fn refineConstructor(self: *Parser, constructor: Parser.Constructor) Error!Expression {
@@ -548,16 +561,15 @@ fn refineRightShift(self: *Parser, left: *Expression, right: *Expression) Error!
         if (!left_type.eql(right_type) or left_type.vector.component.type != .uint) return self.errorOut(Error.InvalidOperands);
     } else {
         //rewrite that scope
-        const u32_type: Type = .{ .scalar = .{ .type = .uint, .width = .word } };
         if (left_type == .compfloat or left_type == .compint) {
-            left_expr = .{ .value = try implicitCastValue(left_expr.value, u32_type) };
-            left_type = u32_type;
+            left_expr = .{ .value = try implicitCastValue(left_expr.value, tp.u32_type) };
+            left_type = tp.u32_type;
         } else if (left_type != .scalar or left_type.scalar.type == .uint)
             return self.errorOut(Error.InvalidOperands);
 
         if (right_type == .compfloat or right_type == .compint) {
-            right_expr = .{ .value = try implicitCastValue(right_expr.value, u32_type) };
-            right_type = u32_type;
+            right_expr = .{ .value = try implicitCastValue(right_expr.value, tp.u32_type) };
+            right_type = tp.u32_type;
         } else if (right_type != .scalar or right_type.scalar.type != .uint)
             return self.errorOut(Error.InvalidOperands);
     }
@@ -732,7 +744,7 @@ pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expres
         .constructor => |constructor| try refineConstructor(self, if (constructor.type == .unknown)
             .{ .components = constructor.components, .type = @"type" }
         else
-            return Error.CannotImplicitlyCast),
+            return self.errorOut(Error.CannotImplicitlyCast)),
         else => expr,
         .cast => |cast| try implicitCastCast(self, cast, @"type"),
     };

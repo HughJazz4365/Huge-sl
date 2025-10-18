@@ -2,6 +2,8 @@ const std = @import("std");
 const Parser = @import("Parser.zig");
 const bi = @import("builtin.zig");
 
+pub const u32_type: Type = .{ .scalar = .{ .type = .uint, .width = .word } };
+
 pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
     const result: Type = switch (expr) {
         .value => |value| value.type,
