@@ -53,15 +53,17 @@ pub fn refine(self: *Parser, expr: Expression) Error!Expression {
         .indexing => |indexing| try refineIndexing(self, indexing),
         .identifier => |identifier| try refineIdentifier(self, identifier, true),
         .call => |call| try refineCall(self, call),
-        .value => |value| if (value.shouldBeNamed()) try self.turnIntoIntermediateVariable(expr) else expr,
+        // .value => |value| expr,
         else => expr,
     };
 }
 fn refineCall(self: *Parser, call: Parser.Call) Error!Expression {
     const initial: Expression = .{ .call = call };
+
     const callee_type = try self.typeOf(call.callee.*);
     if (callee_type == .unknown) return initial;
     if (callee_type != .function) return self.errorOut(Error.InvalidCall);
+    call.callee.* = try self.turnIntoIntermediateVariableIfNeeded(call.callee.*);
 
     return if (call.callee.* == .builtin and call.callee.builtin == .function)
         try bi.refineBuiltinCall(self, call.callee.builtin.function, call.args, call.callee) //

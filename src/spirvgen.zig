@@ -199,6 +199,10 @@ fn generateStatement(self: *Generator, statement: Parser.Statement) Error!void {
 }
 fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDeclaration) Error!void {
     // std.debug.print("{s} vd: {d}\n", .{ var_decl.name, var_decl.reference_count });
+    if (var_decl.type == .function) {
+        std.debug.print("Skipped generating function '{s}'\n", .{var_decl.name});
+        return;
+    }
     if (var_decl.type == .entrypoint)
         return try self.generateEntryPoint(
             var_decl.name,
@@ -219,7 +223,7 @@ fn generateVarDecl(self: *Generator, var_decl: Parser.VariableDeclaration) Error
     if (var_decl.qualifier == .@"const") return;
 
     const storage_class: StorageClass = switch (var_decl.qualifier) {
-        .@"var" => if (self.in_function) .function else .private,
+        .mut => if (self.in_function) .function else .private,
         .in => .input,
         .out => .output,
         else => @panic("idk how whats the storage class of this qualifier"),
@@ -289,22 +293,25 @@ fn decorateLocationEntryPointIO(self: *Generator, storage_class: StorageClass) E
     });
 }
 fn generateExpressionID(self: *Generator, expr: Expression) Error!u32 {
-    const id = switch (expr) {
+    return switch (expr) {
         .value => |value| try self.generateValueID(value),
-        else => Error.GenError,
+        .named_value => |named_value| try self.generateValueID(named_value.value),
+        else => {
+            std.debug.print("expression in question: {f}\n", .{expr});
+            return Error.GenError;
+        },
     };
-    return id;
 }
 fn generateValueID(self: *Generator, value: Parser.Value) Error!u32 {
     const @"type" = self.convertParserType(value.type) catch unreachable;
     const type_id = try self.getTypeID(@"type");
     return switch (value.type) {
-        .number => |number| switch (number.width) {
-            inline else => |width| switch (number.type) {
-                inline else => |nt| try self.getGlobalConstID(.{
+        .scalar => |scalar| switch (scalar.width) {
+            inline else => |width| switch (scalar.type) {
+                inline else => |st| try self.getGlobalConstID(.{
                     .type = type_id,
                     .value = blk: {
-                        const compt: Parser.Type = .{ .number = .{ .type = nt, .width = width } };
+                        const compt: Parser.Type = .{ .scalar = .{ .type = st, .width = width } };
                         const T = compt.ToZig();
                         break :blk if (width == .long) .{
                             //reorder words in that slice
@@ -322,15 +329,15 @@ fn generateValueID(self: *Generator, value: Parser.Value) Error!u32 {
         .vector => |vector| switch (vector.len) {
             inline else => |len| switch (vector.component.width) {
                 inline else => |width| switch (vector.component.type) {
-                    inline else => |nt| blk: {
-                        const compt: Parser.Type = .{ .vector = .{ .len = len, .component = .{ .type = nt, .width = width } } };
+                    inline else => |st| blk: {
+                        const compt: Parser.Type = .{ .vector = .{ .len = len, .component = .{ .type = st, .width = width } } };
                         const T = compt.ToZig();
                         const vec_len = @intFromEnum(len);
 
                         const slice = try self.arena.alloc(u32, vec_len);
                         inline for (0..vec_len) |i|
                             slice[i] = try self.generateValueID(.{
-                                .type = .{ .number = compt.vector.component },
+                                .type = .{ .scalar = compt.vector.component },
                                 .payload = .{
                                     .wide = util.fit(Parser.WIDE, @as(*const T, @ptrCast(@alignCast(value.payload.ptr)))[i]),
                                 },
@@ -346,7 +353,10 @@ fn generateValueID(self: *Generator, value: Parser.Value) Error!u32 {
         },
 
         // else => unreachable,
-        else => @panic("unhandled gen value type"),
+        else => {
+            std.debug.print("value type in question: {f}", .{value.type});
+            @panic("unhandled gen value type");
+        },
     };
 }
 fn getGlobalConstID(self: *Generator, global_constant: GlobalConstant) Error!u32 {
@@ -422,18 +432,27 @@ fn getTypeID(self: *Generator, @"type": Type) Error!u32 {
 }
 fn convertParserType(self: *Generator, ptype: Parser.Type) Error!Type {
     return switch (ptype) {
-        .number => |number| switch (number.type) {
-            .float => .{ .float = .{ .width = @intFromEnum(number.width) } },
+        .scalar => |scalar| switch (scalar.type) {
+            .float => .{ .float = .{ .width = @intFromEnum(scalar.width) } },
             else => |tag| .{ .int = .{
-                .width = @intFromEnum(number.width),
+                .width = @intFromEnum(scalar.width),
                 .signed = tag == .int,
             } },
         },
         .vector => |vector| .{ .vector = .{
-            .component_type = try self.getTypeID(try self.convertParserType(.{ .number = vector.component })),
+            .component_type = try self.getTypeID(try self.convertParserType(.{ .scalar = vector.component })),
             .len = @intFromEnum(vector.len),
         } },
         .void => .void,
+        .bool => .bool,
+        .function => |function| blk: {
+            const arg_types = try self.arena.alloc(u32, function.arg_types.len);
+            for (arg_types, function.arg_types) |*to_type, from_type| to_type.* = try self.getTypeID(try self.convertParserType(from_type));
+            break :blk .{ .function = .{
+                .rtype = try self.getTypeID(try self.convertParserType(function.rtype.*)),
+                .arg_types = arg_types,
+            } };
+        },
         else => {
             std.debug.print("T in question: {f}\n", .{ptype});
             return Error.InvalidSpirvType;
@@ -517,7 +536,7 @@ const FunctionControl = enum(u32) {
 const EntryPoint = struct {
     id: u32,
     name: []const u8,
-    stage_info: ShaderStageInfo,
+    stage_info: ExecutionModelInfo,
     io: []u32,
 };
 
@@ -646,7 +665,7 @@ fn structFromEnum(Enum: type, T: type) type {
 }
 //need a new 'type' type
 // to account for pointer stuff
-const ShaderStageInfo = Parser.ShaderStageInfo;
+const ExecutionModelInfo = Parser.ExecutionModelInfo;
 const Expression = Parser.Expression;
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;

@@ -79,7 +79,7 @@ pub fn deinit(self: *Parser) void {
     self.arena.deinit();
 }
 pub fn turnIntoIntermediateVariableIfNeeded(self: *Parser, expr: Expression) Error!Expression {
-    return if (expr.isComptime() or expr == .identifier) expr else try self.turnIntoIntermediateVariable(expr);
+    return if (expr == .named_value or (expr == .value and !expr.value.shouldBeNamed()) or expr == .identifier) expr else try self.turnIntoIntermediateVariable(expr);
 }
 pub fn turnIntoIntermediateVariable(self: *Parser, expr: Expression) Error!Expression {
     const name = try self.createIntermediateVariableName();

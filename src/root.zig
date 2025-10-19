@@ -32,7 +32,7 @@ pub fn compile(
     var parser = Parser.parse(allocator, &tokenizer) catch |err| return error_ctx.outputUpdateIfEmpty(err);
     defer parser.deinit();
 
-    // return try SpirvGen.generate(&parser);
-    return &.{};
+    return try SpirvGen.generate(&parser);
+    // return &.{};
 }
 pub const minimal_frag = "const main = entrypoint(.fragment){}";
