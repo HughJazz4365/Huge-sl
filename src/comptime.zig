@@ -28,11 +28,21 @@ pub fn trackReferencesDescend(ref_type: Parser.Scope.DeclReferenceType, self: *P
 }
 pub const trackReferencesDescendPtr = createProcessExpressionDescendFunction(Parser.Scope.DeclReferenceType, struct {
     pub fn f(ref_type: Parser.Scope.DeclReferenceType, self: *Parser, expr_ptr: *Expression) Error!void {
-        // std.debug.print("TRACK: {f}\n", .{expr_ptr.*});
         if (expr_ptr.* == .identifier) try self.current_scope.trackReference(expr_ptr.identifier, ref_type);
     }
 }.f);
 
+pub fn refineAssigmentTarget(self: *Parser, expr: Expression) Error!Expression {
+    return switch (expr) {
+        .identifier => |identifier| try refineIdentifier(self, identifier, false),
+        .indexing => @panic("TODO: ref assign target indexing"),
+        .member_access => @panic("TODO: ref assign target member_access"),
+        .swizzle => @panic("TODO: ref assign target swizzle"),
+
+        .builtin => expr,
+        else => return Error.InvalidAssignmentTarget,
+    };
+}
 pub fn refine(self: *Parser, expr: Expression) Error!Expression {
     return switch (expr) {
         .bin_op => |bin_op| try refineBinOp(self, bin_op),
@@ -40,7 +50,7 @@ pub fn refine(self: *Parser, expr: Expression) Error!Expression {
         .constructor => |constructor| try refineConstructor(self, constructor),
         .cast => |cast| try refineCast(self, cast),
         .indexing => |indexing| try refineIndexing(self, indexing),
-        .identifier => |identifier| try refineIdentifier(self, identifier),
+        .identifier => |identifier| try refineIdentifier(self, identifier, true),
         .call => |call| try refineCall(self, call),
         else => expr,
     };
@@ -77,7 +87,6 @@ fn callFunctionComptime(self: *Parser, call: Parser.Call) Error!Expression {
     defer self.current_scope = last_scope;
 
     for (function.body.items) |statement| {
-        if (self.canStatementBeOmitted(statement)) continue;
         try self.addStatement(statement);
         if (!dispatch.returned_expr.isEmpty()) return dispatch.returned_expr.*;
     }
@@ -171,9 +180,8 @@ const DispatchVariable = struct {
     name: []const u8,
     value: Value,
 };
-fn refineIdentifier(self: *Parser, identifier: []const u8) Error!Expression {
-    const var_ref = try self.current_scope.getVariableReference(self, identifier);
-    return var_ref.value;
+fn refineIdentifier(self: *Parser, identifier: []const u8, access: bool) Error!Expression {
+    return if (access) (try self.current_scope.getVariableReference(self, identifier)).value else .{ .identifier = identifier };
 }
 
 fn refineCast(self: *Parser, cast: Parser.Cast) Error!Expression {

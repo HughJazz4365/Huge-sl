@@ -14,9 +14,10 @@ const spec_pow = 30
 const spec_intensity = 1
 const main = entrypoint(.fragment){
 	const albedo : vec3 = .{1,1,1}
-	const diffuse = -light_dir *** light_dir
+	const diffuse = -light_dir *** normal
 
 	mut some_var : f32 = 32
+	some_var = 52
 	mut another_var = some_var
 
 	const view_dir = ;(eye_pos - world_pos)
