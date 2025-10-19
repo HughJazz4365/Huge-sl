@@ -7,6 +7,7 @@ pub const u32_type: Type = .{ .scalar = .{ .type = .uint, .width = .word } };
 pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
     const result: Type = switch (expr) {
         .value => |value| value.type,
+        .named_value => |named_value| named_value.value.type,
         .constructor => |constructor| constructor.type,
         .cast => |cast| cast.type,
         .identifier => |identifier| (try self.current_scope.getVariableReference(self, identifier)).type,

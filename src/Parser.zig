@@ -57,9 +57,10 @@ pub const Error = error{
 
     NumericError,
     OutOfBoundsAccess,
-    NegativePower, //a ^ (- |r|)
+    NegativePower,
     InvalidBitshift,
 } || Tokenizer.Error;
+
 ///creates its own arena
 pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
     var self: Parser = .{};
@@ -70,7 +71,6 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
     self.current_scope = &self.global_scope.scope;
 
     try self.parseScope(&self.global_scope.scope);
-    while (try self.parseStatement()) |statement| try self.addStatement(statement);
 
     if (zigbuiltin.mode == .Debug) for (self.global_scope.body.items) |statement| std.debug.print("{f}\n", .{statement});
     return self;
@@ -79,17 +79,17 @@ pub fn deinit(self: *Parser) void {
     self.arena.deinit();
 }
 pub fn turnIntoIntermediateVariableIfNeeded(self: *Parser, expr: Expression) Error!Expression {
-    if (!expr.shouldTurnIntoIntermediate()) return expr;
-
+    return if (expr.isComptime() or expr == .identifier) expr else try self.turnIntoIntermediateVariable(expr);
+}
+pub fn turnIntoIntermediateVariable(self: *Parser, expr: Expression) Error!Expression {
     const name = try self.createIntermediateVariableName();
-    const statement: Statement = .{ .var_decl = .{
+    try self.addStatement(.{ .var_decl = .{
         .qualifier = .@"const",
         .name = name,
         .type = try self.typeOf(expr),
         .initializer = expr,
-    } };
-    try self.addStatement(statement);
-    return .{ .identifier = name };
+    } });
+    return try self.refine(.{ .identifier = name });
 }
 pub fn createIntermediateVariableName(self: *Parser) Error![]u8 {
     if (zigbuiltin.mode == .Debug) {
@@ -196,7 +196,7 @@ fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
     var peek = try self.tokenizer.next();
     if (peek != .@"=") return self.errorOut(Error.InvalidAssignmentTarget);
 
-    if (!try self.isExprMutable(target)) return self.errorOutFmt(Error.MutatingImmutableVariable, "Trying to mutate unmutable variable: {f}", .{target});
+    if (!try self.isExpressionMutable(target)) return self.errorOutFmt(Error.MutatingImmutableVariable, "Trying to mutate unmutable variable: {f}", .{target});
 
     peek = try self.tokenizer.peek();
     const modifier: ?BinaryOperator = if (peek == .bin_op) op: {
@@ -214,10 +214,9 @@ fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
             .op = mod,
         } });
     }
-    value = try self.implicitCast(value, try self.typeOf(target));
     return .{ .assignment = .{
         .target = target,
-        .value = value,
+        .value = try self.implicitCast(value, try self.typeOf(target)),
     } };
 }
 fn parseVarDecl(self: *Parser, token: Token) Error!VariableDeclaration {
@@ -272,7 +271,7 @@ fn parseVarDecl(self: *Parser, token: Token) Error!VariableDeclaration {
 }
 fn matchVariableTypeWithQualifier(self: *Parser, @"type": Type, qualifier: Qualifier) Error!void {
     switch (@"type") {
-        // .buffer => onply uniform etc
+        // .buffer => only uniform etc
         .entrypoint, .function => if (qualifier != .@"const") return self.errorOutFmt(
             Error.VariableTypeAndQualifierDontMatch,
             "Functions and entry points must only be 'const' and not '{s}'",
@@ -284,12 +283,11 @@ fn matchVariableTypeWithQualifier(self: *Parser, @"type": Type, qualifier: Quali
 
 pub const Statement = union(enum) {
     var_decl: VariableDeclaration,
-    //   [qualifier] [name] {:} {type expr} {=} {value expr}
     assignment: Assignment,
-    //   [target expr] {binop} [=] [value expr]
     ignore: Expression,
     @"return": Expression,
     // @"break": ?Expression,
+    // @"continue"
     pub const format = debug.formatStatement;
 };
 pub fn isStatementOmittable(self: *Parser, statement: Statement) Error!bool {
@@ -320,7 +318,13 @@ pub const VariableDeclaration = struct {
         return .{
             .is_mutable = self.qualifier.isMutable(),
             .type = self.type,
-            .value = if ((self.qualifier == .@"const" or self.qualifier == .mut) and isComptimePassable(self.initializer)) self.initializer else .{ .identifier = self.name },
+            .value = if ((self.qualifier == .@"const" or self.qualifier == .mut) and isComptimePassable(self.initializer))
+                if (self.initializer == .value and self.initializer.value.shouldBeNamed())
+                    .{ .named_value = .{ .name = self.name, .value = self.initializer.value } }
+                else
+                    self.initializer
+            else
+                .{ .identifier = self.name },
 
             .is_omittable = self.canBeOmitted(),
         };
@@ -367,11 +371,6 @@ pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, consum
     if (consume_end) self.tokenizer.skip();
 
     return left;
-}
-
-fn assignmentShouldStop(self: *Parser, token: Token) Error!bool {
-    const peek = try self.tokenizer.peekTimes(2);
-    return token == .@"=" or token == .bin_op and peek == .@"=" or self.defaultShouldStop(token) catch unreachable;
 }
 
 fn bracketShouldStop(_: *Parser, token: Token) !bool {
@@ -456,7 +455,8 @@ fn parseFunctionCall(self: *Parser, callee: Expression) Error!Call {
 }
 
 fn parseUnknownConstructor(self: *Parser) Error!Expression {
-    const components = try self.parseExpressionSequence(.@"}"); /////////////
+    //consider struct constructors
+    const components = try self.parseExpressionSequence(.@"}");
     return if (components.len == 1) .{ .cast = .{
         .type = .unknownempty,
         .expr = &components[0],
@@ -624,6 +624,8 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
             break;
         }
     } else if (!self.inGlobalScope()) return self.errorOut(Error.UnclosedScope);
+
+    //remove useless statements
     const body = self.current_scope.body();
     var i: usize = 0;
     while (i < body.len) {
@@ -768,14 +770,11 @@ fn parseValue(self: *Parser, token: Token) Error!Value {
     };
 }
 
-pub fn isExpressionComptime(self: *Parser, expr: Expression) Error!bool {
-    _ = self;
-    //recursively descend
-    return expr == .value;
-}
 pub const Expression = union(enum) {
     call: Call,
     identifier: []const u8,
+    named_value: NamedValue,
+
     builtin: bi.Builtin,
 
     value: Value,
@@ -801,14 +800,17 @@ pub const Expression = union(enum) {
     @"if",
     @"switch",
 
+    pub const empty: Expression = .{ .value = .{ .type = .void } };
+    pub const format = debug.formatExpression;
     pub fn isEmpty(self: Expression) bool {
         return self == .value and self.value.type == .void;
     }
-    pub const empty: Expression = .{ .value = .{ .type = .void } };
-    pub const format = debug.formatExpression;
-
-    pub fn shouldTurnIntoIntermediate(self: Expression) bool {
-        return self != .value;
+    pub fn isComptime(self: Expression) bool {
+        return self == .value or self == .named_value;
+    }
+    ///assumes that self.isComptime() == true
+    pub fn getValue(self: Expression) Value {
+        return if (self == .value) self.value else self.named_value.value;
     }
 };
 pub fn asTypeCreate(self: *Parser, expr: Expression) Error!Type {
@@ -819,6 +821,7 @@ pub fn asTypeCreate(self: *Parser, expr: Expression) Error!Type {
 pub fn asType(self: *Parser, expr: *Expression) Error!Type {
     const unknown: Type = .{ .unknown = expr };
     return switch (expr.*) {
+        .named_value => |named_value| if (named_value.value.type == .type) named_value.value.payload.type else unknown,
         .value => |value| if (value.type == .type) value.payload.type else unknown,
         .identifier => |identifier| blk: {
             const var_ref = try self.current_scope.getVariableReference(self, identifier);
@@ -828,13 +831,17 @@ pub fn asType(self: *Parser, expr: *Expression) Error!Type {
         else => unknown,
     };
 }
-pub fn isExprMutable(self: *Parser, expr: Expression) Error!bool {
+pub fn isExpressionMutable(self: *Parser, expr: Expression) Error!bool {
     return switch (expr) {
         .identifier => |identifier| (try self.current_scope.getVariableReference(self, identifier)).is_mutable,
-        .indexing => |indexing| try self.isExprMutable(indexing.target.*),
+        .indexing => |indexing| try self.isExpressionMutable(indexing.target.*),
         else => false,
     };
 }
+pub const NamedValue = struct {
+    name: []const u8,
+    value: Value,
+};
 pub const Call = struct {
     callee: *Expression,
     args: []Expression,
@@ -1008,6 +1015,13 @@ pub const Value = struct {
     type: Type,
     payload: ValuePayload = undefined,
     pub const format = debug.formatValue;
+    pub fn shouldBeNamed(self: Value) bool {
+        return switch (self.type) {
+            .function => true,
+            .type => self.payload.type == .@"struct" or self.payload.type == .@"enum",
+            else => false,
+        };
+    }
 };
 
 pub const ValuePayload = union {

@@ -5,7 +5,7 @@ const main = entrypoint(.fragment){
 	const exposure: f32 = 2
 	const T = u32
 	in somein : f32
-	out col : vec4 = .{doStuff(somein + exposure)}
+	out col : vec4 = .{fn(x) f32{return x^5*2}( exposure)}
 }
 
 

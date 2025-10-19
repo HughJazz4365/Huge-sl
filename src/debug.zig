@@ -7,7 +7,7 @@ const Parser = @import("Parser.zig");
 pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
     switch (statement) {
         .var_decl => |var_decl| {
-            try writer.print("{s} {s} : {f} = {f}", .{ @tagName(var_decl.qualifier), var_decl.name, var_decl.type, var_decl.initializer });
+            try writer.print("[RC:{d}]{s} {s} : {f} = {f}", .{ var_decl.reference_count, @tagName(var_decl.qualifier), var_decl.name, var_decl.type, var_decl.initializer });
         },
         .assignment => |ass| try writer.print("{f} = {f}", .{
             ass.target,
@@ -48,6 +48,7 @@ pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
         .builtin => |builtin| switch (builtin) {
             inline else => |val| try writer.print("@{s}", .{@tagName(val)}),
         },
+        .named_value => |named_value| _ = try writer.write(named_value.name),
         .value => |v| try writer.print("{f}", .{v}),
         .bin_op => |bin_op| try writer.print("({f} {s} {f})", .{ bin_op.left, @tagName(bin_op.op), bin_op.right }),
         .u_op => |u_op| try writer.print("{s}{f}", .{ @tagName(u_op.op), u_op.target }),
@@ -64,9 +65,7 @@ pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
         .cast => |cast| try writer.print("{f}{{ {f} }}", .{ cast.type, cast.expr.* }),
         .indexing => |indexing| try writer.print("{f}[{f}]", .{ indexing.target, indexing.index }),
         .call => |call| {
-            if (call.callee.* == .value and call.callee.value.type == .function) {
-                try writer.print("[FUNCTIONVALUE](", .{});
-            } else try writer.print("{f}(", .{call.callee.*});
+            try writer.print("{f}(", .{call.callee.*});
             for (call.args, 0..) |arg, i| try writer.print("{f}{s}", .{ arg, if (i + 1 < call.args.len) ", " else ")" });
         },
         inline else => |_, tag| try writer.print("{s}", .{@tagName(tag)}),

@@ -28,7 +28,8 @@ pub fn trackReferencesDescend(ref_type: Parser.Scope.DeclReferenceType, self: *P
 }
 pub const trackReferencesDescendPtr = createProcessExpressionDescendFunction(Parser.Scope.DeclReferenceType, struct {
     pub fn f(ref_type: Parser.Scope.DeclReferenceType, self: *Parser, expr_ptr: *Expression) Error!void {
-        if (expr_ptr.* == .identifier) try self.current_scope.trackReference(expr_ptr.identifier, ref_type);
+        if (expr_ptr.* == .identifier) try self.current_scope.trackReference(expr_ptr.identifier, ref_type) //
+        else if (expr_ptr.* == .named_value) try self.current_scope.trackReference(expr_ptr.named_value.name, ref_type);
     }
 }.f);
 
@@ -52,6 +53,7 @@ pub fn refine(self: *Parser, expr: Expression) Error!Expression {
         .indexing => |indexing| try refineIndexing(self, indexing),
         .identifier => |identifier| try refineIdentifier(self, identifier, true),
         .call => |call| try refineCall(self, call),
+        .value => |value| if (value.shouldBeNamed()) try self.turnIntoIntermediateVariable(expr) else expr,
         else => expr,
     };
 }
@@ -63,22 +65,22 @@ fn refineCall(self: *Parser, call: Parser.Call) Error!Expression {
 
     return if (call.callee.* == .builtin and call.callee.builtin == .function)
         try bi.refineBuiltinCall(self, call.callee.builtin.function, call.args, call.callee) //
-    else if (call.callee.* == .value) try callFunctionComptime(self, call) //
+    else if (call.callee.isComptime()) try callFunctionComptime(self, call) //
     else initial;
 }
 
 fn callFunctionComptime(self: *Parser, call: Parser.Call) Error!Expression {
     const initial: Expression = .{ .call = call };
-    const function: Function = @as(*const Function, @ptrCast(@alignCast(call.callee.value.payload.ptr))).*;
+
+    const function: Function = @as(*const Function, @ptrCast(@alignCast((call.callee.getValue().payload.ptr)))).*;
     if (!function.is_pure) return initial;
 
     for (call.args, function.type.arg_types) |arg, arg_type| {
-        if (arg != .value and !arg.isEmpty()) return initial;
+        if (!arg.isComptime() and !arg.isEmpty()) return initial;
         if (arg_type == .unknown) @panic("TODO: 'Generic' functions");
     }
     //at this point function is pure, non generic and all argument are of known type
-    // for now assume that function can return early
-    // recursion handled at definition time
+    // recursion ??
     var dispatch = try FunctionDispatch.new(self, &function, call.args);
     defer dispatch.deinit(self);
 
@@ -139,7 +141,7 @@ const FunctionDispatch = struct {
                 dispatch.var_decl_count += 1;
             },
             // .assignment => |assignment| (for (dispatch.var_decls.items) |*vd| (break vd) else unreachable).value = expr.value.value,
-            .@"return" => |expr| dispatch.returned_expr = if (expr == .value) try parser.createVal(expr) else @panic("function dispatch didnt fully evaluate func"),
+            .@"return" => |expr| dispatch.returned_expr = if (expr.isComptime()) try parser.createVal(expr) else @panic("function dispatch didnt fully evaluate func"),
             else => {},
         }
     }
@@ -199,7 +201,7 @@ fn refineCast(self: *Parser, cast: Parser.Cast) Error!Expression {
             },
             else => {},
         }
-        return if (cast.type != .unknown and cast.expr.* == .value) .{ .value = try castValue(cast.expr.value, cast.type) } else initial;
+        return if (cast.type != .unknown and cast.expr.isComptime()) .{ .value = try castValue(cast.expr.getValue(), cast.type) } else initial;
     };
 }
 fn castValue(value: Value, to: Type) Error!Value {
@@ -452,7 +454,7 @@ fn refineUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
     if (u_op.op == .@"+") return u_op.target.*;
     const initial: Expression = .{ .u_op = u_op };
 
-    const target = if (u_op.target.* != .value) return initial else u_op.target.value;
+    const target = if (!u_op.target.isComptime()) return initial else u_op.target.getValue();
     return switch (u_op.op) {
         .@"-" => .{ .value = try mulVecOrScalarValues(self, target, minusonecompint) },
         .@"+" => u_op.target.*,
@@ -460,7 +462,6 @@ fn refineUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
             const @"type" = try self.typeOf(u_op.target.*);
             if (@"type" != .vector or @"type".vector.component.type != .float)
                 return self.errorOutFmt(Error.InvalidUnaryOperationTarget, "Only floating point vectors can be normalized", .{});
-            if (u_op.target.* != .value) break :blk initial;
             normalizeValue(u_op.target.value);
             break :blk u_op.target.*;
         },
@@ -487,7 +488,12 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
         .@"+", .@"-" => try refineAddOrSub(self, @enumFromInt(@intFromEnum(bin_op.op)), bin_op.left, bin_op.right),
         .@">>" => try refineRightShift(self, bin_op.left, bin_op.right),
         .@"&", .@"|", .@"^^" => try refineAndOrXor(self, @enumFromInt(@intFromEnum(bin_op.op)), bin_op.left, bin_op.right),
-        .@"**", .@"***" => if (bin_op.left.* == .value and bin_op.right.* == .value) .{ .value = try dotValues(bin_op.op == .@"***", bin_op.left.value.type, bin_op.left.value.payload, bin_op.right.value.payload) } else .{ .bin_op = bin_op },
+        .@"**", .@"***" => if (bin_op.left.* == .value and bin_op.right.* == .value) .{ .value = try dotValues(
+            bin_op.op == .@"***",
+            bin_op.left.value.type,
+            bin_op.left.value.payload,
+            bin_op.right.value.payload,
+        ) } else .{ .bin_op = bin_op },
         .@"^" => try refinePow(self, bin_op.left, bin_op.right),
         else => .{ .bin_op = bin_op },
         // else => initial,
@@ -707,8 +713,7 @@ fn splatScalar(self: *Parser, vector_type: tp.Vector, wide: WIDE) Error!Value {
                     const V = @Vector(@intCast(@intFromEnum(l)), T);
 
                     const num = util.extract(T, wide);
-                    const ptr = try self.create(V);
-                    inline for (0..@intFromEnum(l)) |i| ptr[i] = num;
+                    const ptr = try self.createVal(@as(V, @splat(num)));
 
                     break :blk .{
                         .type = .{ .vector = .{ .len = l, .component = comptype.scalar } },
