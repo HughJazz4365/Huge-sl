@@ -602,7 +602,7 @@ fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
     try self.parseScope(&entry_point.scope);
 
     entry_point.global_interface_count = self.global_scope.interfaces.items.len;
-    entry_point.interfaces = try util.reallocPrependSlice(self.arena.allocator(), usize, entry_point.interfaces, self.global_scope.interfaces.items);
+    entry_point.interfaces = try util.reallocPrependSlice(self.arena.allocator(), []const u8, entry_point.interfaces, self.global_scope.interfaces.items);
 
     return .{ .value = .{
         .type = ep_type,
@@ -706,7 +706,7 @@ pub const EntryPoint = struct {
     scope: Scope,
 
     global_interface_count: usize = 0,
-    interfaces: []usize = &.{},
+    interfaces: [][]const u8 = &.{},
     body: List(Statement),
 
     pub fn new(self: *Parser, stage_info: ExecutionModelInfo) EntryPoint {
@@ -731,7 +731,7 @@ pub const EntryPoint = struct {
         if (!(try parser.isStatementComplete(statement))) return parser.errorOut(Error.IncompleteStatement);
         try entry_point.body.append(parser.arena.allocator(), statement);
         if (statement == .var_decl and statement.var_decl.qualifier.isInterface())
-            entry_point.interfaces = try util.reallocAdd(parser.arena.allocator(), usize, entry_point.interfaces, entry_point.body.items.len - 1);
+            entry_point.interfaces = try util.reallocAdd(parser.arena.allocator(), []const u8, entry_point.interfaces, statement.var_decl.name);
     }
     fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
         const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);
@@ -872,7 +872,7 @@ pub const BinOp = struct {
 pub const GlobalScope = struct {
     scope: Scope,
 
-    interfaces: List(usize) = .empty,
+    interfaces: List([]const u8) = .empty,
     body: List(Statement) = .empty,
 
     pub fn new() @This() {
@@ -898,7 +898,7 @@ pub const GlobalScope = struct {
 
         try global_scope.body.append(parser.arena.allocator(), statement);
         if (statement == .var_decl and statement.var_decl.qualifier.isInterface())
-            try global_scope.interfaces.append(parser.arena.allocator(), global_scope.body.items.len - 1);
+            try global_scope.interfaces.append(parser.arena.allocator(), statement.var_decl.name);
     }
     fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
         const global_scope: *GlobalScope = @fieldParentPtr("scope", scope);

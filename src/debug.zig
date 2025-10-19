@@ -7,7 +7,6 @@ const Parser = @import("Parser.zig");
 pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
     switch (statement) {
         .var_decl => |var_decl| {
-            // try writer.print("{s} {s}[refs: {d}] : {f} = {f}", .{ @tagName(var_decl.qualifier), var_decl.name, var_decl.reference_count, var_decl.type, var_decl.initializer });
             try writer.print("{s} {s} : {f} = {f}", .{ @tagName(var_decl.qualifier), var_decl.name, var_decl.type, var_decl.initializer });
         },
         .assignment => |ass| try writer.print("{f} = {f}", .{
@@ -79,11 +78,15 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
         .compfloat => try writer.print("{d}f", .{util.extract(Parser.CF, value.payload.wide)}),
         .entrypoint => {
             const entry_point: *const Parser.EntryPoint = @ptrCast(@alignCast(value.payload.ptr));
-            try writer.print("{f}{{\n[global interfaces: {d}, local interfaces: {d}]\n", .{
-                value.type,
+            try writer.print("{f}{{\n", .{value.type});
+
+            try writer.print("[interfaces: ", .{});
+            for (entry_point.interfaces) |i| try writer.print("{s} ", .{i});
+            try writer.print("]\n[global interfaces: {d}, local interfaces: {d}]\n", .{
                 entry_point.global_interface_count,
                 entry_point.interfaces.len - entry_point.global_interface_count,
             });
+
             for (entry_point.body.items) |statement| try writer.print("{f}\n", .{statement});
             try writer.print("}}\n", .{});
         },
