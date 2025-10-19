@@ -15,21 +15,21 @@ fn errorImplicitCast(self: *Parser, expr: Expression, @"type": Type) Error {
 }
 pub fn refineDescend(self: *Parser, expr: Expression) Error!Expression {
     var e = expr;
-    try refineDescendPtr(self, &e);
+    try refineDescendPtr({}, self, &e);
     return e;
 }
-const refineDescendPtr = createProcessExpressionDescendFunction(struct {
-    pub fn f(self: *Parser, expr_ptr: *Expression) Error!void {
+const refineDescendPtr = createProcessExpressionDescendFunction(void, struct {
+    pub fn f(_: void, self: *Parser, expr_ptr: *Expression) Error!void {
         expr_ptr.* = try refine(self, expr_ptr.*);
     }
 }.f);
-pub fn trackReferencesDescend(self: *Parser, expr: Expression) Error!void {
-    try trackReferencesDescendPtr(self, @constCast(&expr));
+pub fn trackReferencesDescend(ref_type: Parser.Scope.DeclReferenceType, self: *Parser, expr: Expression) Error!void {
+    try trackReferencesDescendPtr(ref_type, self, @constCast(&expr));
 }
-pub const trackReferencesDescendPtr = createProcessExpressionDescendFunction(struct {
-    pub fn f(self: *Parser, expr_ptr: *Expression) Error!void {
+pub const trackReferencesDescendPtr = createProcessExpressionDescendFunction(Parser.Scope.DeclReferenceType, struct {
+    pub fn f(ref_type: Parser.Scope.DeclReferenceType, self: *Parser, expr_ptr: *Expression) Error!void {
         // std.debug.print("TRACK: {f}\n", .{expr_ptr.*});
-        if (expr_ptr.* == .identifier) try self.current_scope.trackReference(expr_ptr.identifier, .track);
+        if (expr_ptr.* == .identifier) try self.current_scope.trackReference(expr_ptr.identifier, ref_type);
     }
 }.f);
 
@@ -77,6 +77,7 @@ fn callFunctionComptime(self: *Parser, call: Parser.Call) Error!Expression {
     defer self.current_scope = last_scope;
 
     for (function.body.items) |statement| {
+        if (self.canStatementBeOmitted(statement)) continue;
         try self.addStatement(statement);
         if (!dispatch.returned_expr.isEmpty()) return dispatch.returned_expr.*;
     }
@@ -279,11 +280,10 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
     if (target_cs.len == 1) return self.errorOut(Error.InvalidIndexingTarget);
 
     const index: u32 = sw: switch (index_type) {
-        .unknown => return initial,
-        .compint => blk: {
+        .compint => {
             const ci = util.extract(CI, indexing.index.value.payload.wide);
             if (ci < 0 or ci >= std.math.maxInt(u32)) return self.errorOut(Error.InvalidIndex);
-            break :blk @intCast(ci);
+            break :sw @intCast(ci);
         },
         .compfloat => continue :sw blk: {
             indexing.target.* = .{ .value = try implicitCastValue(indexing.index.value, .compint) };
@@ -291,17 +291,18 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
         },
         .scalar => |scalar| switch (scalar.width) {
             inline else => |width| switch (scalar.type) {
-                inline else => |st| blk: {
+                inline else => |st| {
                     if (st != .uint) return self.errorOut(Error.InvalidIndex) else //
                     if (indexing.index.* != .value) return initial else {
                         const T = @Type(.{ .int = .{ .signedness = .unsigned, .bits = @intFromEnum(width) } });
                         const i = util.extract(T, indexing.index.value.payload.wide);
                         if (T == u64 and i >= std.math.maxInt(u32)) return self.errorOut(Error.InvalidIndex);
-                        break :blk @intCast(i);
+                        break :sw @intCast(i);
                     }
                 },
             },
         },
+        .unknown => return initial,
         else => return self.errorOut(Error.InvalidIndex),
     };
     return sw: switch (indexing.target.*) {
@@ -913,26 +914,26 @@ fn createEvalNumericBinOpSameTypeFunction(Ctx: type, eval_fn: fn (Ctx, Type, any
         }
     }.f;
 }
-fn createProcessExpressionDescendFunction(process: fn (*Parser, *Expression) Error!void) fn (*Parser, *Expression) Error!void {
+fn createProcessExpressionDescendFunction(Ctx: type, process: fn (Ctx, *Parser, *Expression) Error!void) fn (Ctx, *Parser, *Expression) Error!void {
     return struct {
-        pub fn p(self: *Parser, expr: *Expression) Error!void {
+        pub fn p(ctx: Ctx, self: *Parser, expr: *Expression) Error!void {
             switch (expr.*) {
                 .bin_op => |bin_op| {
-                    try p(self, bin_op.left);
-                    try p(self, bin_op.right);
+                    try p(ctx, self, bin_op.left);
+                    try p(ctx, self, bin_op.right);
                 },
                 .call => |call| {
-                    try p(self, call.callee);
-                    for (call.args) |*arg| try p(self, arg);
+                    try p(ctx, self, call.callee);
+                    for (call.args) |*arg| try p(ctx, self, arg);
                 },
-                .u_op => |u_op| try p(self, u_op.target),
-                .member_access => |member_access| try p(self, member_access.target),
-                .indexing => |indexing| try p(self, indexing.target),
-                .cast => |cast| try p(self, cast.expr),
-                .constructor => |constructor| for (constructor.components) |*c| try p(self, c),
+                .u_op => |u_op| try p(ctx, self, u_op.target),
+                .member_access => |member_access| try p(ctx, self, member_access.target),
+                .indexing => |indexing| try p(ctx, self, indexing.target),
+                .cast => |cast| try p(ctx, self, cast.expr),
+                .constructor => |constructor| for (constructor.components) |*c| try p(ctx, self, c),
                 else => {},
             }
-            try process(self, expr);
+            try process(ctx, self, expr);
         }
     }.p;
 }

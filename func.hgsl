@@ -4,7 +4,8 @@ const main = entrypoint(.fragment){
 	
 	const exposure: f32 = 2
 	const T = u32
-	out col : vec4 = .{doStuff(exposure)}
+	in somein : f32
+	out col : vec4 = .{doStuff(somein + exposure)}
 }
 
 

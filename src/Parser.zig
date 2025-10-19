@@ -68,7 +68,9 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
     self.global_scope = .new();
     self.current_scope = &self.global_scope.scope;
 
-    while (try self.parseStatement()) |statement| try self.addStatement(statement);
+    try self.parseScope(&self.global_scope.scope);
+    // while (try self.parseStatement()) |statement| try self.addStatement(statement);
+
     for (self.global_scope.body.items) |statement| std.debug.print("{f}\n", .{statement});
     return self;
 }
@@ -122,7 +124,7 @@ pub fn create(self: *Parser, T: type) !*T {
 
 pub inline fn addStatement(self: *Parser, statement: Statement) Error!void {
     try self.current_scope.addStatement(self, statement);
-    try self.trackReferencesInStatement(statement);
+    try self.trackReferencesInStatement(statement, .track);
 }
 pub fn isStatementComplete(self: *Parser, statement: Statement) Error!bool {
     return switch (statement) {
@@ -168,14 +170,14 @@ pub fn parseStatement(self: *Parser) Error!?Statement {
     };
     return statement;
 }
-pub fn trackReferencesInStatement(self: *Parser, statement: Statement) Error!void {
+pub fn trackReferencesInStatement(self: *Parser, statement: Statement, ref_type: Scope.DeclReferenceType) Error!void {
     switch (statement) {
-        .var_decl => |var_decl| try ct.trackReferencesDescend(self, var_decl.initializer),
+        .var_decl => |var_decl| try ct.trackReferencesDescend(ref_type, self, var_decl.initializer),
         .assignment => |assignment| {
-            try ct.trackReferencesDescend(self, assignment.target);
-            try ct.trackReferencesDescend(self, assignment.value);
+            try ct.trackReferencesDescend(ref_type, self, assignment.target);
+            try ct.trackReferencesDescend(ref_type, self, assignment.value);
         },
-        .ignore => |expr| try ct.trackReferencesDescend(self, expr),
+        .ignore => |expr| try ct.trackReferencesDescend(ref_type, self, expr),
         else => {},
     }
 }
@@ -279,6 +281,10 @@ pub const Statement = union(enum) {
     // @"break": ?Expression,
     pub const format = debug.formatStatement;
 };
+pub fn canStatementBeOmitted(self: *Parser, statement: Statement) bool {
+    _ = self;
+    return statement == .var_decl and statement.var_decl.canBeOmitted();
+}
 pub const Assignment = struct {
     target: Expression,
     value: Expression,
@@ -290,11 +296,14 @@ pub const VariableDeclaration = struct {
     initializer: Expression,
     reference_count: u32 = 0,
 
+    pub fn canBeOmitted(self: VariableDeclaration) bool {
+        return self.reference_count == 0 and !self.qualifier.isInterface() and self.type != .entrypoint;
+    }
     pub fn variableReference(self: *VariableDeclaration) VariableReference {
         return .{
             .is_mutable = self.qualifier.isMutable(),
             .type = self.type,
-            .value = if (isComptimePassable(self.initializer)) self.initializer else .{ .identifier = self.name },
+            .value = if (self.qualifier == .@"const" and isComptimePassable(self.initializer)) self.initializer else .{ .identifier = self.name },
         };
     }
 };
@@ -360,30 +369,28 @@ fn constructorShouldStop(_: *Parser, token: Token) !bool {
 }
 
 fn defaultShouldStop(self: *Parser, token: Token) !bool {
-    return token == .endl or token == .eof or (token == .@"}" and @intFromPtr(self.current_scope) != @intFromPtr(&self.global_scope.scope));
+    return token == .endl or token == .eof or (token == .@"}" and !self.inGlobalScope());
 }
 
 fn parseExpressionSide(self: *Parser) Error!Expression {
     var expr = try self.refine(try self.parseExpressionSidePrimary());
-    var peek: Token = undefined;
-    while (true) {
-        //parseConstructorFunction that will handle all constructrors
-        peek = try self.tokenizer.peek();
-        if (peek == .@"{") { //constructor
+    sw: switch (try self.tokenizer.peek()) {
+        .@"{" => {
             if (try self.typeOf(expr) == .type) {
                 self.tokenizer.skip();
                 expr = try self.parseCastOrConstructor(try self.asTypeCreate(expr));
-                continue;
+                continue :sw try self.tokenizer.peek();
             } else return self.errorOut(Error.UnexpectedToken);
-        }
-        if (peek == .@"(") { //call
+        },
+        .@"(" => {
             self.tokenizer.skip();
 
             expr = try self.refine(.{ .call = try self.parseFunctionCall(expr) });
-            continue;
-        }
-        return expr;
+            continue :sw try self.tokenizer.peek();
+        },
+        else => {},
     }
+    return expr;
 
     //::::secondary::::
     //(check proceeding tokens)
@@ -565,14 +572,17 @@ fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
     var token = try self.tokenizer.next();
     while (token != .@")") token = try self.tokenizer.next();
 
-    const stage_info: ShaderStageInfo = .fragment;
-    const ep_type: Type = .{ .entrypoint = std.meta.activeTag(stage_info) };
+    const exec_model_info: ExecutionModelInfo = .fragment;
+    const ep_type: Type = .{ .entrypoint = std.meta.activeTag(exec_model_info) };
 
     if (try self.tokenizer.peek() != .@"{") return ep_type.asExpr();
     self.tokenizer.skip();
 
-    var entry_point: EntryPoint = .new(self, stage_info);
+    var entry_point: EntryPoint = .new(self, exec_model_info);
     try self.parseScope(&entry_point.scope);
+
+    entry_point.global_interface_count = self.global_scope.interfaces.items.len;
+    entry_point.interfaces = try util.reallocPrependSlice(self.arena.allocator(), usize, entry_point.interfaces, self.global_scope.interfaces.items);
 
     return .{ .value = .{
         .type = ep_type,
@@ -581,8 +591,9 @@ fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
 }
 
 fn parseScope(self: *Parser, scope: *Scope) Error!void {
+    const last_scope = self.current_scope;
     self.current_scope = scope;
-    defer self.current_scope = self.current_scope.parent;
+    defer self.current_scope = last_scope;
     while (try self.parseStatement()) |statement| {
         try self.addStatement(statement);
         const peek = while (try self.tokenizer.peek() == .endl) {
@@ -592,7 +603,13 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
             self.tokenizer.skip();
             break;
         }
-    } else return self.errorOut(Error.UnclosedScope);
+    } else if (!self.inGlobalScope()) return self.errorOut(Error.UnclosedScope);
+    const body = self.current_scope.body();
+    for (0..body.len) |i| {
+        const statement = body[body.len - 1 - i];
+        if (statement == .var_decl and !statement.var_decl.qualifier.isInterface() and statement.var_decl.reference_count == 0)
+            try self.trackReferencesInStatement(statement, .untrack);
+    }
 }
 
 pub const Function = struct {
@@ -614,11 +631,15 @@ pub const Function = struct {
                 .getVariableReferenceFn = &getVariableReferenceFn,
                 .addStatementFn = &addStatementFn,
                 .trackReferenceFn = &trackReferenceFn,
+                .bodyFn = bodyFn,
 
                 .parent = self.current_scope,
                 .result_type = ftype.rtype.*,
             },
         };
+    }
+    fn bodyFn(scope: *Scope) []Statement {
+        return @as(*@This(), @fieldParentPtr("scope", scope)).body.items;
     }
     fn addStatementFn(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
         const function: *Function = @fieldParentPtr("scope", scope);
@@ -655,12 +676,14 @@ pub const Function = struct {
 };
 
 pub const EntryPoint = struct {
-    stage_info: ShaderStageInfo,
+    stage_info: ExecutionModelInfo,
     scope: Scope,
 
+    global_interface_count: usize = 0,
+    interfaces: []usize = &.{},
     body: List(Statement),
 
-    pub fn new(self: *Parser, stage_info: ShaderStageInfo) EntryPoint {
+    pub fn new(self: *Parser, stage_info: ExecutionModelInfo) EntryPoint {
         return .{
             .stage_info = stage_info,
             .body = .empty,
@@ -668,24 +691,23 @@ pub const EntryPoint = struct {
                 .getVariableReferenceFn = &getVariableReferenceFn,
                 .addStatementFn = &addStatementFn,
                 .trackReferenceFn = &trackReferenceFn,
+                .bodyFn = bodyFn,
 
                 .parent = self.current_scope,
             },
         };
     }
-    pub fn addStatement(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
-        try scope.addStatementFn(scope, parser, statement);
+    fn bodyFn(scope: *Scope) []Statement {
+        return @as(*@This(), @fieldParentPtr("scope", scope)).body.items;
     }
     fn addStatementFn(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
         const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);
-        if (!(try parser.isStatementComplete(statement))) return parser.errorOutFmt(
-            Error.IncompleteStatement,
-            "Statement debug representation:\n {f}",
-            .{statement},
-        );
+        if (!(try parser.isStatementComplete(statement))) return parser.errorOut(Error.IncompleteStatement);
         try entry_point.body.append(parser.arena.allocator(), statement);
+        if (statement == .var_decl and statement.var_decl.qualifier.isInterface())
+            entry_point.interfaces = try util.reallocAdd(parser.arena.allocator(), usize, entry_point.interfaces, entry_point.body.items.len - 1);
     }
-    pub fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
+    fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
         const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);
         return for (entry_point.body.items) |*statement| {
             if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
@@ -704,7 +726,7 @@ pub const EntryPoint = struct {
     }
 };
 
-pub const ShaderStageInfo = union(tp.ExecutionModel) {
+pub const ExecutionModelInfo = union(tp.ExecutionModel) {
     vertex,
     fragment,
     compute: [3]u32,
@@ -824,6 +846,7 @@ pub const BinOp = struct {
 pub const GlobalScope = struct {
     scope: Scope,
 
+    interfaces: List(usize) = .empty,
     body: List(Statement) = .empty,
 
     pub fn new() @This() {
@@ -832,11 +855,12 @@ pub const GlobalScope = struct {
                 .getVariableReferenceFn = &getVariableReferenceFn,
                 .trackReferenceFn = &trackReferenceFn,
                 .addStatementFn = &addStatementFn,
+                .bodyFn = bodyFn,
             },
         };
     }
-    pub fn addStatement(self: *GlobalScope, parser: *Parser, statement: Statement) Error!void {
-        try addStatementFn(&self.scope, parser, statement);
+    fn bodyFn(scope: *Scope) []Statement {
+        return @as(*@This(), @fieldParentPtr("scope", scope)).body.items;
     }
     fn getVariableReference(self: *GlobalScope, parser: *Parser, name: []const u8) Error!VariableReference {
         return try getVariableReferenceFn(&self.scope, parser, name);
@@ -845,7 +869,10 @@ pub const GlobalScope = struct {
     fn addStatementFn(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
         const global_scope: *GlobalScope = @fieldParentPtr("scope", scope);
         if (!(try parser.isStatementComplete(statement))) return parser.errorOut(Error.IncompleteStatement);
+
         try global_scope.body.append(parser.arena.allocator(), statement);
+        if (statement == .var_decl and statement.var_decl.qualifier.isInterface())
+            try global_scope.interfaces.append(parser.arena.allocator(), global_scope.body.items.len - 1);
     }
     fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
         const global_scope: *GlobalScope = @fieldParentPtr("scope", scope);
@@ -868,14 +895,17 @@ pub const GlobalScope = struct {
 
 pub const Scope = struct {
     addStatementFn: *const fn (*Scope, *Parser, Statement) Error!void = undefined,
-    //add a Parser field so scope can accerr global scope directly
     getVariableReferenceFn: *const fn (*Scope, *Parser, []const u8) Error!VariableReference = undefined,
     trackReferenceFn: *const fn (*Scope, []const u8, DeclReferenceType) Error!void = undefined,
+    bodyFn: *const fn (*Scope) []Statement = undefined,
 
     parent: *Scope = undefined,
     result_type: Type = Type{ .void = {} },
 
     pub const DeclReferenceType = enum { track, untrack };
+    pub inline fn body(self: *Scope) []Statement {
+        return self.bodyFn(self);
+    }
     pub inline fn addStatement(self: *Scope, parser: *Parser, statement: Statement) Error!void {
         try self.addStatementFn(self, parser, statement);
     }
@@ -929,6 +959,12 @@ pub const Qualifier = union(enum) {
     out: bi.InterpolationQualifier,
 
     shared,
+    pub fn isInterface(self: Qualifier) bool {
+        return switch (self) {
+            .uniform, .push, .in, .out => true,
+            else => false,
+        };
+    }
     pub fn canHaveInitializer(self: Qualifier) bool {
         return self != .in;
     }
@@ -982,6 +1018,9 @@ pub fn errorOutFmt(self: *Parser, err: Error, comptime fmt: []const u8, args: an
     const offset = @intFromPtr(self.tokenizer.state.last_ptr) - @intFromPtr(self.tokenizer.full_source.ptr);
     self.tokenizer.err_ctx.printError(offset, err, fmt, args);
     return err;
+}
+pub fn inGlobalScope(self: *Parser) bool {
+    return @intFromPtr(self.current_scope) == @intFromPtr(&self.global_scope.scope);
 }
 
 const ShouldStopFn = fn (*Parser, Token) Error!bool;

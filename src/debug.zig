@@ -77,9 +77,12 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
         .compint => try writer.print("{d}", .{util.extract(Parser.CI, value.payload.wide)}),
         .compfloat => try writer.print("{d}f", .{util.extract(Parser.CF, value.payload.wide)}),
         .entrypoint => {
-            try writer.print("{f}{{\n", .{value.type});
-
             const entry_point: *const Parser.EntryPoint = @ptrCast(@alignCast(value.payload.ptr));
+            try writer.print("{f}{{\n[global interfaces: {d}, local interfaces: {d}]\n", .{
+                value.type,
+                entry_point.global_interface_count,
+                entry_point.interfaces.len - entry_point.global_interface_count,
+            });
             for (entry_point.body.items) |statement| try writer.print("{f}\n", .{statement});
             try writer.print("}}\n", .{});
         },

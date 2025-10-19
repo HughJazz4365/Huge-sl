@@ -1,6 +1,27 @@
 const std = @import("std");
 const Type = std.builtin.Type;
+const Allocator = std.mem.Allocator;
 
+pub fn reallocPrependSlice(allocator: Allocator, T: type, slice: []T, elems: []const T) Allocator.Error![]T {
+    const l, const el = .{ slice.len, elems.len };
+    const new_slice = try allocator.alloc(T, l + el);
+    if (l > 0) {
+        @memcpy(new_slice[el..], slice);
+        allocator.free(slice);
+    }
+    @memcpy(new_slice[0..el], elems);
+    return new_slice;
+}
+pub fn reallocAdd(allocator: Allocator, T: type, slice: []T, elem: T) Allocator.Error![]T {
+    const l = slice.len;
+    const new_slice = try allocator.alloc(T, l + 1);
+    if (l > 0) {
+        @memcpy(new_slice[0..l], slice);
+        allocator.free(slice);
+    }
+    new_slice[l] = elem;
+    return new_slice;
+}
 pub fn pow(T: type, left: T, right: T) T {
     return if (T == f16)
         @floatCast(std.math.pow(f32, @floatCast(left), @floatCast(right)))

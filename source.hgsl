@@ -16,6 +16,9 @@ const main = entrypoint(.fragment){
 	const albedo : vec3 = .{1,1,1}
 	const diffuse = -light_dir *** light_dir
 
+	mut some_var : f32 = 32
+	mut another_var = some_var
+
 	const view_dir = ;(eye_pos - world_pos)
 	mut specular = (;@reflect(-light_dir, normal) *** view_dir) ^ spec_pow * spec_intensity
 
