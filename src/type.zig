@@ -83,6 +83,12 @@ pub const Type = union(enum) {
     pub const unknownempty: Type = .{ .unknown = &Expression.empty };
     pub const format = @import("debug.zig").formatType;
 
+    pub fn isComptimeOnly(self: Type) bool {
+        return switch (self) {
+            .void, .type, .unknown, .function, .entrypoint => true,
+            else => false,
+        };
+    }
     pub fn isEmpty(self: Type) bool {
         return self == .unknown and self.unknown.isEmpty();
     }
@@ -198,7 +204,7 @@ pub const Vector = struct {
         } ++ "vec" ++ .{'0' + @intFromEnum(vec.len)};
     }
 };
-pub const VectorLen = enum(u8) {
+pub const VectorLen = enum(u32) {
     _2 = 2,
     _3 = 3,
     _4 = 4,
@@ -255,7 +261,7 @@ pub const ScalarType = enum {
         };
     }
 };
-pub const BitWidth = enum(u8) { short = 16, word = 32, long = 64 };
+pub const BitWidth = enum(u32) { short = 16, word = 32, long = 64 };
 
 const Expression = Parser.Expression;
 const Error = Parser.Error;

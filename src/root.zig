@@ -33,6 +33,6 @@ pub fn compile(
     defer parser.deinit();
 
     return try SpirvGen.generate(&parser);
-    // return &.{};
+    //   return &.{};
 }
 pub const minimal_frag = "const main = entrypoint(.fragment){}";

@@ -3,7 +3,7 @@ const zigbuiltin = @import("builtin");
 const debug = @import("debug.zig");
 const bi = @import("builtin.zig");
 const ct = @import("comptime.zig");
-const tp = @import("type.zig");
+pub const tp = @import("type.zig");
 const util = @import("util.zig");
 const Parser = @This();
 const Tokenizer = @import("Tokenizer.zig");
@@ -54,6 +54,7 @@ pub const Error = error{
     InvalidIndex,
     InvalidIndexingTarget,
     InvalidAssignmentTarget,
+    NonVoidValueIgnored,
 
     NumericError,
     OutOfBoundsAccess,
@@ -190,7 +191,13 @@ fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
         else => continue :sw try self.tokenizer.next(),
     };
     self.tokenizer.state = tokenizer_state;
-    if (!is_assignment) return .{ .ignore = try self.parseExpression(defaultShouldStop, false) };
+    if (!is_assignment) {
+        const ignored_expr = try self.parseExpression(defaultShouldStop, false);
+        const type_of_ignored = try self.typeOf(ignored_expr);
+        if (type_of_ignored != .unknown and type_of_ignored != .void) return self.errorOut(Error.NonVoidValueIgnored);
+
+        return .{ .ignore = ignored_expr };
+    }
 
     const target = try self.parseExpressionSide(false);
     var peek = try self.tokenizer.next();
@@ -270,15 +277,7 @@ fn parseVarDecl(self: *Parser, token: Token) Error!VariableDeclaration {
     };
 }
 fn matchVariableTypeWithQualifier(self: *Parser, @"type": Type, qualifier: Qualifier) Error!void {
-    switch (@"type") {
-        // .buffer => only uniform etc
-        .entrypoint, .function => if (qualifier != .@"const") return self.errorOutFmt(
-            Error.VariableTypeAndQualifierDontMatch,
-            "Functions and entry points must only be 'const' and not '{s}'",
-            .{@tagName(qualifier)},
-        ),
-        else => {},
-    }
+    if (@"type".isComptimeOnly() and qualifier != .@"const") return self.errorOut(Error.VariableTypeAndQualifierDontMatch);
 }
 
 pub const Statement = union(enum) {
@@ -286,8 +285,9 @@ pub const Statement = union(enum) {
     assignment: Assignment,
     ignore: Expression,
     @"return": Expression,
-    // @"break": ?Expression,
+    // @"break": Expression,
     // @"continue"
+    // or combine those into control flow thing
     pub const format = debug.formatStatement;
 };
 pub fn isStatementOmittable(self: *Parser, statement: Statement) Error!bool {
