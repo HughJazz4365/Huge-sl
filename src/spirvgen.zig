@@ -23,8 +23,13 @@ const Error = error{
 } || Writer.Error;
 
 parser: *Parser,
-current_id: u32 = 1, //0 - reserved
+current_id: WORD = 1, //0 - reserved
 arena: Allocator,
+
+//constants
+true_const: WORD = 0,
+false_const: WORD = 0,
+constants: List(Constant) = .empty,
 
 // function_buff : List(u32) orsmth
 
@@ -37,6 +42,12 @@ pub fn generate(parser: *Parser) Error![]u32 {
     for (generator.parser.global_scope.body.items) |statement| {
         if (statement == .var_decl) {
             std.debug.print("PT: {f}, id: {d}\n", .{ statement.var_decl.type, try generator.convertTypeID(statement.var_decl.type) });
+            if (statement.var_decl.initializer == .value) {
+                std.debug.print("VAL: {f}, ID: {d}\n", .{
+                    statement.var_decl.initializer.value,
+                    try generator.generateValue(statement.var_decl.initializer.value),
+                });
+            }
             if (statement.var_decl.type == .entrypoint) {
                 const ep_ptr: *Parser.EntryPoint = @ptrCast(@alignCast(@constCast(statement.var_decl.initializer.value.payload.ptr)));
                 for (ep_ptr.body.items) |epi| {
@@ -79,8 +90,88 @@ fn generateStatment(self: *Generator, statement: Parser.Statement) Error!void {
     // - @barrier
     // - ...
 
+    _ = statement;
+    _ = self;
+}
+fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
+    return switch (expr) {
+        .value => |value| try self.generateValue(value),
+        else => {
+            std.debug.print("Cannot gen expr: {f}\n", .{expr});
+            @panic("idk how to gen that expr");
+        },
+    };
+}
+fn generateValue(self: *Generator, value: Parser.Value) Error!WORD {
+    return switch (value.type) {
+        .bool => blk: {
+            const bool_val = util.extract(bool, value.payload.wide);
+            const ptr = if (bool_val) &self.true_const else &self.false_const;
+            if (ptr.* == 0) ptr.* = self.newID();
+            break :blk ptr.*;
+        },
+        .scalar, .vector => inline for (Parser.tp.Vector.allVectorTypes) |vector|
+            (if (Parser.Type.eql(value.type, .{ .scalar = vector.component }))
+                self.generateConstantFromScalar(@as(
+                    if (vector.component.width == .long) u64 else WORD,
+                    @truncate(value.payload.wide),
+                ), try self.convertTypeID(.{ .scalar = vector.component }))
+            else if (Parser.Type.eql(value.type, .{ .vector = vector }))
+                try self.addConstant(try self.convertTypeID(.{ .vector = vector }), .{
+                    .many = blk: {
+                        var ids: [4]WORD = @splat(0);
+                        const T = (Parser.Type{ .vector = vector }).ToZig();
+                        const vec_info = @typeInfo(T).vector;
+
+                        const ptr: *const T = @ptrCast(@alignCast(value.payload.ptr));
+                        const component_type_id = try self.convertTypeID(.{ .scalar = vector.component });
+                        inline for (0..vec_info.len) |i|
+                            ids[i] = try self.generateConstantFromScalar(ptr[i], component_type_id);
+                        break :blk ids;
+                    },
+                }))
+        else
+            unreachable,
+        else => @panic("cant gen value :("),
+    };
+    // enum
+    // matrix
+    // array
+
+}
+fn generateConstantFromScalar(self: *Generator, scalar: anytype, type_id: WORD) Error!WORD {
+    const U = @Type(.{ .int = .{ .bits = @sizeOf(scalar) * 8, .signedness = false } });
+    const uval: U = @bitCast(scalar);
+    return try self.addConstant(type_id, if (@sizeOf(@Type(uval)) > 4)
+        .{ .many = .{ @truncate(uval), @truncate(uval >> 32), 0, 0 } }
+    else
+        .{ .single = @truncate(uval) });
+}
+fn addConstant(self: *Generator, type_id: WORD, value: ConstantValue) Error!WORD {
+    const wc = self.typeFromID(type_id).valueWordConsumption();
+
+    return for (self.constants.items) |c| {
+        if (c.type_id == type_id and std.mem.eql(c.value.many[0..wc], value.many[0..wc])) break c.id;
+    } else blk: {
+        const id = self.newID();
+        self.constants.append(self.arena, .{
+            .id = id,
+            .type_id = type_id,
+            .value = value,
+        });
+        break :blk id;
+    };
 }
 
+const Constant = struct {
+    id: WORD,
+    type_id: WORD,
+    value: ConstantValue,
+};
+const ConstantValue = union {
+    single: WORD,
+    many: [4]WORD,
+};
 fn convertTypeID(self: *Generator, from: Parser.Type) Error!WORD {
     return try self.typeID(try self.convertType(from));
 }
@@ -112,6 +203,9 @@ fn convertTypeSliceToIDS(self: *Generator, types: []const Parser.Type) Error![]W
     const slice = try self.arena.alloc(WORD, types.len);
     for (slice, types) |*to, from| to.* = try self.convertTypeID(from);
     return slice;
+}
+fn typeFromID(self: *Generator, id: WORD) Type {
+    return for (self.type_decls) |td| (if (td.id == id) break td.type) else unreachable;
 }
 fn typeID(self: *Generator, @"type": Type) Error!WORD {
     return for (self.type_decls.items) |td| {
@@ -152,10 +246,19 @@ const Type = union(enum) {
             else => @panic("idk how to compare that type"),
         };
     }
+    pub fn valueWordConsumption(self: Type) u32 {
+        switch (self) {
+            .float => |float| if (float == .long) 2 else 1,
+            .int => |int| if (int.width == .long) 2 else 1,
+            .vector => |vector| @intFromEnum(vector.len),
+            .matrix => |matrix| @intFromEnum(matrix.column_count),
+            else => 1,
+        }
+    }
 };
 const FunctionType = struct { rtype_id: WORD, arg_type_ids: []WORD = &.{} };
 
-const MatrixType = struct { column_count: WORD, column_type_id: WORD };
+const MatrixType = struct { column_count: VectorLen, column_type_id: WORD };
 const VectorType = struct { len: VectorLen, component_type_id: WORD };
 const IntType = struct { width: BitWidth, signed: bool };
 const BitWidth = Parser.tp.BitWidth;

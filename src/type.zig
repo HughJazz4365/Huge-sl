@@ -55,12 +55,10 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
     return result;
 }
 pub const Type = union(enum) {
-    //dont change the order!
     void,
     type,
     bool,
 
-    //intermediate compile time types
     unknown: *const Expression,
 
     compint,
