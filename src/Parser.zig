@@ -704,7 +704,7 @@ pub const Function = struct {
 };
 
 pub const EntryPoint = struct {
-    stage_info: ExecutionModelInfo,
+    exec_model_info: ExecutionModelInfo,
     scope: Scope,
 
     global_interface_count: usize = 0,
@@ -713,7 +713,7 @@ pub const EntryPoint = struct {
 
     pub fn new(self: *Parser, stage_info: ExecutionModelInfo) EntryPoint {
         return .{
-            .stage_info = stage_info,
+            .exec_model_info = stage_info,
             .body = .empty,
             .scope = .{
                 .getVariableReferenceFn = &getVariableReferenceFn,
