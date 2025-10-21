@@ -460,13 +460,12 @@ fn convertParserType(self: *Generator, ptype: Parser.Type) Error!Type {
     };
 }
 
-fn opWord(count: u16, op: Op) u32 {
-    return (@as(u32, count) << 16) | @intFromEnum(op);
-}
-
 pub fn newID(self: *Generator) u32 {
     defer self.id += 1;
     return self.id;
+}
+fn opWord(count: u16, op: Op) u32 {
+    return (@as(u32, count) << 16) | @intFromEnum(op);
 }
 const Op = enum(u32) {
     constant_true = 41,

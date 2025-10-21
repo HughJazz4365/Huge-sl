@@ -32,10 +32,15 @@ false_const: WORD = 0,
 entry_points: List(EntryPoint) = .empty,
 decorations: void = {},
 constants: List(Constant) = .empty,
-globals_vars: List(GlobalVariable) = .empty,
+global_vars: List(GlobalVariable) = .empty,
 
-in_entry_point: bool = false,
-current_buffer: *List(u32) = @ptrCast(@alignCast(@constCast(&0))),
+deferred_global_initializers: List(GlobalInitializer) = .empty,
+
+main_buffer: List(WORD) = .empty,
+
+current_interfaces_ids: *List(WORD) = @ptrCast(@alignCast(@constCast(&0))),
+current_buffer: *List(WORD) = @ptrCast(@alignCast(@constCast(&0))),
+//does this break on nested scopes??? it shoulndt if tied to function
 current_name_mappings: *List(NameMapping) = @ptrCast(@alignCast(@constCast(&0))),
 
 type_decls: List(TypeDeclaration) = .empty,
@@ -44,11 +49,14 @@ pub fn generate(parser: *Parser) Error![]u32 {
         .parser = parser,
         .arena = parser.arena.allocator(),
     };
-    for (generator.parser.global_scope.body.items) |statement| {
-        try generator.generateStatment(statement);
-    }
+    generator.current_buffer = &generator.main_buffer;
+    for (generator.parser.global_scope.body.items) |statement| try generator.generateStatment(statement);
+
     _ = &generator;
     return &.{};
+}
+fn inGlobalScope(self: *Generator) bool {
+    return @intFromPtr(self.current_buffer) == @intFromPtr(&self.main_buffer);
 }
 
 fn generateStatment(self: *Generator, statement: Parser.Statement) Error!void {
@@ -80,32 +88,103 @@ fn generateStatment(self: *Generator, statement: Parser.Statement) Error!void {
     // - @barrier
     // - ...
 
+    // std.debug.print("GENSTATEMENT: {s}\n", .{@tagName(statement)});
     return switch (statement) {
         .var_decl => |var_decl| try self.generateVariableDeclaration(var_decl),
         else => @panic("cant gen such statement"),
     };
 }
 fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclaration) Error!void {
-    if (var_decl.type.isComptimeOnly()) return;
     if (var_decl.type == .entrypoint)
         return try self.generateEntryPoint(@as(*const Parser.EntryPoint, @ptrCast(@alignCast(var_decl.initializer.value.payload.ptr))).*);
+    if (var_decl.type.isComptimeOnly()) return;
+
+    const storage_class: StorageClass = switch (var_decl.qualifier) {
+        .mut => if (self.inGlobalScope()) .private else .function,
+        .push => .push_constant,
+        .in => .input,
+        .out => .output,
+        .@"const" => {
+            try self.current_name_mappings.append(self.arena, .{
+                .type_id = try self.convertTypeID(var_decl.type),
+                .id = try self.generateExpression(var_decl.initializer),
+                .name = var_decl.name,
+            });
+            return;
+        },
+        //uniform, shared
+        else => @panic("idk storage class of this qualifier"),
+    };
+    const type_id = try self.convertTypeID(var_decl.type);
+    //generate pointer type
+    _ = try self.typeID(.{ .pointer = .{
+        .pointed_id = type_id,
+        .storage_class = storage_class,
+    } });
+    const var_id = self.newID();
+    if (storage_class == .function) {
+        //addinstruction
+
+        try self.current_name_mappings.append(self.arena, .{ .type_id = type_id, .id = var_id, .name = var_decl.name });
+    } else try self.global_vars.append(self.arena, .{
+        .name = var_decl.name,
+        .type_id = type_id,
+        .id = var_id,
+        .storage_class = storage_class,
+        .initializer = switch (var_decl.initializer) {
+            .identifier => |identifier| for (self.global_vars.items) |gv| (if (util.strEql(gv.name, identifier)) break gv.id) else unreachable,
+            .value => |value| if (!var_decl.initializer.isEmpty()) try self.generateValue(value) else 0,
+            // .builtin =>
+            else => blk: {
+                try self.deferred_global_initializers.append(self.arena, .{
+                    .index = @truncate(self.global_vars.items.len),
+                    .expr = &var_decl.initializer,
+                });
+
+                break :blk 0;
+            },
+        },
+    });
+    std.debug.print("GLOBAL VARS: {any}\n", .{self.global_vars.items});
+    std.debug.print("CONSTANTS: {any}\n", .{self.constants.items});
+    for (self.type_decls.items) |t| {
+        std.debug.print("TYPE: {s}, id: {d}\n", .{ @tagName(t.type), t.id });
+    }
 }
+
 fn generateEntryPoint(self: *Generator, entry_point: Parser.EntryPoint) Error!void {
-    var buffer: List(u32) = .empty;
-    self.in_entry_point = true;
+    var buffer: List(WORD) = .empty;
+    var interfaces_ids: List(WORD) = .empty;
+    var name_mappings: List(NameMapping) = .empty;
+
     self.current_buffer = &buffer;
+    self.current_interfaces_ids = &interfaces_ids;
+    self.current_name_mappings = &name_mappings;
+    defer self.current_buffer = &self.main_buffer;
 
     const entry_point_id = self.newID();
-    try self.entry_points.append(self.arena, .{ .id = entry_point_id, .exec_model_info = entry_point.exec_model_info });
+
+    for (entry_point.body.items) |statement| try self.generateStatment(statement);
+    std.debug.print("entry point Buffer.len: {d}\n", .{buffer.items.len});
+
+    try self.entry_points.append(self.arena, .{
+        .id = entry_point_id,
+        .exec_model_info = entry_point.exec_model_info,
+        .interface_ids = try interfaces_ids.toOwnedSlice(self.arena),
+    });
 }
 fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
-    return switch (expr) {
+    const result = switch (expr) {
         .value => |value| try self.generateValue(value),
+        .bin_op => |bin_op| try self.generateBinOp(bin_op),
+        .identifier => |identifier| try self.generateVariableLoad(identifier),
         else => {
             std.debug.print("Cannot gen expr: {f}\n", .{expr});
             @panic("idk how to gen that expr");
         },
     };
+    std.debug.print("id: {d}, Expr: {f}\n", .{ result, expr });
+    return result;
 }
 fn generateValue(self: *Generator, value: Parser.Value) Error!WORD {
     return switch (value.type) {
@@ -115,6 +194,7 @@ fn generateValue(self: *Generator, value: Parser.Value) Error!WORD {
             if (ptr.* == 0) ptr.* = self.newID();
             break :blk ptr.*;
         },
+        //we can directly bitcast stuff and offset pointers without the |allVectorTypes loop|
         .scalar, .vector => inline for (Parser.tp.Vector.allVectorTypes) |vector| {
             if (Parser.Type.eql(value.type, .{ .scalar = vector.component }))
                 break try self.generateConstantFromScalar(@as(
@@ -132,6 +212,7 @@ fn generateValue(self: *Generator, value: Parser.Value) Error!WORD {
                         const component_type_id = try self.convertTypeID(.{ .scalar = vector.component });
                         inline for (0..vec_info.len) |i|
                             ids[i] = try self.generateConstantFromScalar(ptr[i], component_type_id);
+                        std.debug.print("component ideez: {any}\n", .{ids[0..vec_info.len].*});
                         break :blk ids;
                     },
                 });
@@ -146,6 +227,46 @@ fn generateValue(self: *Generator, value: Parser.Value) Error!WORD {
     // array
 
 }
+fn generateBinOp(self: *Generator, bin_op: Parser.BinOp) Error!WORD {
+    const left: WORD = try self.generateExpression(bin_op.left.*);
+    const right: WORD = try self.generateExpression(bin_op.right.*);
+    return switch (bin_op.op) {
+        .@"***", .@"**" => blk: {
+            //zero value for dotClamped
+            // const ptype = self.parser.typeOf(bin_op.left.*) catch unreachable;
+            // const zero_value: WORD = try self.generateValue(.{ .type = (ptype).vector.component, .payload = .{ .wide = 0 } });
+
+            const id = self.newID();
+            const ptype = try self.parser.typeOf(bin_op.left.*);
+            const op: Op = switch (ptype.vector.component.type) {
+                .float => .dot,
+                .int => .sdot,
+                .uint => .udot,
+            };
+
+            try self.addWords(&.{ opWord(op, 5), try self.convertTypeID(ptype), id, left, right });
+            break :blk id;
+        },
+        else => @panic("idk how to gen that bin op"),
+    };
+}
+fn generateVariableLoad(self: *Generator, name: []const u8) Error!WORD {
+    const name_info = self.nameInfo(name);
+    if (name_info.load != 0) return name_info.load;
+    const id = self.newID();
+    try self.addWords(&.{ opWord(.load, 4), name_info.type_id, id, name_info.id }); //load memory operands??
+    return id;
+}
+fn nameInfo(self: *Generator, name: []const u8) NameInfo {
+    if (!self.inGlobalScope()) for (self.current_name_mappings.items) |nm|
+        if (util.strEql(name, nm.name)) return .{ .type_id = nm.type_id, .id = nm.id, .load = nm.load };
+
+    return for (self.global_vars.items) |gv| {
+        if (util.strEql(name, gv.name)) break .{ .type_id = gv.type_id, .id = gv.id, .load = gv.load };
+    } else @panic("couldnt find variable by name somehow?");
+    // } else unreachable;
+}
+const NameInfo = struct { id: WORD, load: WORD = 0, type_id: WORD };
 fn generateConstantFromScalar(self: *Generator, scalar: anytype, type_id: WORD) Error!WORD {
     const U = @Type(.{ .int = .{ .bits = @sizeOf(@TypeOf(scalar)) * 8, .signedness = .unsigned } });
     const uval: U = @bitCast(scalar);
@@ -153,6 +274,10 @@ fn generateConstantFromScalar(self: *Generator, scalar: anytype, type_id: WORD) 
         .{ .many = .{ @truncate(uval), @truncate(uval >> 32), 0, 0 } }
     else
         .{ .single = @truncate(uval) });
+}
+
+fn addWords(self: *Generator, words: []const WORD) Error!void {
+    try self.current_buffer.appendSlice(self.arena, words);
 }
 fn addConstant(self: *Generator, type_id: WORD, value: ConstantValue) Error!WORD {
     const wc = self.typeFromID(type_id).valueWordConsumption();
@@ -178,6 +303,10 @@ const EntryPoint = struct {
     exec_model_info: ExecutionModelInfo,
     interface_ids: []WORD = &.{},
 };
+const GlobalInitializer = struct {
+    index: u32,
+    expr: *const Expression,
+};
 const GlobalVariable = struct {
     name: []const u8,
 
@@ -185,8 +314,10 @@ const GlobalVariable = struct {
     id: WORD,
     storage_class: StorageClass,
     initializer: WORD,
+
+    load: WORD = 0,
 };
-const NameMapping = struct { name: []const u8, id: WORD };
+const NameMapping = struct { name: []const u8, type_id: WORD, id: WORD, load: WORD = 0 };
 
 const Constant = struct {
     id: WORD,
@@ -256,6 +387,7 @@ const Type = union(enum) {
     matrix: MatrixType,
 
     function: FunctionType,
+    pointer: PointerType,
 
     pub fn eql(a: Type, b: Type) bool {
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
@@ -268,6 +400,7 @@ const Type = union(enum) {
                     (for (function.arg_type_ids, b.function.arg_type_ids) |a_arg, b_arg| (if (a_arg != b_arg) break false) else true)
                 else
                     false,
+            .pointer => |pointer| pointer.pointed_id == b.pointer.pointed_id and pointer.storage_class == b.pointer.storage_class,
             else => @panic("idk how to compare that type"),
         };
     }
@@ -280,6 +413,47 @@ const Type = union(enum) {
             else => 1,
         };
     }
+};
+fn opWord(op: Op, count: u16) u32 {
+    return (@as(u32, count) << 16) | @intFromEnum(op);
+}
+const Op = enum(u32) {
+    constant_true = 41,
+    constant_false = 42,
+    constant = 43,
+    constant_composite = 44,
+
+    type_void = 19,
+    type_bool = 20,
+    type_int = 21,
+    type_float = 22,
+    type_vector = 23,
+    type_matrix = 24,
+    type_pointer = 32,
+    type_function = 33,
+
+    capability = 17,
+    entry_point = 15,
+    execution_mode = 16,
+    memory_model = 14,
+    decorate = 71,
+
+    function = 54,
+    label = 248,
+    @"return" = 253,
+    function_end = 56,
+
+    variable = 59,
+
+    load = 61,
+    store = 62,
+
+    dot = 148,
+    sdot = 4450,
+    udot = 4451,
+};
+const Decoration = enum(u32) {
+    location = 30,
 };
 const StorageClass = enum(u32) {
     function = 7,
@@ -299,6 +473,34 @@ const StorageClass = enum(u32) {
     image = 11,
     storage_buffer = 12,
 };
+const Capabilitiy = enum(u32) {
+    matrix = 0,
+    shader = 1,
+    geometry = 2,
+    tesselation = 3,
+
+    float64 = 10,
+    float16 = 9,
+    int64 = 11,
+    int16 = 22,
+
+    atomic_storage = 21,
+    int64atomics = 12,
+
+    geometry_point_size = 24,
+
+    storage_image_multisample = 27,
+    //there is too much of them
+};
+
+const FunctionControl = enum(u32) {
+    none = 0,
+    @"inline" = 1,
+    dontinline = 2,
+    pure = 3,
+    @"const" = 4,
+};
+const PointerType = struct { pointed_id: WORD, storage_class: StorageClass };
 const FunctionType = struct { rtype_id: WORD, arg_type_ids: []WORD = &.{} };
 
 const MatrixType = struct { column_count: VectorLen, column_type_id: WORD };

@@ -12,7 +12,7 @@ pub fn main() !void {
     // _ = path;
     // const compiled = try hgsl.compile(allocator, hgsl.minimal_frag, "minimal", &out_writer.interface);
     for ([_][]const u8{
-        "func.hgsl",
+        // "func.hgsl",
         "source.hgsl",
     }) |path| {
         std.debug.print("======{s}=======\n", .{path});
