@@ -176,6 +176,15 @@ fn generateEntryPoint(self: *Generator, entry_point: *Parser.EntryPoint) Error!v
 
     const entry_point_id = self.newID();
 
+    try self.addWords(&.{
+        opWord(.function, 5),
+        try self.typeID(.void),
+        entry_point_id,
+        @intFromEnum(FunctionControl.none),
+        try self.typeID(.{ .function = .{ .rtype_id = try self.typeID(.void) } }),
+    });
+    try self.addWords(&.{ opWord(.label, 2), self.newID() });
+
     for (entry_point.body.items) |statement| try self.generateStatment(statement);
     std.debug.print("entry point Buffer.len: {d}\n", .{buffer.items.len});
 
@@ -184,6 +193,7 @@ fn generateEntryPoint(self: *Generator, entry_point: *Parser.EntryPoint) Error!v
         .exec_model_info = entry_point.exec_model_info,
         .interface_ids = try interfaces_ids.toOwnedSlice(self.arena),
     });
+    try self.addWords(&.{ opWord(.@"return", 1), opWord(.function_end, 1) });
 }
 fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
     const result_type_id = try self.convertTypeID(try self.parser.typeOf(expr));
@@ -449,6 +459,7 @@ const Type = union(enum) {
     pub fn eql(a: Type, b: Type) bool {
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
         return switch (a) {
+            .void, .bool => true,
             .float => |float| float == b.float,
             .int => |int| int.width == b.int.width and int.signed == b.int.signed,
             .vector => |vector| vector.len == b.vector.len and vector.component_id == b.vector.component_id,

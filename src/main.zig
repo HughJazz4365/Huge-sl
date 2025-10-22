@@ -17,7 +17,7 @@ pub fn main() !void {
     }) |path| {
         std.debug.print("======{s}=======\n", .{path});
         var timer = try std.time.Timer.start();
-        const t_count = if (builtin.mode == .Debug) 1 else 100;
+        const t_count = if (builtin.mode == .Debug) 1 else 1000;
         for (0..t_count) |_| {
             const compiled = try hgsl.compileFile(allocator, path, &out_writer.interface);
             defer allocator.free(compiled);
