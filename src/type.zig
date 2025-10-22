@@ -5,7 +5,7 @@ const bi = @import("builtin.zig");
 pub const u32_type: Type = .{ .scalar = .{ .type = .uint, .width = .word } };
 
 pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
-    const result: Type = switch (expr) {
+    return switch (expr) {
         .value => |value| value.type,
         .named_value => |named_value| named_value.value.type,
         .constructor => |constructor| constructor.type,
@@ -15,6 +15,7 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
         .bin_op => |bin_op| blk: {
             const left_type = try self.typeOf(bin_op.left.*);
             const right_type = try self.typeOf(bin_op.right.*);
+
             if (left_type == .unknown or right_type == .unknown) return .unknownempty;
             break :blk switch (bin_op.op) {
                 .@"+", .@"-", .@"^", .@"|", .@"&", .@">>" => left_type,
@@ -51,8 +52,6 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
         },
         else => .{ .unknown = try self.createVal(expr) },
     };
-    // std.debug.print("T: {f}, E: {f}\n", .{ result, expr });
-    return result;
 }
 pub const Type = union(enum) {
     void,
