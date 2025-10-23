@@ -1,4 +1,5 @@
 //module structure:
+// boilerplate
 // capabilities
 // extension, exstension instruction imports
 // memory model
@@ -24,10 +25,21 @@ const Error = error{
 } || Writer.Error || Parser.Error;
 
 const glsl_std_id: WORD = 1;
+const glsl_ext_literal_words = blk: {
+    const str = "GLSL.std.450";
+    const num_words = (str.len + 4) / 4;
+    var words: [num_words]WORD = @splat(0);
+    for (str, 0..) |c, i| words[i / 4] |= @as(WORD, c) << ((i & 3) * 8);
+    break :blk words;
+};
+const magic_number: WORD = 0x07230203;
+const generator_number: WORD = 0;
+
 parser: *Parser,
 current_id: WORD = 2, //0 - reserved,1 - glsl ext for now
 arena: Allocator,
 
+capabilities: Capabilities = .{ .shader = true }, //flag struct
 //constants
 true_const: WORD = 0,
 false_const: WORD = 0,
@@ -47,15 +59,125 @@ current_name_mappings: *List(NameMapping) = @ptrCast(@alignCast(@constCast(&0)))
 
 type_decls: List(TypeDeclaration) = .empty,
 pub fn generate(parser: *Parser) Error![]u32 {
-    var generator: Generator = .{
+    var self: Generator = .{
         .parser = parser,
         .arena = parser.arena.allocator(),
     };
-    generator.current_buffer = &generator.main_buffer;
-    for (generator.parser.global_scope.body.items) |statement| try generator.generateStatment(statement);
+    var result: std.array_list.Managed(WORD) = .init(self.parser.allocator);
+    self.current_buffer = &self.main_buffer;
+    for (self.parser.global_scope.body.items) |statement| try self.generateStatment(statement);
+    self.current_buffer = &self.main_buffer;
 
-    _ = &generator;
-    return &.{};
+    try result.appendSlice(&.{ //spirv boilerplate
+        magic_number,
+        versionWord(1, 6),
+        generator_number,
+        self.current_id,
+        0, //reserved
+    });
+    inline for (@typeInfo(Capability).@"enum".fields) |ef| // capabilities
+        if (@field(self.capabilities, ef.name))
+            try result.appendSlice(&.{ opWord(.capability, 2), ef.value });
+
+    try result.appendSlice(&.{ opWord(.ext_inst_import, 2 + glsl_ext_literal_words.len), glsl_std_id });
+    try result.appendSlice(&glsl_ext_literal_words); // exstension instruction imports
+
+    //logical addressing model(0)
+    //memory model is Vulkan(3)/GLSL450(1)???
+    try result.appendSlice(&.{ opWord(.memory_model, 3), 0, 1 }); // memory model
+
+    for (self.entry_points.items) |ep| { // op entry points
+        // std.de
+        const execution_model: WORD = switch (ep.exec_model_info) {
+            .vertex => 0,
+            .fragment => 4,
+            .compute => 5,
+        };
+        try result.appendSlice(&.{ opWord(
+            .entry_point,
+            @truncate(3 + (ep.name.len + 4) / 4 + ep.interface_ids.len),
+        ), execution_model, ep.id });
+        try self.addStringLiteralWords(ep.name);
+        try result.appendSlice(ep.interface_ids);
+    }
+
+    // for (self.entry_points.items) |ep| { // execution modes
+    //     switch (ep.exec_model_info) {
+    //         .fragment => try result.appendSlice(&.{
+    //             opWord(.execution_mode, 3),
+    //             ep.id,
+    //             @intFromEnum(ExecutionMode.origin_upper_left),
+    //         }),
+
+    //         else => {},
+    //         // .vertex => 0,
+    //         // .fragment => 4,
+    //         // .compute => 5,
+    //     }
+    // }
+    // // // debug
+
+    // // decorations
+    // for (self.type_decls.items) |t| try result.appendSlice(switch (t.type) { //types
+    //     .bool => &.{ opWord(.type_bool, 2), t.id },
+    //     .void => &.{ opWord(.type_void, 2), t.id },
+    //     .int => |int| &.{ opWord(.type_int, 4), t.id, @intFromEnum(int.width), @intFromBool(int.signed) },
+    //     .float => |width| &.{ opWord(.type_float, 3), t.id, @intFromEnum(width) },
+    //     .vector => |vector| &.{ opWord(.type_vector, 4), t.id, vector.component_id, @intFromEnum(vector.len) },
+    //     .pointer => |pointer| &.{ opWord(.type_pointer, 4), t.id, @intFromEnum(pointer.storage_class), pointer.pointed_id },
+    //     .function => |function| blk: {
+    //         try result.appendSlice(&.{
+    //             opWord(.type_function, @truncate(3 + function.arg_type_ids.len)),
+    //             t.id,
+    //             function.rtype_id,
+    //         });
+    //         break :blk function.arg_type_ids;
+    //     },
+
+    //     else => unreachable,
+    // });
+    // for (self.constants.items) |c| { //constants
+    //     const @"type" = self.typeFromID(c.type_id);
+    //     const word_count = @"type".valueWordConsumption();
+    //     try result.appendSlice(&.{ opWord(
+    //         if (@"type" == .int or @"type" == .float) .constant else .constant_composite,
+    //         @truncate(3 + word_count),
+    //     ), c.type_id, c.id });
+    //     try result.appendSlice(c.value[0..word_count]);
+    // }
+    // if (self.false_const != 0) try result.appendSlice(&.{ opWord(.constant_false, 3), try self.typeID(.bool), self.false_const });
+    // if (self.true_const != 0) try result.appendSlice(&.{ opWord(.constant_true, 3), try self.typeID(.bool), self.true_const });
+
+    // for (self.global_vars.items) |gv| {
+    //     try result.appendSlice(&.{
+    //         opWord(.variable, if (gv.initializer == 0) 4 else 5),
+    //         gv.type_id,
+    //         gv.id,
+    //         @intFromEnum(gv.storage_class),
+    //     });
+    //     if (gv.initializer != 0) try result.append(gv.initializer);
+    // }
+
+    try result.appendSlice(self.main_buffer.items);
+    return try result.toOwnedSlice();
+}
+fn addStringLiteralWords(self: *Generator, str: []const u8) Error!void {
+    const num_words = (str.len + 4) / 4;
+    // var words: [num_words]WORD = @splat(0);
+    for (0..num_words) |wi| {
+        var word: WORD = 0;
+        for (0..4) |i| {
+            const ci = wi * 4 + i;
+            if (ci < str.len) {
+                std.debug.print("STRCI: {c}, wi: {d}\n", .{ str[ci], wi });
+            } else std.debug.print("NC\n", .{});
+            if (ci < str.len) word |= @as(WORD, str[ci]) << @truncate(i * 8);
+        }
+        try self.addWord(word);
+    }
+}
+fn versionWord(major: u8, minor: u8) WORD {
+    return @as(WORD, minor) << 8 | @as(WORD, major) << 16;
 }
 fn inGlobalScope(self: *Generator) bool {
     return @intFromPtr(self.current_buffer) == @intFromPtr(&self.main_buffer);
@@ -97,7 +219,7 @@ fn generateStatment(self: *Generator, statement: Parser.Statement) Error!void {
 }
 fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclaration) Error!void {
     if (var_decl.type == .entrypoint)
-        return try self.generateEntryPoint(@as(*Parser.EntryPoint, @ptrCast(@alignCast(@constCast(var_decl.initializer.value.payload.ptr)))));
+        return try self.generateEntryPoint(var_decl.name, @as(*Parser.EntryPoint, @ptrCast(@alignCast(@constCast(var_decl.initializer.value.payload.ptr)))));
     if (var_decl.type.isComptimeOnly()) return;
 
     const storage_class: StorageClass = switch (var_decl.qualifier) {
@@ -161,7 +283,7 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
     // if (!self.inGlobalScope()) for (self.current_name_mappings.items) |nm| std.debug.print("NM: {s}, id: {d} \n", .{ nm.name, nm.id });
 }
 
-fn generateEntryPoint(self: *Generator, entry_point: *Parser.EntryPoint) Error!void {
+fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.EntryPoint) Error!void {
     var buffer: List(WORD) = .empty;
     var interfaces_ids: List(WORD) = .empty;
     var name_mappings: List(NameMapping) = .empty;
@@ -186,14 +308,19 @@ fn generateEntryPoint(self: *Generator, entry_point: *Parser.EntryPoint) Error!v
     try self.addWords(&.{ opWord(.label, 2), self.newID() });
 
     for (entry_point.body.items) |statement| try self.generateStatment(statement);
-    std.debug.print("entry point Buffer.len: {d}\n", .{buffer.items.len});
+    std.debug.print("entry point Buffer.len: {d}\nep interfaces: {any}\n", .{ buffer.items.len, interfaces_ids.items });
 
     try self.entry_points.append(self.arena, .{
+        .name = name,
+
         .id = entry_point_id,
         .exec_model_info = entry_point.exec_model_info,
         .interface_ids = try interfaces_ids.toOwnedSlice(self.arena),
     });
     try self.addWords(&.{ opWord(.@"return", 1), opWord(.function_end, 1) });
+
+    try self.main_buffer.appendSlice(self.arena, buffer.items);
+    buffer.deinit(self.arena);
 }
 fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
     const result_type_id = try self.convertTypeID(try self.parser.typeOf(expr));
@@ -327,20 +454,22 @@ fn generateUOp(self: *Generator, u_op: Parser.UOp, result_type_id: WORD) Error!W
     };
 }
 fn generateVariableLoad(self: *Generator, name: []const u8) Error!WORD {
-    const name_info = self.nameInfo(name);
+    const name_info: NameInfo = blk: {
+        if (!self.inGlobalScope()) for (self.current_name_mappings.items) |*nm|
+            if (util.strEql(name, nm.name)) break :blk .{ .type_id = nm.type_id, .id = nm.id, .load = &nm.load };
+
+        break :blk for (self.global_vars.items) |*gv| {
+            if (util.strEql(name, gv.name)) {
+                if (for (self.current_interfaces_ids.items) |ii| (if (ii == gv.id) break false) else true)
+                    try self.current_interfaces_ids.append(self.arena, gv.id);
+                break .{ .type_id = gv.type_id, .id = gv.id, .load = &gv.load };
+            }
+        } else @panic("couldnt find variable by name somehow?");
+    };
     if (name_info.load.* != 0) return name_info.load.*;
     const id = self.newID();
     name_info.load.* = id;
     return try self.addWordsAndReturn2(&.{ opWord(.load, 4), name_info.type_id, id, name_info.id }); //load memory operands??
-}
-fn nameInfo(self: *Generator, name: []const u8) NameInfo {
-    if (!self.inGlobalScope()) for (self.current_name_mappings.items) |*nm|
-        if (util.strEql(name, nm.name)) return .{ .type_id = nm.type_id, .id = nm.id, .load = &nm.load };
-
-    return for (self.global_vars.items) |*gv| {
-        if (util.strEql(name, gv.name)) break .{ .type_id = gv.type_id, .id = gv.id, .load = &gv.load };
-    } else @panic("couldnt find variable by name somehow?");
-    // } else unreachable;
 }
 const NameInfo = struct { id: WORD, load: *WORD, type_id: WORD };
 fn generateConstantFromScalar(self: *Generator, scalar: anytype, type_id: WORD) Error!WORD {
@@ -368,6 +497,8 @@ fn addWord(self: *Generator, word: WORD) Error!void {
 }
 
 const EntryPoint = struct {
+    name: []const u8,
+
     id: WORD,
     exec_model_info: ExecutionModelInfo,
     interface_ids: []WORD = &.{},
@@ -525,6 +656,7 @@ const Op = enum(WORD) {
     sdot = 4450,
     udot = 4451,
 
+    ext_inst_import = 11,
     ext_inst = 12,
 };
 
@@ -554,7 +686,8 @@ const StorageClass = enum(WORD) {
     image = 11,
     storage_buffer = 12,
 };
-const Capabilitiy = enum(WORD) {
+const Capabilities = util.FlagStructFromEnum(Capability, false);
+const Capability = enum(WORD) {
     matrix = 0,
     shader = 1,
     geometry = 2,
@@ -574,6 +707,10 @@ const Capabilitiy = enum(WORD) {
     //there is too much of them
 };
 
+const ExecutionMode = enum(u32) {
+    origin_upper_left = 7,
+    origin_lower_left = 8,
+};
 const FunctionControl = enum(WORD) {
     none = 0,
     @"inline" = 1,

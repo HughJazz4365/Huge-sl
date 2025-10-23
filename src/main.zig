@@ -20,6 +20,7 @@ pub fn main() !void {
         const t_count = if (builtin.mode == .Debug) 1 else 1000;
         for (0..t_count) |_| {
             const compiled = try hgsl.compileFile(allocator, path, &out_writer.interface);
+            std.debug.print("compiledlen: {d}\n", .{compiled.len});
             defer allocator.free(compiled);
 
             // write spirv binary to a file

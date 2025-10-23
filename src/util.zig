@@ -32,24 +32,23 @@ pub fn pow(T: type, left: T, right: T) T {
     else
         std.math.pow(T, left, right);
 }
-fn FlagStructFromEnum(Enum: type, T: type) type {
+pub fn FlagStructFromEnum(Enum: type, default_value: bool) type {
     const em = @typeInfo(Enum).@"enum";
     var struct_fields: [em.fields.len]std.builtin.Type.StructField = undefined;
-    const zeroes = std.mem.zeroes(T);
     inline for (em.fields, &struct_fields) |ef, *sf| {
         sf.* = .{
-            .default_value_ptr = &zeroes,
-            .alignment = @alignOf(T),
+            .default_value_ptr = &default_value,
+            .alignment = 0,
             .is_comptime = false,
             .name = ef.name,
-            .type = T,
+            .type = bool,
         };
     }
     return @Type(.{ .@"struct" = .{
         .decls = &.{},
         .fields = &struct_fields,
         .is_tuple = false,
-        .layout = .auto,
+        .layout = .@"packed",
     } });
 }
 pub fn FlagStructFromUnion(Union: type, comptime dv: bool) type {
