@@ -13,6 +13,7 @@ pub fn main() !void {
     // const compiled = try hgsl.compile(allocator, hgsl.minimal_frag, "minimal", &out_writer.interface);
     for ([_][]const u8{
         // "func.hgsl",
+        "vertfrag.hgsl",
         "source.hgsl",
     }) |path| {
         std.debug.print("======{s}=======\n", .{path});
@@ -20,11 +21,10 @@ pub fn main() !void {
         const t_count = if (builtin.mode == .Debug) 1 else 1000;
         for (0..t_count) |_| {
             const compiled = try hgsl.compileFile(allocator, path, &out_writer.interface);
-            std.debug.print("compiledlen: {d}\n", .{compiled.len});
             defer allocator.free(compiled);
 
             // write spirv binary to a file
-            const out_file = try std.fs.cwd().openFile("out.spv", .{ .mode = .write_only });
+            const out_file = try std.fs.cwd().createFile("out.spv", .{ .read = true });
             defer out_file.close();
             var out_buf: [128]u8 = undefined;
             var writer = out_file.writer(&out_buf);

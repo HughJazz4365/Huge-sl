@@ -1,0 +1,9 @@
+const vert = entrypoint(.vertex){
+	in pos: vec3
+	// @position = .{pos, 1}
+}
+
+const frag = entrypoint(.fragment){
+	out col : vec4 = .{1}
+	// out col : vec4 = .{@position.xy, 1, 1}
+}

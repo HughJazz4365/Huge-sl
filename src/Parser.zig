@@ -139,14 +139,11 @@ pub fn isStatementComplete(self: *Parser, statement: Statement) Error!bool {
 
 pub fn parseStatement(self: *Parser) Error!?Statement {
     var token = try self.tokenizer.peek();
-    while (token == .endl) {
+    if (token == .endl) {
         self.tokenizer.skip();
         token = try self.tokenizer.peek();
     }
-    if (self.defaultShouldStop(token) catch unreachable) {
-        self.tokenizer.skip();
-        return null;
-    }
+    if (self.defaultShouldStop(token) catch unreachable) return null;
 
     const statement: ?Statement = switch (token) {
         .eof => null,
@@ -616,13 +613,17 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
     defer self.current_scope = last_scope;
     while (try self.parseStatement()) |statement| {
         try self.addStatement(statement);
-        const peek = while (try self.tokenizer.peek() == .endl) {
+        var peek = try self.tokenizer.peek();
+        if (peek == .endl) {
             self.tokenizer.skip();
-        } else self.tokenizer.peek() catch unreachable;
+            peek = try self.tokenizer.peek();
+        }
         if (peek == .@"}") {
             self.tokenizer.skip();
             break;
         }
+    } else if (try self.defaultShouldStop(try self.tokenizer.peek())) {
+        self.tokenizer.skip();
     } else if (!self.inGlobalScope()) return self.errorOut(Error.UnclosedScope);
 
     //remove useless statements

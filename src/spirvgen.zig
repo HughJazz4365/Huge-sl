@@ -30,6 +30,7 @@ const glsl_ext_literal_words = blk: {
     const num_words = (str.len + 4) / 4;
     var words: [num_words]WORD = @splat(0);
     for (str, 0..) |c, i| words[i / 4] |= @as(WORD, c) << ((i & 3) * 8);
+
     break :blk words;
 };
 const magic_number: WORD = 0x07230203;
@@ -52,8 +53,9 @@ deferred_global_initializers: List(GlobalInitializer) = .empty,
 
 main_buffer: List(WORD) = .empty,
 
-current_interfaces_ids: *List(WORD) = @ptrCast(@alignCast(@constCast(&0))),
+current_interface_ids: *List(WORD) = @ptrCast(@alignCast(@constCast(&0))),
 current_buffer: *List(WORD) = @ptrCast(@alignCast(@constCast(&0))),
+current_variable_buffer: *List(WORD) = @ptrCast(@alignCast(@constCast(&0))),
 //does this break on nested scopes??? it shoulndt if tied to function
 current_name_mappings: *List(NameMapping) = @ptrCast(@alignCast(@constCast(&0))),
 
@@ -95,86 +97,79 @@ pub fn generate(parser: *Parser) Error![]u32 {
         };
         try result.appendSlice(&.{ opWord(
             .entry_point,
-            @truncate(3 + (ep.name.len + 4) / 4 + ep.interface_ids.len),
+            @truncate(3 + ((ep.name.len + 4) / 4) + ep.interface_ids.len),
         ), execution_model, ep.id });
-        try self.addStringLiteralWords(ep.name);
+
+        for (0..(ep.name.len + 4) / 4) |wi| {
+            var word: WORD = 0;
+            for (0..4) |i| {
+                const ci = wi * 4 + i;
+                if (ci < ep.name.len) word |= @as(WORD, ep.name[ci]) << @truncate(i * 8);
+            }
+            try result.append(word);
+        }
         try result.appendSlice(ep.interface_ids);
     }
 
-    // for (self.entry_points.items) |ep| { // execution modes
-    //     switch (ep.exec_model_info) {
-    //         .fragment => try result.appendSlice(&.{
-    //             opWord(.execution_mode, 3),
-    //             ep.id,
-    //             @intFromEnum(ExecutionMode.origin_upper_left),
-    //         }),
+    for (self.entry_points.items) |ep| { // execution modes
+        switch (ep.exec_model_info) {
+            .fragment => try result.appendSlice(&.{
+                opWord(.execution_mode, 3),
+                ep.id,
+                @intFromEnum(ExecutionMode.origin_upper_left),
+            }),
 
-    //         else => {},
-    //         // .vertex => 0,
-    //         // .fragment => 4,
-    //         // .compute => 5,
-    //     }
-    // }
-    // // // debug
+            else => {},
+            // .vertex => 0,
+            // .fragment => 4,
+            // .compute => 5,
+        }
+    }
+    // debug
 
-    // // decorations
-    // for (self.type_decls.items) |t| try result.appendSlice(switch (t.type) { //types
-    //     .bool => &.{ opWord(.type_bool, 2), t.id },
-    //     .void => &.{ opWord(.type_void, 2), t.id },
-    //     .int => |int| &.{ opWord(.type_int, 4), t.id, @intFromEnum(int.width), @intFromBool(int.signed) },
-    //     .float => |width| &.{ opWord(.type_float, 3), t.id, @intFromEnum(width) },
-    //     .vector => |vector| &.{ opWord(.type_vector, 4), t.id, vector.component_id, @intFromEnum(vector.len) },
-    //     .pointer => |pointer| &.{ opWord(.type_pointer, 4), t.id, @intFromEnum(pointer.storage_class), pointer.pointed_id },
-    //     .function => |function| blk: {
-    //         try result.appendSlice(&.{
-    //             opWord(.type_function, @truncate(3 + function.arg_type_ids.len)),
-    //             t.id,
-    //             function.rtype_id,
-    //         });
-    //         break :blk function.arg_type_ids;
-    //     },
+    // decorations
+    for (self.type_decls.items) |t| try result.appendSlice(switch (t.type) { //types
+        .bool => &.{ opWord(.type_bool, 2), t.id },
+        .void => &.{ opWord(.type_void, 2), t.id },
+        .int => |int| &.{ opWord(.type_int, 4), t.id, @intFromEnum(int.width), @intFromBool(int.signed) },
+        .float => |width| &.{ opWord(.type_float, 3), t.id, @intFromEnum(width) },
+        .vector => |vector| &.{ opWord(.type_vector, 4), t.id, vector.component_id, @intFromEnum(vector.len) },
+        .pointer => |pointer| &.{ opWord(.type_pointer, 4), t.id, @intFromEnum(pointer.storage_class), pointer.pointed_id },
+        .function => |function| blk: {
+            try result.appendSlice(&.{
+                opWord(.type_function, @truncate(3 + function.arg_type_ids.len)),
+                t.id,
+                function.rtype_id,
+            });
+            break :blk function.arg_type_ids;
+        },
 
-    //     else => unreachable,
-    // });
-    // for (self.constants.items) |c| { //constants
-    //     const @"type" = self.typeFromID(c.type_id);
-    //     const word_count = @"type".valueWordConsumption();
-    //     try result.appendSlice(&.{ opWord(
-    //         if (@"type" == .int or @"type" == .float) .constant else .constant_composite,
-    //         @truncate(3 + word_count),
-    //     ), c.type_id, c.id });
-    //     try result.appendSlice(c.value[0..word_count]);
-    // }
-    // if (self.false_const != 0) try result.appendSlice(&.{ opWord(.constant_false, 3), try self.typeID(.bool), self.false_const });
-    // if (self.true_const != 0) try result.appendSlice(&.{ opWord(.constant_true, 3), try self.typeID(.bool), self.true_const });
+        else => unreachable,
+    });
+    for (self.constants.items) |c| { //constants
+        const @"type" = self.typeFromID(c.type_id);
+        const word_count = @"type".valueWordConsumption();
+        try result.appendSlice(&.{ opWord(
+            if (@"type" == .int or @"type" == .float) .constant else .constant_composite,
+            @truncate(3 + word_count),
+        ), c.type_id, c.id });
+        try result.appendSlice(c.value[0..word_count]);
+    }
+    if (self.false_const != 0) try result.appendSlice(&.{ opWord(.constant_false, 3), try self.typeID(.bool), self.false_const });
+    if (self.true_const != 0) try result.appendSlice(&.{ opWord(.constant_true, 3), try self.typeID(.bool), self.true_const });
 
-    // for (self.global_vars.items) |gv| {
-    //     try result.appendSlice(&.{
-    //         opWord(.variable, if (gv.initializer == 0) 4 else 5),
-    //         gv.type_id,
-    //         gv.id,
-    //         @intFromEnum(gv.storage_class),
-    //     });
-    //     if (gv.initializer != 0) try result.append(gv.initializer);
-    // }
+    for (self.global_vars.items) |gv| {
+        try result.appendSlice(&.{
+            opWord(.variable, if (gv.initializer == 0) 4 else 5),
+            try self.typeID(.{ .pointer = .{ .pointed_id = gv.type_id, .storage_class = gv.storage_class } }),
+            gv.id,
+            @intFromEnum(gv.storage_class),
+        });
+        if (gv.initializer != 0) try result.append(gv.initializer);
+    }
 
     try result.appendSlice(self.main_buffer.items);
     return try result.toOwnedSlice();
-}
-fn addStringLiteralWords(self: *Generator, str: []const u8) Error!void {
-    const num_words = (str.len + 4) / 4;
-    // var words: [num_words]WORD = @splat(0);
-    for (0..num_words) |wi| {
-        var word: WORD = 0;
-        for (0..4) |i| {
-            const ci = wi * 4 + i;
-            if (ci < str.len) {
-                std.debug.print("STRCI: {c}, wi: {d}\n", .{ str[ci], wi });
-            } else std.debug.print("NC\n", .{});
-            if (ci < str.len) word |= @as(WORD, str[ci]) << @truncate(i * 8);
-        }
-        try self.addWord(word);
-    }
 }
 fn versionWord(major: u8, minor: u8) WORD {
     return @as(WORD, minor) << 8 | @as(WORD, major) << 16;
@@ -241,8 +236,7 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
         else => @panic("idk storage class of this qualifier"),
     };
     const type_id = try self.convertTypeID(var_decl.type);
-    //generate pointer type
-    _ = try self.typeID(.{ .pointer = .{
+    const pointer_type_id = try self.typeID(.{ .pointer = .{
         .pointed_id = type_id,
         .storage_class = storage_class,
     } });
@@ -262,63 +256,68 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             });
         } else {
             load = try self.generateExpression(var_decl.initializer);
-            try self.addWords(&.{ opWord(.store, 3), var_id, load });
         },
     };
     // if (initializer != 0) load = initializer;
 
-    //track the variable
     if (storage_class == .function) {
+        try self.current_variable_buffer.appendSlice(self.arena, &.{ opWord(.variable, if (initializer == 0) 4 else 5), pointer_type_id, var_id, @intFromEnum(StorageClass.function) });
+        if (initializer != 0) try self.addWord(initializer);
         try self.current_name_mappings.append(self.arena, .{ .type_id = type_id, .id = var_id, .name = var_decl.name, .load = load });
-    } else try self.global_vars.append(self.arena, .{
-        .name = var_decl.name,
-        .type_id = type_id,
-        .id = var_id,
-        .storage_class = storage_class,
+    } else {
+        if (!self.inGlobalScope()) try self.addInterfaceID(var_id);
+        try self.global_vars.append(self.arena, .{
+            .name = var_decl.name,
+            .type_id = type_id,
+            .id = var_id,
+            .storage_class = storage_class,
 
-        .initializer = initializer,
-        .load = 0,
-    });
+            .initializer = initializer,
+            .load = 0,
+        });
+    }
 
-    // if (!self.inGlobalScope()) for (self.current_name_mappings.items) |nm| std.debug.print("NM: {s}, id: {d} \n", .{ nm.name, nm.id });
+    if (!self.inGlobalScope() and initializer == 0 and load != 0)
+        try self.addWords(&.{ opWord(.store, 3), var_id, load });
 }
 
 fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.EntryPoint) Error!void {
     var buffer: List(WORD) = .empty;
-    var interfaces_ids: List(WORD) = .empty;
+    var variable_buffer: List(WORD) = .empty;
+    var interface_ids: List(WORD) = .empty;
     var name_mappings: List(NameMapping) = .empty;
 
     self.parser.current_scope = &entry_point.scope;
     defer self.parser.current_scope = entry_point.scope.parent;
 
     self.current_buffer = &buffer;
-    self.current_interfaces_ids = &interfaces_ids;
+    self.current_variable_buffer = &variable_buffer;
+    self.current_interface_ids = &interface_ids;
     self.current_name_mappings = &name_mappings;
     defer self.current_buffer = &self.main_buffer;
 
     const entry_point_id = self.newID();
 
-    try self.addWords(&.{
-        opWord(.function, 5),
-        try self.typeID(.void),
-        entry_point_id,
-        @intFromEnum(FunctionControl.none),
-        try self.typeID(.{ .function = .{ .rtype_id = try self.typeID(.void) } }),
-    });
-    try self.addWords(&.{ opWord(.label, 2), self.newID() });
-
     for (entry_point.body.items) |statement| try self.generateStatment(statement);
-    std.debug.print("entry point Buffer.len: {d}\nep interfaces: {any}\n", .{ buffer.items.len, interfaces_ids.items });
 
     try self.entry_points.append(self.arena, .{
         .name = name,
 
         .id = entry_point_id,
         .exec_model_info = entry_point.exec_model_info,
-        .interface_ids = try interfaces_ids.toOwnedSlice(self.arena),
+        .interface_ids = try interface_ids.toOwnedSlice(self.arena),
     });
     try self.addWords(&.{ opWord(.@"return", 1), opWord(.function_end, 1) });
 
+    try self.main_buffer.appendSlice(self.arena, &.{
+        opWord(.function, 5),
+        try self.typeID(.void),
+        entry_point_id,
+        @intFromEnum(FunctionControl.none),
+        try self.typeID(.{ .function = .{ .rtype_id = try self.typeID(.void) } }),
+    });
+    try self.main_buffer.appendSlice(self.arena, &.{ opWord(.label, 2), self.newID() });
+    try self.main_buffer.appendSlice(self.arena, variable_buffer.items);
     try self.main_buffer.appendSlice(self.arena, buffer.items);
     buffer.deinit(self.arena);
 }
@@ -342,7 +341,7 @@ fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
 }
 fn generateConstructor(self: *Generator, components: []Expression, result_type_id: WORD) Error!WORD {
     const id = self.newID();
-    try self.addWords(&.{ opWord(.constant_composite, @truncate(3 + components.len)), result_type_id, id });
+    try self.addWords(&.{ opWord(.composite_construct, @truncate(3 + components.len)), result_type_id, id });
     for (components) |c| try self.addWord(try self.generateExpression(c));
     return id;
 }
@@ -460,8 +459,7 @@ fn generateVariableLoad(self: *Generator, name: []const u8) Error!WORD {
 
         break :blk for (self.global_vars.items) |*gv| {
             if (util.strEql(name, gv.name)) {
-                if (for (self.current_interfaces_ids.items) |ii| (if (ii == gv.id) break false) else true)
-                    try self.current_interfaces_ids.append(self.arena, gv.id);
+                try self.addInterfaceID(gv.id);
                 break .{ .type_id = gv.type_id, .id = gv.id, .load = &gv.load };
             }
         } else @panic("couldnt find variable by name somehow?");
@@ -470,6 +468,10 @@ fn generateVariableLoad(self: *Generator, name: []const u8) Error!WORD {
     const id = self.newID();
     name_info.load.* = id;
     return try self.addWordsAndReturn2(&.{ opWord(.load, 4), name_info.type_id, id, name_info.id }); //load memory operands??
+}
+fn addInterfaceID(self: *Generator, id: WORD) Error!void {
+    if (for (self.current_interface_ids.items) |ii| (if (ii == id) break false) else true)
+        try self.current_interface_ids.append(self.arena, id);
 }
 const NameInfo = struct { id: WORD, load: *WORD, type_id: WORD };
 fn generateConstantFromScalar(self: *Generator, scalar: anytype, type_id: WORD) Error!WORD {
@@ -621,6 +623,8 @@ const Op = enum(WORD) {
     constant_false = 42,
     constant = 43,
     constant_composite = 44,
+
+    composite_construct = 80,
 
     type_void = 19,
     type_bool = 20,
