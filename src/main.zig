@@ -12,7 +12,7 @@ pub fn main() !void {
     for ([_][]const u8{
         // "func.hgsl",
         "vertfrag.hgsl",
-        "source.hgsl",
+        // "source.hgsl",
     }) |path| {
         std.debug.print("======{s}=======\n", .{path});
         var timer = try std.time.Timer.start();

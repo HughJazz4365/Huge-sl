@@ -592,9 +592,16 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
 fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
     if (try self.tokenizer.next() != .@"(") return self.errorOut(Error.UnexpectedToken);
     var token = try self.tokenizer.next();
-    while (token != .@")") token = try self.tokenizer.next();
+    const exec_model_info: ExecutionModelInfo =
+        if (token == .@"." and try self.tokenizer.peek() == .identifier and util.strEql((try self.tokenizer.peek()).identifier, "fragment"))
+            .fragment
+        else
+            .vertex;
 
-    const exec_model_info: ExecutionModelInfo = .fragment;
+    self.tokenizer.skip();
+    token = try self.tokenizer.next();
+    if (token != .@")") return self.errorOut(Error.InvalidInput);
+
     const ep_type: Type = .{ .entrypoint = std.meta.activeTag(exec_model_info) };
 
     if (try self.tokenizer.peek() != .@"{") return ep_type.asExpr();
