@@ -24,6 +24,11 @@ error_msg_len: usize = 0,
 error_msg_writer: std.Io.Writer = undefined,
 out_writer: ?*std.Io.Writer = undefined,
 
+pub fn reinit(self: *ErrorCtx, source: []const u8, file_path: []const u8) void {
+    self.source = source;
+    self.file_path = file_path;
+    self.error_msg_writer = std.Io.Writer.fixed(&self.error_msg_buf);
+}
 pub fn init(self: *ErrorCtx, source: []const u8, file_path: []const u8, out_writer: ?*std.Io.Writer) void {
     self.source = source;
     self.file_path = file_path;

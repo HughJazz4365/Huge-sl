@@ -26,9 +26,3 @@ const main = entrypoint(.fragment){
 	out out_color: vec4 = .{(albedo * (diffuse + ambient + specular)), 1}
 }
 
-const sec = entrypoint(.vertex){
-	out somenout : vec3
-}
-const thr = entrypoint(.fragment){
-	out somenout : vec3
-}

@@ -17,6 +17,7 @@ tokenizer: *Tokenizer = undefined,
 allocator: Allocator = undefined,
 arena: std.heap.ArenaAllocator = undefined,
 
+global_io: List([]const u8) = .empty,
 global_scope: GlobalScope = undefined,
 current_scope: *Scope = undefined,
 
@@ -72,6 +73,10 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
     self.current_scope = &self.global_scope.scope;
 
     try self.parseScope(&self.global_scope.scope);
+
+    std.debug.print("[GLOBAL IO: ", .{});
+    for (self.global_io.items) |gi| std.debug.print("{s}, ", .{gi});
+    std.debug.print("]\n", .{});
 
     if (zigbuiltin.mode == .Debug) for (self.global_scope.body.items) |statement| std.debug.print("{f}\n", .{statement});
     return self;
@@ -309,7 +314,7 @@ pub const VariableDeclaration = struct {
     reference_count: u32 = 0,
 
     pub fn canBeOmitted(self: VariableDeclaration) bool {
-        return self.reference_count == 0 and !self.qualifier.isInterface() and self.type != .entrypoint;
+        return self.reference_count == 0 and !self.qualifier.isIO() and self.type != .entrypoint;
     }
     pub fn variableReference(self: *VariableDeclaration) VariableReference {
         return .{
@@ -598,8 +603,7 @@ fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
     var entry_point: EntryPoint = .new(self, exec_model_info);
     try self.parseScope(&entry_point.scope);
 
-    entry_point.global_interface_count = self.global_scope.interfaces.items.len;
-    // entry_point.interfaces = try util.reallocPrependSlice(self.arena.allocator(), []const u8, entry_point.interfaces, self.global_scope.interfaces.items);
+    entry_point.global_io_count = self.global_io.items.len;
 
     return .{ .value = .{
         .type = ep_type,
@@ -633,7 +637,7 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
         const index = body.len - 1 - i;
         const statement = body.*[index];
         if (statement != .var_decl or //
-            (statement == .var_decl and !statement.var_decl.qualifier.isInterface() and statement.var_decl.reference_count == 0))
+            (statement == .var_decl and !statement.var_decl.qualifier.isIO() and statement.var_decl.reference_count == 0))
             try self.trackReferencesInStatement(statement, .untrack);
         if (try self.isStatementOmittable(statement)) {
             util.removeAt(Statement, body, index);
@@ -708,8 +712,8 @@ pub const EntryPoint = struct {
     exec_model_info: ExecutionModelInfo,
     scope: Scope,
 
-    global_interface_count: usize = 0,
-    interfaces: [][]const u8 = &.{},
+    global_io_count: usize = 0,
+    io: [][]const u8 = &.{},
     body: List(Statement),
 
     pub fn new(self: *Parser, stage_info: ExecutionModelInfo) EntryPoint {
@@ -733,8 +737,8 @@ pub const EntryPoint = struct {
         const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);
         if (!(try parser.isStatementComplete(statement))) return parser.errorOut(Error.IncompleteStatement);
         try entry_point.body.append(parser.arena.allocator(), statement);
-        if (statement == .var_decl and statement.var_decl.qualifier.isInterface())
-            entry_point.interfaces = try util.reallocAdd(parser.arena.allocator(), []const u8, entry_point.interfaces, statement.var_decl.name);
+        if (statement == .var_decl and statement.var_decl.qualifier.isIO())
+            entry_point.io = try util.reallocAdd(parser.arena.allocator(), []const u8, entry_point.io, statement.var_decl.name);
     }
     fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
         const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);
@@ -880,7 +884,6 @@ pub const BinOp = struct {
 pub const GlobalScope = struct {
     scope: Scope,
 
-    interfaces: List([]const u8) = .empty,
     body: List(Statement) = .empty,
 
     pub fn new() @This() {
@@ -905,8 +908,8 @@ pub const GlobalScope = struct {
         if (!(try parser.isStatementComplete(statement))) return parser.errorOut(Error.IncompleteStatement);
 
         try global_scope.body.append(parser.arena.allocator(), statement);
-        if (statement == .var_decl and statement.var_decl.qualifier.isInterface())
-            try global_scope.interfaces.append(parser.arena.allocator(), statement.var_decl.name);
+        if (statement == .var_decl and statement.var_decl.qualifier.isIO())
+            try parser.global_io.append(parser.arena.allocator(), statement.var_decl.name);
     }
     fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
         const global_scope: *GlobalScope = @fieldParentPtr("scope", scope);
@@ -995,7 +998,7 @@ pub const Qualifier = union(enum) {
     out: bi.InterpolationQualifier,
 
     shared,
-    pub fn isInterface(self: Qualifier) bool {
+    pub fn isIO(self: Qualifier) bool {
         return switch (self) {
             .uniform, .push, .in, .out => true,
             else => false,

@@ -35,17 +35,25 @@ const glsl_ext_literal_words = blk: {
 };
 const magic_number: WORD = 0x07230203;
 const generator_number: WORD = 0;
+const IOEntry = struct { id: WORD, type_id: WORD, properties: packed struct {
+    global: bool,
+    qual: u2,
+    index: u29,
+} };
+const IOType = enum(u2) { in, out, uniform, push };
 
 parser: *Parser,
 current_id: WORD = 2, //0 - reserved,1 - glsl ext for now
 arena: Allocator,
 
 capabilities: Capabilities = .{ .shader = true }, //flag struct
-//constants
+io_order: List(IOEntry) = .empty,
+decorations: List(u32) = .empty,
+entry_points: List(EntryPoint) = .empty,
+
+type_decls: List(TypeDeclaration) = .empty,
 true_const: WORD = 0,
 false_const: WORD = 0,
-entry_points: List(EntryPoint) = .empty,
-decorations: void = {},
 constants: List(Constant) = .empty,
 global_vars: List(GlobalVariable) = .empty,
 
@@ -59,8 +67,7 @@ current_variable_buffer: *List(WORD) = @ptrCast(@alignCast(@constCast(&0))),
 //does this break on nested scopes??? it shoulndt if tied to function
 current_name_mappings: *List(NameMapping) = @ptrCast(@alignCast(@constCast(&0))),
 
-type_decls: List(TypeDeclaration) = .empty,
-pub fn generate(parser: *Parser) Error![]u32 {
+pub fn generate(parser: *Parser) Error![]WORD {
     var self: Generator = .{
         .parser = parser,
         .arena = parser.arena.allocator(),
@@ -125,9 +132,23 @@ pub fn generate(parser: *Parser) Error![]u32 {
             // .compute => 5,
         }
     }
-    // debug
 
     // decorations
+    var global_offsets: [4]WORD = @splat(0);
+    var local_offsets: [4]WORD = @splat(0);
+    for (self.io_order.items) |io| {
+        // const @"type" = self.typeFromID(io.type_id);
+        const ptr: *WORD = &(if (io.properties.global) &global_offsets else &local_offsets)[io.properties.qual];
+        //different kinds of decorates
+        try result.appendSlice(&.{
+            opWord(.decorate, 4),
+            io.id,
+            @intFromEnum(if (io.properties.qual < 2) Decoration.location else Decoration.binding),
+            ptr.* + if (!io.properties.global) global_offsets[io.properties.qual] else 0,
+        });
+        ptr.* += 1;
+    }
+    //locations, bindings, deskriptor_sets
     for (self.type_decls.items) |t| try result.appendSlice(switch (t.type) { //types
         .bool => &.{ opWord(.type_bool, 2), t.id },
         .void => &.{ opWord(.type_void, 2), t.id },
@@ -168,6 +189,7 @@ pub fn generate(parser: *Parser) Error![]u32 {
         if (gv.initializer != 0) try result.append(gv.initializer);
     }
 
+    // std.debug.print("IOORDER: {any}\n", .{self.io_order.items});
     try result.appendSlice(self.main_buffer.items);
     return try result.toOwnedSlice();
 }
@@ -243,6 +265,28 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
     const var_id = self.newID();
     var initializer: WORD = 0;
     var load: WORD = 0;
+    io: { //check if we should add io
+        try self.io_order.append(self.arena, .{
+            .id = var_id,
+            .type_id = type_id,
+            .properties = .{
+                .global = self.inGlobalScope(),
+                .qual = @intFromEnum(@as(IOType, switch (var_decl.qualifier) {
+                    .in => .in,
+                    .out => .out,
+                    .push => .push,
+                    .uniform => .uniform,
+                    else => break :io,
+                })),
+                .index = blk: {
+                    if (!self.inGlobalScope())
+                        for (self.entry_points.items[self.entry_points.items.len -| 1].val_ptr.io, 0..) |li, i|
+                            (if (util.strEql(var_decl.name, li)) break :blk @truncate(i));
+                    break :blk for (self.parser.global_io.items, 0..) |gi, i| (if (util.strEql(var_decl.name, gi)) break @truncate(i)) else unreachable;
+                },
+            },
+        });
+    }
 
     if (!var_decl.initializer.isEmpty()) switch (var_decl.initializer) {
         .identifier => |identifier| initializer = for (self.global_vars.items) |gv| (if (util.strEql(gv.name, identifier)) break gv.id) else 0,
@@ -298,15 +342,19 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.E
 
     const entry_point_id = self.newID();
 
-    for (entry_point.body.items) |statement| try self.generateStatment(statement);
-
+    const index = self.entry_points.items.len;
     try self.entry_points.append(self.arena, .{
+        .val_ptr = entry_point,
         .name = name,
 
         .id = entry_point_id,
         .exec_model_info = entry_point.exec_model_info,
-        .interface_ids = try interface_ids.toOwnedSlice(self.arena),
     });
+
+    for (entry_point.body.items) |statement| try self.generateStatment(statement);
+
+    self.entry_points.items[index].interface_ids = try interface_ids.toOwnedSlice(self.arena);
+
     try self.addWords(&.{ opWord(.@"return", 1), opWord(.function_end, 1) });
 
     try self.main_buffer.appendSlice(self.arena, &.{
@@ -336,7 +384,7 @@ fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
             @panic("idk how to gen that expr");
         },
     };
-    std.debug.print("id: {d}, Expr: {f}\n", .{ result, expr });
+    // std.debug.print("id: {d}, Expr: {f}\n", .{ result, expr });
     return result;
 }
 fn generateConstructor(self: *Generator, components: []Expression, result_type_id: WORD) Error!WORD {
@@ -499,6 +547,7 @@ fn addWord(self: *Generator, word: WORD) Error!void {
 }
 
 const EntryPoint = struct {
+    val_ptr: *Parser.EntryPoint,
     name: []const u8,
 
     id: WORD,
@@ -605,7 +654,7 @@ const Type = union(enum) {
             else => @panic("idk how to compare that type"),
         };
     }
-    pub fn valueWordConsumption(self: Type) u32 {
+    pub fn valueWordConsumption(self: Type) WORD {
         return switch (self) {
             .float => |float| @as(WORD, if (float == .long) 2 else 1),
             .int => |int| @as(WORD, if (int.width == .long) 2 else 1),
@@ -615,8 +664,8 @@ const Type = union(enum) {
         };
     }
 };
-fn opWord(op: Op, count: u16) u32 {
-    return (@as(u32, count) << 16) | @intFromEnum(op);
+fn opWord(op: Op, count: u16) WORD {
+    return (@as(WORD, count) << 16) | @intFromEnum(op);
 }
 const Op = enum(WORD) {
     constant_true = 41,
@@ -671,6 +720,32 @@ const GlslStdExtOp = enum(WORD) {
 };
 const Decoration = enum(WORD) {
     location = 30,
+    binding = 33,
+    descriptor_set = 34,
+
+    uniform = 26,
+    component = 31,
+    index = 32,
+
+    builtin = 11,
+    block = 2,
+    glsl_shared = 8,
+    glsl_packed = 9,
+
+    offset = 35,
+    array_stride = 6,
+    matrix_stride = 7,
+
+    no_perspective = 13,
+    flat = 14,
+    non_writable = 24,
+    non_readable = 25,
+
+    restrict = 19,
+    aliased = 20,
+    constant = 22, //not mutated variale
+
+    relaxed_precision = 0,
 };
 const StorageClass = enum(WORD) {
     function = 7,
@@ -711,7 +786,7 @@ const Capability = enum(WORD) {
     //there is too much of them
 };
 
-const ExecutionMode = enum(u32) {
+const ExecutionMode = enum(WORD) {
     origin_upper_left = 7,
     origin_lower_left = 8,
 };

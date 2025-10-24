@@ -79,11 +79,11 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
             const entry_point: *const Parser.EntryPoint = @ptrCast(@alignCast(value.payload.ptr));
             try writer.print("{f}{{\n", .{value.type});
 
-            try writer.print("[interfaces: ", .{});
-            for (entry_point.interfaces) |i| try writer.print("{s} ", .{i});
-            try writer.print("]\n[global interfaces: {d}, local interfaces: {d}]\n", .{
-                entry_point.global_interface_count,
-                entry_point.interfaces.len - entry_point.global_interface_count,
+            try writer.print("[local interfaces: ", .{});
+            for (entry_point.io) |i| try writer.print("{s} ", .{i});
+            try writer.print("]\n[global ios: {d}, local ios: {d}]\n", .{
+                entry_point.global_io_count,
+                entry_point.io.len,
             });
 
             for (entry_point.body.items) |statement| try writer.print("{f}\n", .{statement});
