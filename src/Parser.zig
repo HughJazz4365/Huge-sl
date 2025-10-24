@@ -55,6 +55,7 @@ pub const Error = error{
     InvalidIndex,
     InvalidIndexingTarget,
     InvalidAssignmentTarget,
+    InvalidArrayLen,
     NonVoidValueIgnored,
 
     NumericError,
@@ -392,9 +393,16 @@ fn defaultShouldStop(self: *Parser, token: Token) !bool {
     return token == .endl or token == .eof or (token == .@"}" and !self.inGlobalScope());
 }
 
+fn squareBracketShouldStop(self: *Parser, token: Token) !bool {
+    _ = self;
+    return token == .@"]";
+}
+
 fn parseExpressionSide(self: *Parser, comptime access: bool) Error!Expression {
     const refine_func = if (access) refine else refineAssigmentTarget;
     var expr = try refine_func(self, try self.parseExpressionSidePrimary(access));
+
+    std.debug.print("PRIMARY: {f}\n", .{expr});
     sw: switch (try self.tokenizer.peek()) {
         .@"{" => {
             if (try self.typeOf(expr) == .type) {
@@ -424,6 +432,7 @@ fn parseExpressionSide(self: *Parser, comptime access: bool) Error!Expression {
 fn parseExpressionSidePrimary(self: *Parser, comptime access: bool) Error!Expression {
     const refine_func = if (access) refine else refineAssigmentTarget;
     const token = try self.tokenizer.next();
+    std.debug.print("TOKEN: {f}\n", .{token});
     return switch (token) {
         .u_op => |u_op| .{ .u_op = .{
             .op = u_op,
@@ -431,6 +440,38 @@ fn parseExpressionSidePrimary(self: *Parser, comptime access: bool) Error!Expres
         } },
         .identifier => |id| .{ .identifier = id },
         .builtin => |builtin| .{ .builtin = try bi.getBuiltin(builtin) },
+        .@"[" => blk: {
+            //if array len is not a value return @Array(len, T)
+            const array_len_expr = try self.parseExpression(squareBracketShouldStop, true);
+            if (array_len_expr != .value) @panic("return @Array(len, T) since len is not comptime");
+
+            var len_val = array_len_expr.value;
+            len_val = sw: switch (len_val.type) {
+                .compfloat => {
+                    len_val = try ct.implicitCastValue(len_val, .compint);
+                    continue :sw .compint;
+                },
+                .compint => if ((len_val.payload.wide >> 32) != 0)
+                    return self.errorOut(Error.InvalidArrayLen)
+                else
+                    .{ .type = tp.u32_type, .payload = .{ .wide = len_val.payload.wide } },
+
+                .scalar => |scalar| if (scalar.type == .float or (len_val.payload.wide >> 32) != 0)
+                    return self.errorOut(Error.InvalidArrayLen)
+                else
+                    .{ .type = tp.u32_type, .payload = .{ .wide = len_val.payload.wide } },
+
+                else => return self.errorOut(Error.InvalidArrayLen),
+            };
+            const len: u32 = util.extract(u32, len_val.payload.wide);
+            if (len < 2) return self.errorOut(Error.InvalidArrayLen);
+
+            const component_type_expr = try self.refine(try self.parseExpressionSide(true));
+            break :blk .{ .value = .{ .type = .type, .payload = .{ .type = .{ .array = .{
+                .len = len,
+                .component = try self.createVal(try self.asTypeCreate(component_type_expr)),
+            } } } } };
+        },
         .@"(" => try self.parseExpression(bracketShouldStop, true),
         .@"." => switch (try self.tokenizer.next()) {
             .@"{" => try refine_func(self, try self.parseUnknownConstructor()),

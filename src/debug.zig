@@ -38,6 +38,7 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
             for (f.arg_types, 0..) |at, i| try writer.print("{f}{s}", .{ at, if (i + 1 < f.arg_types.len) ", " else "" });
             try writer.print("){f}", .{f.rtype.*});
         },
+        .array => |array| try writer.print("[{d}]{f}", .{ array.len, array.component }),
         else => try writer.print("{s}", .{@tagName(t)}),
     }
 }
