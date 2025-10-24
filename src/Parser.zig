@@ -599,7 +599,7 @@ fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
     try self.parseScope(&entry_point.scope);
 
     entry_point.global_interface_count = self.global_scope.interfaces.items.len;
-    entry_point.interfaces = try util.reallocPrependSlice(self.arena.allocator(), []const u8, entry_point.interfaces, self.global_scope.interfaces.items);
+    // entry_point.interfaces = try util.reallocPrependSlice(self.arena.allocator(), []const u8, entry_point.interfaces, self.global_scope.interfaces.items);
 
     return .{ .value = .{
         .type = ep_type,
