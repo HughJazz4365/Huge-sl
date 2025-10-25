@@ -9,6 +9,7 @@
 // decorations
 // types, constants, global variables
 // all functions
+
 const std = @import("std");
 const util = @import("util.zig");
 const zigbuiltin = @import("builtin");
@@ -174,7 +175,7 @@ pub fn generate(parser: *Parser) Error![]WORD {
             if (@"type" == .int or @"type" == .float) .constant else .constant_composite,
             @truncate(3 + word_count),
         ), c.type_id, c.id });
-        try result.appendSlice(c.value[0..word_count]);
+        try result.appendSlice(if (word_count <= 4) c.value.quad[0..word_count] else c.value.ptr[0..word_count]);
     }
     if (self.false_const != 0) try result.appendSlice(&.{ opWord(.constant_false, 3), try self.typeID(.bool), self.false_const });
     if (self.true_const != 0) try result.appendSlice(&.{ opWord(.constant_true, 3), try self.typeID(.bool), self.true_const });
@@ -421,11 +422,11 @@ fn generateValue(self: *Generator, value: Parser.Value) Error!WORD {
         //we can directly bitcast stuff and offset pointers without the |allVectorTypes loop|
         .scalar => try self.addConstant(
             try self.convertTypeID(value.type),
-            .{ @truncate(value.payload.wide), @truncate(value.payload.wide >> 32), 0, 0 },
+            .{ .quad = .{ @truncate(value.payload.wide), @truncate(value.payload.wide >> 32), 0, 0 } },
         ),
         // try self.generateNumberConstant(value.payload.wide, try self.convertTypeID(value.type)),
         .vector => |vector| blk: {
-            var words: ConstantValue = @splat(0);
+            var words: [4]WORD = @splat(0);
             //elem[i] is at offset of component_bytes
             //elem[i] should go at
             const component_type_id = try self.convertTypeID(.{ .scalar = vector.component });
@@ -437,10 +438,21 @@ fn generateValue(self: *Generator, value: Parser.Value) Error!WORD {
                         @ptrCast(@alignCast(value.payload.ptr)),
                     ))[i],
                 }
-                words[i] = try self.addConstant(component_type_id, .{ @truncate(dword), @truncate(dword >> 32), 0, 0 });
+                words[i] = try self.addConstant(component_type_id, .{ .quad = .{ @truncate(dword), @truncate(dword >> 32), 0, 0 } });
             }
-            break :blk try self.addConstant(try self.convertTypeID(value.type), words);
+            break :blk try self.addConstant(try self.convertTypeID(value.type), .{ .quad = words });
         },
+        .array => |array| blk: {
+            var word_array: [4]WORD = @splat(0);
+            const slice = if (array.len <= 4) &word_array else try self.arena.alloc(WORD, array.len);
+            for (slice, @as([*]const Parser.ValuePayload, @ptrCast(@alignCast(value.payload.ptr)))[0..array.len]) |*w, p| //
+                w.* = try self.generateValue(.{ .type = array.component.*, .payload = p });
+            break :blk try self.addConstant(try self.convertTypeID(value.type), if (array.len <= 4)
+                .{ .quad = word_array }
+            else
+                .{ .ptr = slice.ptr });
+        },
+
         // enum
         // matrix
         // array
@@ -452,13 +464,16 @@ fn generateValue(self: *Generator, value: Parser.Value) Error!WORD {
     return result;
 }
 fn addConstant(self: *Generator, type_id: WORD, value: ConstantValue) Error!WORD {
-    for (self.constants.items) |c| if (c.type_id == type_id and constantValueEql(c.value, value)) return c.id;
+    for (self.constants.items) |c| if (c.type_id == type_id and constantValueEql(c.value, value, self.typeFromID(type_id).valueWordConsumption())) return c.id;
     const id = self.newID();
     try self.constants.append(self.arena, .{ .id = id, .type_id = type_id, .value = value });
     return id;
 }
-fn constantValueEql(a: ConstantValue, b: ConstantValue) bool {
-    return a[0] == b[0] and a[1] == b[1] and a[2] == b[2] and a[3] == b[3];
+fn constantValueEql(a: ConstantValue, b: ConstantValue, word_count: WORD) bool {
+    return if (word_count <= 4)
+        std.mem.eql(WORD, a.quad[0..word_count], b.quad[0..word_count])
+    else
+        std.mem.eql(WORD, a.ptr[0..word_count], b.ptr[0..word_count]);
 }
 fn generateBinOp(self: *Generator, bin_op: Parser.BinOp, result_type_id: WORD) Error!WORD {
     const left = try self.generateExpression(bin_op.left.*);
@@ -575,7 +590,10 @@ const Constant = struct {
     type_id: WORD,
     value: ConstantValue,
 };
-const ConstantValue = [4]WORD;
+const ConstantValue = union {
+    quad: [4]WORD,
+    ptr: [*]WORD,
+};
 
 fn convertTypeID(self: *Generator, from: Parser.Type) Error!WORD {
     return try self.typeID(try self.convertType(from));
@@ -597,6 +615,7 @@ fn convertType(self: *Generator, from: Parser.Type) Error!Type {
             .rtype_id = try self.convertTypeID(function.rtype.*),
             .arg_type_ids = try self.convertTypeSliceToIDS(function.arg_types),
         } },
+        .array => |array| .{ .array = .{ .len = array.len, .component_id = try self.convertTypeID(array.component.*) } },
 
         else => {
             std.debug.print("TYPE: {f}\n", .{from});
@@ -635,6 +654,8 @@ const Type = union(enum) {
     vector: VectorType,
     matrix: MatrixType,
 
+    array: ArrayType,
+
     function: FunctionType,
     pointer: PointerType,
 
@@ -651,6 +672,7 @@ const Type = union(enum) {
                 else
                     false,
             .pointer => |pointer| pointer.pointed_id == b.pointer.pointed_id and pointer.storage_class == b.pointer.storage_class,
+            .array => |array| array.component_id == b.array.component_id and array.len == b.array.len,
             else => @panic("idk how to compare that type"),
         };
     }
@@ -660,10 +682,21 @@ const Type = union(enum) {
             .int => |int| @as(WORD, if (int.width == .long) 2 else 1),
             .vector => |vector| @intFromEnum(vector.len),
             .matrix => |matrix| @intFromEnum(matrix.column_count),
+            .array => |array| array.len,
             else => 1,
         };
     }
 };
+const PointerType = struct { pointed_id: WORD, storage_class: StorageClass };
+const FunctionType = struct { rtype_id: WORD, arg_type_ids: []WORD = &.{} };
+
+const MatrixType = struct { column_count: VectorLen, column_type_id: WORD };
+const VectorType = struct { len: VectorLen, component_id: WORD };
+const IntType = struct { width: BitWidth, signed: bool };
+const BitWidth = Parser.tp.BitWidth;
+const VectorLen = Parser.tp.VectorLen;
+const ArrayType = struct { len: WORD, component_id: WORD };
+const TypeDeclaration = struct { type: Type, id: WORD };
 fn opWord(op: Op, count: u16) WORD {
     return (@as(WORD, count) << 16) | @intFromEnum(op);
 }
@@ -797,15 +830,6 @@ const FunctionControl = enum(WORD) {
     pure = 3,
     @"const" = 4,
 };
-const PointerType = struct { pointed_id: WORD, storage_class: StorageClass };
-const FunctionType = struct { rtype_id: WORD, arg_type_ids: []WORD = &.{} };
-
-const MatrixType = struct { column_count: VectorLen, column_type_id: WORD };
-const VectorType = struct { len: VectorLen, component_id: WORD };
-const IntType = struct { width: BitWidth, signed: bool };
-const BitWidth = Parser.tp.BitWidth;
-const VectorLen = Parser.tp.VectorLen;
-const TypeDeclaration = struct { type: Type, id: WORD };
 
 const ExecutionModelInfo = Parser.ExecutionModelInfo;
 const Expression = Parser.Expression;

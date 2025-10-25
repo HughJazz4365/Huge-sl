@@ -86,7 +86,11 @@ pub fn deinit(self: *Parser) void {
     self.arena.deinit();
 }
 pub fn turnIntoIntermediateVariableIfNeeded(self: *Parser, expr: Expression) Error!Expression {
-    return if (expr == .named_value or (expr == .value and !expr.value.shouldBeNamed()) or expr == .identifier) expr else try self.turnIntoIntermediateVariable(expr);
+    return if (switch (expr) {
+        .named_value, .identifier => true,
+        .value => |value| !value.shouldBeNamed(),
+        else => false,
+    }) expr else try self.turnIntoIntermediateVariable(expr);
 }
 pub fn turnIntoIntermediateVariable(self: *Parser, expr: Expression) Error!Expression {
     const name = try self.createIntermediateVariableName();
@@ -402,7 +406,6 @@ fn parseExpressionSide(self: *Parser, comptime access: bool) Error!Expression {
     const refine_func = if (access) refine else refineAssigmentTarget;
     var expr = try refine_func(self, try self.parseExpressionSidePrimary(access));
 
-    std.debug.print("PRIMARY: {f}\n", .{expr});
     sw: switch (try self.tokenizer.peek()) {
         .@"{" => {
             if (try self.typeOf(expr) == .type) {
@@ -415,6 +418,15 @@ fn parseExpressionSide(self: *Parser, comptime access: bool) Error!Expression {
             self.tokenizer.skip();
 
             expr = try refine_func(self, .{ .call = try self.parseFunctionCall(expr) });
+            continue :sw try self.tokenizer.peek();
+        },
+        .@"[" => {
+            self.tokenizer.skip();
+            const index = try self.parseExpression(squareBracketShouldStop, true);
+            expr = try refine_func(self, .{ .indexing = .{
+                .target = try self.createVal(expr),
+                .index = try self.createVal(index),
+            } });
             continue :sw try self.tokenizer.peek();
         },
         else => {},
@@ -432,14 +444,13 @@ fn parseExpressionSide(self: *Parser, comptime access: bool) Error!Expression {
 fn parseExpressionSidePrimary(self: *Parser, comptime access: bool) Error!Expression {
     const refine_func = if (access) refine else refineAssigmentTarget;
     const token = try self.tokenizer.next();
-    std.debug.print("TOKEN: {f}\n", .{token});
     return switch (token) {
         .u_op => |u_op| .{ .u_op = .{
             .op = u_op,
             .target = try self.createVal(try refine_func(self, try self.parseExpressionSide(access))),
         } },
         .identifier => |id| .{ .identifier = id },
-        .builtin => |builtin| .{ .builtin = try bi.getBuiltin(builtin) },
+        .builtin => |builtin| .{ .builtin = bi.getBuiltin(builtin) catch |err| return self.errorOut(err) },
         .@"[" => blk: {
             //if array len is not a value return @Array(len, T)
             const array_len_expr = try self.parseExpression(squareBracketShouldStop, true);
@@ -517,21 +528,29 @@ fn parseCastOrConstructor(self: *Parser, @"type": Type) Error!Expression {
 }
 fn parseExpressionSequence(self: *Parser, comptime until: Token) Error![]Expression {
     const should_stop = struct {
-        pub fn f(_: *Parser, token: Token) Error!bool {
-            return std.meta.eql(token, until) or token == .@",";
+        pub fn f(parser: *Parser, token: Token) Error!bool {
+            // return std.meta.eql(token, until) or token == .@",";
+            return std.meta.eql(token, until) or token == .@"," or try defaultShouldStop(parser, token);
         }
     }.f;
     var list: List(Expression) = .empty;
 
+    try self.skipEndl();
     var token = try self.tokenizer.peek();
     while (!std.meta.eql(token, until)) {
         const expr = try self.parseExpressionRecursive(should_stop, false, 0);
         try list.append(self.arena.allocator(), expr);
         if (try self.tokenizer.peek() == .@",") self.tokenizer.skip();
+
+        try self.skipEndl();
+
         token = try self.tokenizer.peek();
     }
     self.tokenizer.skip();
     return try list.toOwnedSlice(self.arena.allocator());
+}
+fn skipEndl(self: *Parser) Error!void {
+    if (try self.tokenizer.peek() == .endl) self.tokenizer.skip();
 }
 
 fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
@@ -684,13 +703,18 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
     while (i < body.len) {
         const index = body.len - 1 - i;
         const statement = body.*[index];
-        if (statement != .var_decl or //
-            (statement == .var_decl and !statement.var_decl.qualifier.isIO() and statement.var_decl.reference_count == 0))
+        if (shouldUntrackInStatement(statement))
             try self.trackReferencesInStatement(statement, .untrack);
         if (try self.isStatementOmittable(statement)) {
             util.removeAt(Statement, body, index);
         } else i += 1;
     }
+}
+fn shouldUntrackInStatement(statement: Statement) bool {
+    return switch (statement) {
+        .var_decl => |var_decl| !var_decl.qualifier.isIO() and var_decl.reference_count == 0,
+        else => false,
+    };
 }
 
 pub const Function = struct {
@@ -888,6 +912,7 @@ pub fn isExpressionMutable(self: *Parser, expr: Expression) Error!bool {
     return switch (expr) {
         .identifier => |identifier| (try self.current_scope.getVariableReference(self, identifier)).is_mutable,
         .indexing => |indexing| try self.isExpressionMutable(indexing.target.*),
+        .builtin => |builtin| if (builtin == .variable) builtin.variable.isMutable() else false,
         else => false,
     };
 }

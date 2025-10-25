@@ -52,13 +52,17 @@ pub fn typeOfBuiltInCall(self: *Parser, bf: BuiltinFunction, args: []Expression)
     const @"type": Type = switch (bf) {
         .col_hex => vec3_type,
         .reflect => try self.typeOf(args[0]),
+        .array_type => Type{ .type = {} },
     };
     // std.debug.print("@{s} => {f}\n", .{ @tagName(bf), @"type" });
 
     return @"type";
 }
 pub fn typeOfBuiltin(self: *Parser, builtin: Builtin) Error!Type {
-    return .{ .unknown = try self.createVal(Expression{ .builtin = builtin }) };
+    return if (builtin == .variable)
+        builtin.variable.typeOf()
+    else
+        .{ .unknown = try self.createVal(Expression{ .builtin = builtin }) };
 }
 pub fn getBuiltin(name: []const u8) Error!Builtin {
     return name_map.get(name) orelse Error.InvalidBuiltin;
@@ -66,20 +70,43 @@ pub fn getBuiltin(name: []const u8) Error!Builtin {
 const name_map: std.StaticStringMap(Builtin) = .initComptime(.{
     .{ "reflect", Builtin{ .function = .reflect } },
     .{ "colHex", Builtin{ .function = .col_hex } },
+
+    .{ "position", Builtin{ .variable = .position } },
+    .{ "vertex_id", Builtin{ .variable = .vertex_id } },
 });
 
 pub const Builtin = union(enum) {
     function: BuiltinFunction,
-    variable: enum { vav },
+    variable: BuiltinVariable,
 };
 const BuiltinFunction = enum {
     col_hex,
     reflect,
+    array_type,
     pub fn argumentCount(self: BuiltinFunction) usize {
         return switch (self) {
             .col_hex => 1,
             .reflect => 2,
+            .array_type => 2,
             // else => 0,
+        };
+    }
+};
+pub const BuiltinVariable = enum {
+    position,
+    vertex_id,
+    // invocation_id,
+
+    pub fn isMutable(bv: BuiltinVariable) bool {
+        return switch (bv) {
+            .position => true,
+            else => false,
+        };
+    }
+    pub fn typeOf(bv: BuiltinVariable) Type {
+        return switch (bv) {
+            .position => tp.vec4_type,
+            .vertex_id => tp.u32_type,
         };
     }
 };

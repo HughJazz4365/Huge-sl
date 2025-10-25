@@ -3,6 +3,7 @@ const Parser = @import("Parser.zig");
 const bi = @import("builtin.zig");
 
 pub const u32_type: Type = .{ .scalar = .{ .type = .uint, .width = .word } };
+pub const vec4_type: Type = .{ .vector = .{ .len = ._4, .component = .{ .type = .float, .width = .word } } };
 
 pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
     return switch (expr) {
@@ -166,6 +167,7 @@ pub const Matrix = struct {
         return .{ .len = self.m, .component = .{ .type = .float, .width = self.width } };
     }
 };
+pub const ArrayValue = [*]Parser.ValuePayload;
 pub const Array = struct {
     component: *const Type,
     len: u32,

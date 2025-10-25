@@ -3,11 +3,12 @@ const vert = entrypoint(.vertex){
 		.{0,0},
 		.{0,1},
 		.{1,0},
-		.{1,1}
-	};
-	@position = .{verts[@vertex_id,1, 1}
+		.{1,1},
+	}
+	@position = .{verts[@vertex_id], 1, 1}
 }
 
 const frag = entrypoint(.fragment){
-	out col : vec4 = .{@position.xy, 0, 1}
+	//@position.xy
+	out col : vec4 = .{@position[0], @position[1], 0, 1}
 }

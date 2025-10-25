@@ -185,7 +185,8 @@ const DispatchVariable = struct {
     value: Value,
 };
 fn refineIdentifier(self: *Parser, identifier: []const u8, access: bool) Error!Expression {
-    return if (access) (try self.current_scope.getVariableReference(self, identifier)).value else .{ .identifier = identifier };
+    const var_ref = try self.current_scope.getVariableReference(self, identifier);
+    return if (access and var_ref.type != .array) var_ref.value else .{ .identifier = identifier };
 }
 
 fn refineCast(self: *Parser, cast: Parser.Cast) Error!Expression {
@@ -321,7 +322,7 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
         .identifier => |identifier| {
             const current_scope = self.current_scope;
             const var_ref = try current_scope.getVariableReference(self, identifier);
-            continue :sw if (var_ref.value == .identifier and util.strEql(var_ref.value.identifier, identifier)) .empty else var_ref.value;
+            continue :sw if (var_ref.value == .identifier and util.strEql(var_ref.value.identifier, identifier) and Parser.isComptimePassable(var_ref.value)) .empty else var_ref.value;
         },
 
         .constructor => |constructor| if (index >= constructor.components.len)
@@ -330,20 +331,33 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
             constructor.components[index],
         .value => |value| blk: {
             if (index >= target_cs.len) return self.errorOut(Error.OutOfBoundsAccess);
-            const component_size = target_cs.component.size();
-            var ptr: [*]const u8 = @ptrCast(value.payload.ptr);
-            ptr += component_size * index;
-            break :blk .{ .value = .{
-                .type = target_cs.component,
-                .payload = switch (target_cs.component) {
-                    .scalar, .compint, .compfloat => clk: {
-                        var wide: WIDE = 0;
-                        @memcpy(@as([*]u8, @ptrCast(&wide)), ptr[0..component_size]);
-                        break :clk .{ .wide = wide };
-                    },
-                    else => .{ .ptr = ptr },
+            switch (value.type) {
+                .void => {
+                    indexing.index.* = .{ .value = .{ .type = tp.u32_type, .payload = .{ .wide = util.fit(WIDE, index) } } };
+                    break :blk initial;
                 },
-            } };
+                .array => |array| break :blk .{ .value = .{
+                    .type = array.component.*,
+                    .payload = @as([*]const Payload, @ptrCast(@alignCast(value.payload.ptr)))[index],
+                } },
+                .vector, .matrix => {
+                    const component_size = target_cs.component.size();
+                    var ptr: [*]const u8 = @ptrCast(value.payload.ptr);
+                    ptr += component_size * index;
+                    break :blk .{ .value = .{
+                        .type = target_cs.component,
+                        .payload = switch (target_cs.component) {
+                            .scalar, .compint, .compfloat => clk: {
+                                var wide: WIDE = 0;
+                                @memcpy(@as([*]u8, @ptrCast(&wide)), ptr[0..component_size]);
+                                break :clk .{ .wide = wide };
+                            },
+                            else => .{ .ptr = ptr },
+                        },
+                    } };
+                },
+                else => @panic("refine indexing"),
+            }
         },
         else => blk: {
             indexing.index.* = .{ .value = .{ .type = tp.u32_type, .payload = .{ .wide = util.fit(WIDE, index) } } };
@@ -419,13 +433,18 @@ fn constructValue(self: *Parser, constructor: Parser.Constructor) Error!Expressi
                 },
             },
         },
+        .array => for (constructor.components) |c| (if (!c.isComptime()) break initial) else blk: {
+            const payloads = try self.arena.allocator().alloc(Payload, constructor.components.len);
+            for (payloads, constructor.components) |*payload, component| payload.* = component.getValue().payload;
+            break :blk .{ .value = .{ .type = constructor.type, .payload = .{ .ptr = @ptrCast(@alignCast(payloads.ptr)) } } };
+        },
 
         else => initial,
     };
 }
 const ElementIterator = struct {
     expr: *Expression,
-    index: usize = 0,
+    index: u32 = 0,
 
     pub fn next(self: *ElementIterator, parser: *Parser) Error!?Expression {
         const @"type" = try parser.typeOf(self.expr.*);
@@ -437,11 +456,9 @@ const ElementIterator = struct {
         } else {
             const structure = @"type".constructorStructure();
             if (self.index >= structure.len) return null;
-            const ptr = try parser.createVal(Expression{ .value = .{
-                .type = .compint,
-                .payload = .{ .wide = util.fit(WIDE, self.index) },
-            } });
+            const ptr = try parser.createVal(Expression{ .value = .{ .type = .compint, .payload = .{ .wide = self.index } } });
             self.index += 1;
+
             return try refine(parser, .{ .indexing = .{ .target = self.expr, .index = ptr } });
         }
     }

@@ -123,7 +123,17 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
                 };
             try writer.print("}}\n", .{});
         },
+        .array => |array| {
+            try writer.print("|{f}|{{", .{value.type});
+            const payloads: [*]const Parser.ValuePayload = @ptrCast(@alignCast(value.payload.ptr));
+            for (0..array.len) |i| try writer.print("{f}{s}", .{
+                Parser.Value{ .type = array.component.*, .payload = payloads[i] },
+                if (i + 1 == array.len) "" else ", ",
+            });
+            try writer.print("}}", .{});
+        },
         .unknown, .void => try writer.print("[EMPTY]", .{}),
+
         else => try writer.print("[{s}]", .{@tagName(value.type)}),
     }
 }
@@ -131,6 +141,8 @@ pub fn formatToken(token: Token, writer: *std.Io.Writer) !void {
     switch (token) {
         .identifier => |id| try writer.print("[id]: {s}", .{id}),
         .type_literal => |tl| try writer.print("[type_literal]: {f}", .{tl}),
+        .builtin => |b| try writer.print("[builtin]: @{s}", .{b}),
+
         inline else => |value, tag| try writer.print("[{s}]: {any}", .{ @tagName(tag), value }),
     }
 }
