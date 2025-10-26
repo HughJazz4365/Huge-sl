@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const util = @import("util.zig");
+const bi = @import("builtin.zig");
 const zigbuiltin = @import("builtin");
 const Parser = @import("Parser.zig");
 const Tokenizer = @import("Tokenizer.zig");
@@ -59,6 +60,7 @@ constants: List(Constant) = .empty,
 global_vars: List(GlobalVariable) = .empty,
 
 deferred_global_initializers: List(GlobalInitializer) = .empty,
+builtin_decoration_ids: BuiltinDecorationIDS = .{},
 
 main_buffer: List(WORD) = .empty,
 
@@ -380,6 +382,8 @@ fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
         .identifier => |identifier| try self.generateVariableLoad(identifier),
         .call => |call| try self.generateCall(call, result_type_id),
         .constructor => |constructor| try self.generateConstructor(constructor.components, result_type_id),
+        .indexing => |indexing| try self.generateIndexing(indexing),
+        .builtin => |builtin| if (builtin == .variable) try self.generateBuiltinVariable(builtin.variable) else @panic("gen builtin function"),
         else => {
             std.debug.print("Cannot gen expr: {f}\n", .{expr});
             @panic("idk how to gen that expr");
@@ -388,6 +392,43 @@ fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
     // std.debug.print("id: {d}, Expr: {f}\n", .{ result, expr });
     return result;
 }
+fn generateBuiltinVariable(self: *Generator, bv: bi.BuiltinVariable) Error!WORD {
+    return switch (bv) {
+        .vertex_id => blk: {
+            if (self.builtin_decoration_ids.vertex_id != 0)
+                break :blk self.builtin_decoration_ids.vertex_id;
+            const var_id = self.newID();
+            const type_id = try self.typeID(.{ .int = .{ .width = .word, .signed = true } });
+            try self.global_vars.append(self.arena, .{
+                .type_id = try self.typeID(.{ .pointer = .{
+                    .pointed_id = type_id,
+                    .storage_class = .input,
+                } }),
+                .id = var_id,
+                .storage_class = .input,
+            });
+            try self.decorations.appendSlice(self.arena, &.{
+                opWord(.decorate, 4),
+                var_id,
+                @intFromEnum(Decoration.builtin),
+                @intFromEnum(BuiltinDecoration.vertex_id),
+            });
+            break :blk try self.generateVariableLoadID(
+                type_id,
+                self.newID(),
+                var_id,
+            );
+        },
+        else => @panic("unknown builtin variable"),
+    };
+}
+fn generateIndexing(self: *Generator, indexing: Parser.Indexing) Error!WORD {
+    const target = try self.generateExpression(indexing.target.*);
+    const index = try self.generateExpression(indexing.index.*);
+    std.debug.print("t: {d}, i:{d}\n", .{ target, index });
+    @panic("gen indexing");
+}
+
 fn generateConstructor(self: *Generator, components: []Expression, result_type_id: WORD) Error!WORD {
     const id = self.newID();
     try self.addWords(&.{ opWord(.composite_construct, @truncate(3 + components.len)), result_type_id, id });
@@ -530,7 +571,10 @@ fn generateVariableLoad(self: *Generator, name: []const u8) Error!WORD {
     if (name_info.load.* != 0) return name_info.load.*;
     const id = self.newID();
     name_info.load.* = id;
-    return try self.addWordsAndReturn2(&.{ opWord(.load, 4), name_info.type_id, id, name_info.id }); //load memory operands??
+    return try self.generateVariableLoadID(name_info.type_id, id, name_info.id);
+}
+fn generateVariableLoadID(self: *Generator, type_id: WORD, id: WORD, var_id: WORD) Error!WORD {
+    return try self.addWordsAndReturn2(&.{ opWord(.load, 4), type_id, id, var_id });
 }
 fn addInterfaceID(self: *Generator, id: WORD) Error!void {
     if (for (self.current_interface_ids.items) |ii| (if (ii == id) break false) else true)
@@ -574,12 +618,12 @@ const GlobalInitializer = struct {
     expr: *const Expression,
 };
 const GlobalVariable = struct {
-    name: []const u8,
+    name: []const u8 = "\x00",
 
     type_id: WORD,
     id: WORD,
     storage_class: StorageClass,
-    initializer: WORD,
+    initializer: WORD = 0,
 
     load: WORD = 0,
 };
@@ -750,6 +794,18 @@ const GlslStdExtOp = enum(WORD) {
     normalize = 69,
     reflect = 71,
     pow = 26,
+};
+const BuiltinDecorationIDS = util.StructFromEnum(BuiltinDecoration, WORD, 0);
+const BuiltinDecoration = enum(WORD) {
+    position = 0,
+    point_size = 1,
+    clip_distance = 3,
+    cull_distance = 4,
+
+    vertex_id = 5,
+    instance_id = 6,
+    primitive_id = 7,
+    invocation_id = 8,
 };
 const Decoration = enum(WORD) {
     location = 30,

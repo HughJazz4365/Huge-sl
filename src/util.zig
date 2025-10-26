@@ -32,6 +32,25 @@ pub fn pow(T: type, left: T, right: T) T {
     else
         std.math.pow(T, left, right);
 }
+pub fn StructFromEnum(Enum: type, T: type, default_value: T) type {
+    const em = @typeInfo(Enum).@"enum";
+    var struct_fields: [em.fields.len]std.builtin.Type.StructField = undefined;
+    inline for (em.fields, &struct_fields) |ef, *sf| {
+        sf.* = .{
+            .default_value_ptr = &default_value,
+            .alignment = @alignOf(T),
+            .is_comptime = false,
+            .name = ef.name,
+            .type = T,
+        };
+    }
+    return @Type(.{ .@"struct" = .{
+        .decls = &.{},
+        .fields = &struct_fields,
+        .is_tuple = false,
+        .layout = .auto,
+    } });
+}
 pub fn FlagStructFromEnum(Enum: type, default_value: bool) type {
     const em = @typeInfo(Enum).@"enum";
     var struct_fields: [em.fields.len]std.builtin.Type.StructField = undefined;
