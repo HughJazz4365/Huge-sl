@@ -457,17 +457,31 @@ fn generatePointerRecursive(self: *Generator, expr: Expression, list: *List(WORD
         .identifier => |identifier| blk: {
             if (!self.inGlobalScope()) for (self.current_name_mappings.items) |*nm|
                 if (util.strEql(identifier, nm.name)) {
-                    if (nm.id == 0 and depth > 0) {
+                    if (nm.id == 0 and depth > 0) { // generate variable for found constant
+                        // .identifier => |identifier| initializer = for (self.global_vars.items) |gv| (if (util.strEql(gv.name, identifier)) break gv.id) else 0,
+                        // .value => |value| {
+                        //     if (!var_decl.initializer.isEmpty()) initializer = try self.generateValue(value);
+                        // },
                         //TODO: decorate with constant
                         const var_id = self.newID();
                         const ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = nm.type_id, .storage_class = .function } });
+
+                        const initialize = for (self.constants.items) |c| {
+                            if (c.id == nm.load) break true;
+                        } else false;
+
                         try self.current_variable_buffer.appendSlice(self.arena, &.{
-                            opWord(.variable, 5),
+                            opWord(.variable, if (initialize) 5 else 4),
                             ptr_type_id,
                             var_id,
                             @intFromEnum(StorageClass.function),
-                            nm.load,
                         });
+                        if (initialize) {
+                            try self.current_variable_buffer.append(self.arena, nm.load);
+                        } else {
+                            try self.addWords(&.{ opWord(.store, 3), var_id, nm.load });
+                        }
+
                         nm.id = var_id;
                         nm.type_id = ptr_type_id;
                     }
