@@ -94,24 +94,28 @@ const BuiltinFunction = enum {
 };
 pub const BuiltinVariable = enum {
     position,
+    point_size,
+    cull_distance,
     vertex_id,
     // invocation_id,
 
     pub fn ioDirection(bv: BuiltinVariable) enum { in, out } {
         return switch (bv) {
-            .position => .out,
+            .position, .point_size, .cull_distance => .out,
             else => .in,
         };
     }
     pub fn isMutable(bv: BuiltinVariable) bool {
         return switch (bv) {
-            .position => true,
+            .position, .point_size, .cull_distance => true,
             else => false,
         };
     }
     pub fn typeOf(bv: BuiltinVariable) Type {
         return switch (bv) {
             .position => tp.vec4_type,
+            .point_size => tp.f32_type,
+            .cull_distance => Type{ .array = .{ .len = 1, .component = &tp.f32_type } },
             .vertex_id => tp.u32_type,
         };
     }

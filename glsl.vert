@@ -7,6 +7,7 @@ const vec2 verts[4] = {
 		{1.,1.}
 };
 void main(){
-    gl_Position = vec4(verts[gl_VertexIndex], 1., 1.);
+	vec2 kek = verts[gl_VertexIndex];
+    gl_Position = vec4(kek.x, 1., 1., 1.);
 
 }

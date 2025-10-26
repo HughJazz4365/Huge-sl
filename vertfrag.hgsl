@@ -1,14 +1,17 @@
 const vert = entrypoint(.vertex){
 	const verts : [4]vec2 = .{
-		.{0,0},
-		.{0,1},
-		.{1,0},
-		.{1,1},
+		.{-1,-1},
+		.{-1, 1},
+		.{1 ,-1},
+		.{1 , 1},
 	}
-	@position = .{verts[@vertex_id], 1, 1}
+
+	const pos = verts[@vertex_id]
+	@position = .{pos, 0, 1}
+	out uv : vec2 
 }
 
 const frag = entrypoint(.fragment){
-	//@position.xy
-	out col : vec4 = .{@position[0], @position[1], 0, 1}
+    in uv: vec2
+	out col : vec4 = .{1, 0, 1, 1}
 }

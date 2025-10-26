@@ -13,6 +13,7 @@
 const std = @import("std");
 const util = @import("util.zig");
 const bi = @import("builtin.zig");
+const tp = @import("type.zig");
 const zigbuiltin = @import("builtin");
 const Parser = @import("Parser.zig");
 const Tokenizer = @import("Tokenizer.zig");
@@ -54,13 +55,15 @@ decorations: List(u32) = .empty,
 entry_points: List(EntryPoint) = .empty,
 
 type_decls: List(TypeDeclaration) = .empty,
+array_length_constants: List(struct { id: WORD, val: WORD, generated: bool = false }) = .empty,
+
 true_const: WORD = 0,
 false_const: WORD = 0,
 constants: List(Constant) = .empty,
 global_vars: List(GlobalVariable) = .empty,
 
 deferred_global_initializers: List(GlobalInitializer) = .empty,
-builtin_decoration_ids: BuiltinDecorationIDS = .{},
+builtin_pointer_infos: BuiltinPointerInfos = .{},
 
 main_buffer: List(WORD) = .empty,
 
@@ -69,6 +72,17 @@ current_buffer: *List(WORD) = @ptrCast(@alignCast(@constCast(&0))),
 current_variable_buffer: *List(WORD) = @ptrCast(@alignCast(@constCast(&0))),
 //does this break on nested scopes??? it shoulndt if tied to function
 current_name_mappings: *List(NameMapping) = @ptrCast(@alignCast(@constCast(&0))),
+pub fn printInstructions(slice: []WORD) void {
+    var copy = slice;
+    while (copy.len > 0) {
+        const op_word = copy[0];
+        const code: u16 = @truncate(op_word);
+        const count: usize = (op_word >> 16);
+        const tag_name = inline for (@typeInfo(Op).@"enum".fields) |ef| (if (ef.value == code) break ef.name) else "UNKNOWN";
+        std.debug.print("[{s}] {any}\n", .{ tag_name, copy[0..count] });
+        copy = copy[count..];
+    }
+}
 
 pub fn generate(parser: *Parser) Error![]WORD {
     var self: Generator = .{
@@ -99,7 +113,6 @@ pub fn generate(parser: *Parser) Error![]WORD {
     try result.appendSlice(&.{ opWord(.memory_model, 3), 0, 1 }); // memory model
 
     for (self.entry_points.items) |ep| { // op entry points
-        // std.debug.print("EP: {any}\n", .{ep});
         const execution_model: WORD = switch (ep.exec_model_info) {
             .vertex => 0,
             .fragment => 4,
@@ -151,6 +164,7 @@ pub fn generate(parser: *Parser) Error![]WORD {
         });
         ptr.* += 1;
     }
+    try result.appendSlice(self.decorations.items);
     //locations, bindings, deskriptor_sets
     for (self.type_decls.items) |t| try result.appendSlice(switch (t.type) { //types
         .bool => &.{ opWord(.type_bool, 2), t.id },
@@ -158,7 +172,20 @@ pub fn generate(parser: *Parser) Error![]WORD {
         .int => |int| &.{ opWord(.type_int, 4), t.id, @intFromEnum(int.width), @intFromBool(int.signed) },
         .float => |width| &.{ opWord(.type_float, 3), t.id, @intFromEnum(width) },
         .vector => |vector| &.{ opWord(.type_vector, 4), t.id, vector.component_id, @intFromEnum(vector.len) },
-        .array => |array| &.{ opWord(.type_array, 4), t.id, array.component_id, array.len },
+        .array => |array| &.{
+            opWord(.type_array, 4),
+            t.id,
+            array.component_id,
+            for (self.array_length_constants.items) |l| (if (l.val == array.len) {
+                if (!l.generated) try result.appendSlice(&.{
+                    opWord(.constant, 4),
+                    try self.typeID(.{ .int = .{ .width = .word, .signed = false } }),
+                    l.id,
+                    array.len,
+                });
+                break l.id;
+            }) else unreachable,
+        },
         .pointer => |pointer| &.{ opWord(.type_pointer, 4), t.id, @intFromEnum(pointer.storage_class), pointer.pointed_id },
         .function => |function| blk: {
             try result.appendSlice(&.{
@@ -167,6 +194,14 @@ pub fn generate(parser: *Parser) Error![]WORD {
                 function.rtype_id,
             });
             break :blk function.arg_type_ids;
+        },
+        .@"struct" => |@"struct"| blk: {
+            try result.appendSlice(&.{
+                opWord(.type_struct, @truncate(2 + @"struct".len)),
+                t.id,
+            });
+            std.debug.print("struct field ids: {any}\n", .{@"struct"});
+            break :blk @"struct";
         },
 
         else => unreachable,
@@ -193,8 +228,9 @@ pub fn generate(parser: *Parser) Error![]WORD {
         if (gv.initializer != 0) try result.append(gv.initializer);
     }
 
-    // std.debug.print("IOORDER: {any}\n", .{self.io_order.items});
     try result.appendSlice(self.main_buffer.items);
+
+    // printInstructions(result.items[5..]);
     return try result.toOwnedSlice();
 }
 fn versionWord(major: u8, minor: u8) WORD {
@@ -312,7 +348,6 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             load = try self.generateExpression(var_decl.initializer);
         },
     };
-    // if (initializer != 0) load = initializer;
 
     if (storage_class == .function) {
         try self.current_variable_buffer.appendSlice(self.arena, &.{ opWord(.variable, if (initializer == 0) 4 else 5), ptr_type_id, var_id, @intFromEnum(StorageClass.function) });
@@ -364,6 +399,7 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.E
     for (entry_point.body.items) |statement| try self.generateStatment(statement);
 
     self.entry_points.items[index].interface_ids = try interface_ids.toOwnedSlice(self.arena);
+    std.debug.print("interfaces: {any}\n", .{self.entry_points.items[self.entry_points.items.len - 1].interface_ids});
 
     try self.addWords(&.{ opWord(.@"return", 1), opWord(.function_end, 1) });
 
@@ -377,8 +413,8 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.E
     try self.main_buffer.appendSlice(self.arena, &.{ opWord(.label, 2), self.newID() });
     try self.main_buffer.appendSlice(self.arena, variable_buffer.items);
     try self.main_buffer.appendSlice(self.arena, buffer.items);
-    std.debug.print("MBLEN: {d}\n", .{self.main_buffer.items.len});
     buffer.deinit(self.arena);
+    variable_buffer.deinit(self.arena);
 }
 fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
     const result_type_id = try self.convertTypeID(try self.parser.typeOf(expr));
@@ -389,49 +425,17 @@ fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
         .u_op => |u_op| try self.generateUOp(u_op, result_type_id),
         .call => |call| try self.generateCall(call, result_type_id),
         .constructor => |constructor| try self.generateConstructor(constructor.components, result_type_id),
-        .identifier, .indexing, .member_access => try self.generatePointerLoad(expr),
-        .builtin => |builtin| if (builtin == .variable) try self.generateBuiltinVariable(builtin.variable) else @panic("gen builtin function"),
+        .identifier, .indexing, .member_access => try self.generatePointerLoad(try self.generatePointer(expr)),
+        .builtin => |builtin| if (builtin == .variable) try self.generatePointerLoad(try self.generateBuiltinVariablePointer(builtin.variable)) else @panic("gen builtin function"),
         else => {
             std.debug.print("Cannot gen expr: {f}\n", .{expr});
             @panic("idk how to gen that expr");
         },
     };
-    std.debug.print("id: {d}, Expr: {f}\n", .{ result, expr });
     return result;
 }
-fn generateBuiltinVariable(self: *Generator, bv: bi.BuiltinVariable) Error!WORD {
-    return switch (bv) {
-        .vertex_id => blk: {
-            if (self.builtin_decoration_ids.vertex_id != 0)
-                break :blk self.builtin_decoration_ids.vertex_id;
-            const var_id = self.newID();
-            const type_id = try self.typeID(.{ .int = .{ .width = .word, .signed = true } });
-            try self.global_vars.append(self.arena, .{
-                .type_id = try self.typeID(.{ .pointer = .{
-                    .pointed_id = type_id,
-                    .storage_class = .input,
-                } }),
-                .id = var_id,
-                .storage_class = .input,
-            });
-            try self.decorations.appendSlice(self.arena, &.{
-                opWord(.decorate, 4),
-                var_id,
-                @intFromEnum(Decoration.builtin),
-                @intFromEnum(BuiltinDecoration.vertex_id),
-            });
-            break :blk try self.generateVariableLoadID(
-                type_id,
-                self.newID(),
-                var_id,
-            );
-        },
-        else => @panic("unknown builtin variable"),
-    };
-}
 
-fn generatePointerLoad(self: *Generator, expr: Expression) Error!WORD {
-    const ptr_info = try self.generatePointer(expr);
+fn generatePointerLoad(self: *Generator, ptr_info: PointerInfo) Error!WORD {
     if (ptr_info.load.* != 0) return ptr_info.load.*;
 
     const type_id = self.typeFromID(ptr_info.ptr_type_id).pointer.pointed_id;
@@ -458,11 +462,6 @@ fn generatePointerRecursive(self: *Generator, expr: Expression, list: *List(WORD
             if (!self.inGlobalScope()) for (self.current_name_mappings.items) |*nm|
                 if (util.strEql(identifier, nm.name)) {
                     if (nm.id == 0 and depth > 0) { // generate variable for found constant
-                        // .identifier => |identifier| initializer = for (self.global_vars.items) |gv| (if (util.strEql(gv.name, identifier)) break gv.id) else 0,
-                        // .value => |value| {
-                        //     if (!var_decl.initializer.isEmpty()) initializer = try self.generateValue(value);
-                        // },
-                        //TODO: decorate with constant
                         const var_id = self.newID();
                         const ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = nm.type_id, .storage_class = .function } });
 
@@ -476,16 +475,14 @@ fn generatePointerRecursive(self: *Generator, expr: Expression, list: *List(WORD
                             var_id,
                             @intFromEnum(StorageClass.function),
                         });
+
                         if (initialize) {
                             try self.current_variable_buffer.append(self.arena, nm.load);
-                        } else {
-                            try self.addWords(&.{ opWord(.store, 3), var_id, nm.load });
-                        }
+                        } else try self.addWords(&.{ opWord(.store, 3), var_id, nm.load });
 
                         nm.id = var_id;
                         nm.type_id = ptr_type_id;
                     }
-                    std.debug.print("gen pointer '{s}', T: {any}\n", .{ identifier, self.typeFromID(nm.type_id) });
 
                     break :blk .{ .ptr_type_id = nm.type_id, .id = nm.id, .load = &nm.load };
                 };
@@ -493,15 +490,13 @@ fn generatePointerRecursive(self: *Generator, expr: Expression, list: *List(WORD
             break :blk for (self.global_vars.items) |*gv| {
                 if (util.strEql(identifier, gv.name)) {
                     try self.addInterfaceID(gv.id);
-                    std.debug.print("GLOB: {s}, T: {any}\n", .{ gv.name, self.typeFromID(gv.type_id) });
                     break .{ .ptr_type_id = gv.type_id, .id = gv.id, .load = &gv.load };
                 }
             } else @panic("couldnt find variable by name somehow?");
         },
         .indexing => |indexing| blk: {
             const ptr_info = try self.generatePointerRecursive(indexing.target.*, list, depth + 1);
-            std.debug.print("ITARGET TYPE: [{d}]{any}\n", .{ ptr_info.ptr_type_id, self.typeFromID(ptr_info.ptr_type_id) });
-            const result_type_id = try self.convertTypeID((try self.parser.typeOf(.{ .indexing = indexing })).constructorStructure().component);
+            const result_type_id = try self.convertTypeID(try self.parser.typeOf(.{ .indexing = indexing }));
             const type_id = try self.typeID(.{ .pointer = .{
                 .pointed_id = result_type_id,
                 .storage_class = self.typeFromID(ptr_info.ptr_type_id).pointer.storage_class,
@@ -511,16 +506,88 @@ fn generatePointerRecursive(self: *Generator, expr: Expression, list: *List(WORD
             break :blk .{ .id = ptr_info.id, .ptr_type_id = type_id };
         },
         .builtin => |builtin| if (builtin == .variable)
-            .{ .id = 52, .ptr_type_id = try self.typeID(.{ .pointer = .{
-                .pointed_id = try self.convertTypeID(builtin.variable.typeOf()),
-                .storage_class = if (builtin.variable.ioDirection() == .in) .input else .output,
-            } }) }
+            try self.generateBuiltinVariablePointer(builtin.variable)
         else
             unreachable,
         else => @panic("cant point to that"),
     };
 }
-const PointerInfo = struct { id: WORD, ptr_type_id: WORD, load: *WORD = @constCast(&@as(u32, 0)) };
+fn generateBuiltinVariablePointer(self: *Generator, bv: bi.BuiltinVariable) Error!PointerInfo {
+    return switch (bv) {
+        .position, .point_size, .cull_distance => blk: {
+            const member: WORD = if (bv == .position) 0 else if (bv == .point_size) 1 else 2;
+            const member_value: Parser.Value = .{ .type = tp.u32_type, .payload = .{ .wide = member } };
+            const ptr_info = &self.builtin_pointer_infos.per_vertex;
+            const load: *WORD = ([3]*WORD{
+                &ptr_info.position_load,
+                &ptr_info.point_size_load,
+                &ptr_info.cull_distance_load,
+            })[member];
+            const storage_class: StorageClass = .output;
+            const ptr_type_id = try self.typeID(.{ .pointer = .{
+                .pointed_id = try self.convertTypeID(bv.typeOf()),
+                .storage_class = storage_class,
+            } });
+
+            if (ptr_info.ptr.id != 0) break :blk .{ .ptr_type_id = ptr_type_id, .load = load };
+
+            const float_type_id = try self.typeID(.{ .float = .word });
+            self.builtin_pointer_infos.per_vertex.type_id_storage[0] = try self.typeID(.{ .vector = .{ .len = ._4, .component_id = float_type_id } });
+            self.builtin_pointer_infos.per_vertex.type_id_storage[1] = float_type_id;
+            self.builtin_pointer_infos.per_vertex.type_id_storage[2] = try self.typeID(.{ .array = .{ .len = 1, .component_id = float_type_id } });
+            const per_vertex_type_id = try self.typeID(.{ .@"struct" = &self.builtin_pointer_infos.per_vertex.type_id_storage });
+
+            const per_vertex_ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = per_vertex_type_id, .storage_class = storage_class } });
+            const var_id = self.newID();
+            ptr_info.ptr = .{ .id = var_id, .ptr_type_id = per_vertex_ptr_type_id };
+            try self.global_vars.append(self.arena, .{
+                .type_id = per_vertex_ptr_type_id,
+                .id = var_id,
+                .storage_class = storage_class,
+            });
+            try self.decorations.appendSlice(self.arena, &.{ opWord(.decorate, 3), per_vertex_type_id, @intFromEnum(Decoration.block) });
+            try self.decorations.appendSlice(self.arena, &.{ opWord(.member_decorate, 5), per_vertex_type_id, 0, @intFromEnum(Decoration.builtin), @intFromEnum(BuiltinDecoration.position) });
+            try self.decorations.appendSlice(self.arena, &.{ opWord(.member_decorate, 5), per_vertex_type_id, 1, @intFromEnum(Decoration.builtin), @intFromEnum(BuiltinDecoration.point_size) });
+            try self.decorations.appendSlice(self.arena, &.{ opWord(.member_decorate, 5), per_vertex_type_id, 2, @intFromEnum(Decoration.builtin), @intFromEnum(BuiltinDecoration.cull_distance) });
+
+            try self.current_interface_ids.append(self.arena, var_id);
+
+            const id = try self.addWordsAndReturn2(&.{
+                opWord(.access_chain, 5),
+                ptr_type_id,
+                self.newID(),
+                var_id,
+                try self.generateValue(member_value),
+            });
+            break :blk .{ .id = id, .ptr_type_id = ptr_type_id, .load = load };
+        },
+        .vertex_id => blk: {
+            const ptr_info = &self.builtin_pointer_infos.vertex_id;
+            if (ptr_info.id != 0) break :blk ptr_info.*;
+
+            const var_id = self.newID();
+            const type_id = try self.typeID(.{ .int = .{ .width = .word, .signed = true } });
+            try self.global_vars.append(self.arena, .{
+                .type_id = try self.typeID(.{ .pointer = .{
+                    .pointed_id = type_id,
+                    .storage_class = .input,
+                } }),
+                .id = var_id,
+                .storage_class = .input,
+            });
+            try self.decorations.appendSlice(self.arena, &.{
+                opWord(.decorate, 4),
+                var_id,
+                @intFromEnum(Decoration.builtin),
+                @intFromEnum(BuiltinDecoration.vertex_id),
+            });
+            // std.debug.print("DECLEN: \n", .{});
+            try self.current_interface_ids.append(self.arena, var_id);
+            break :blk .{ .id = var_id, .ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = type_id, .storage_class = .input } }) };
+        },
+    };
+}
+const PointerInfo = struct { id: WORD = 0, ptr_type_id: WORD = 0, load: *WORD = @constCast(&@as(u32, 0)) };
 
 fn generateConstructor(self: *Generator, components: []Expression, result_type_id: WORD) Error!WORD {
     const id = self.newID();
@@ -736,11 +803,15 @@ fn convertType(self: *Generator, from: Parser.Type) Error!Type {
             .component_id = try self.convertTypeID(.{ .scalar = vector.component }),
         } },
         .entrypoint => .{ .function = .{ .rtype_id = try self.typeID(.void) } },
+
         .function => |function| .{ .function = .{
             .rtype_id = try self.convertTypeID(function.rtype.*),
             .arg_type_ids = try self.convertTypeSliceToIDS(function.arg_types),
         } },
-        .array => |array| .{ .array = .{ .len = array.len, .component_id = try self.convertTypeID(array.component.*) } },
+        .array => |array| .{ .array = .{
+            .len = array.len,
+            .component_id = try self.convertTypeID(array.component.*),
+        } },
 
         else => {
             std.debug.print("TYPE: {f}\n", .{from});
@@ -760,7 +831,12 @@ fn typeID(self: *Generator, @"type": Type) Error!WORD {
     return for (self.type_decls.items) |td| {
         if (Type.eql(td.type, @"type")) break td.id;
     } else blk: {
+        if (@"type" == .array) {
+            _ = try self.typeID(.{ .int = .{ .width = .word, .signed = false } });
+            try self.array_length_constants.append(self.arena, .{ .id = self.newID(), .val = @"type".array.len });
+        }
         const id = self.newID();
+
         try self.type_decls.append(self.arena, .{ .type = @"type", .id = id });
         break :blk id;
     };
@@ -784,6 +860,8 @@ const Type = union(enum) {
     function: FunctionType,
     pointer: PointerType,
 
+    @"struct": []const WORD,
+
     pub fn eql(a: Type, b: Type) bool {
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
         return switch (a) {
@@ -798,6 +876,7 @@ const Type = union(enum) {
                     false,
             .pointer => |pointer| pointer.pointed_id == b.pointer.pointed_id and pointer.storage_class == b.pointer.storage_class,
             .array => |array| array.component_id == b.array.component_id and array.len == b.array.len,
+            .@"struct" => |st| std.mem.eql(WORD, st, b.@"struct"),
             else => @panic("idk how to compare that type"),
         };
     }
@@ -808,6 +887,7 @@ const Type = union(enum) {
             .vector => |vector| @intFromEnum(vector.len),
             .matrix => |matrix| @intFromEnum(matrix.column_count),
             .array => |array| array.len,
+            .@"struct" => |st| @truncate(st.len),
             else => 1,
         };
     }
@@ -842,12 +922,14 @@ const Op = enum(WORD) {
     type_array = 28,
     type_pointer = 32,
     type_function = 33,
+    type_struct = 30,
 
     capability = 17,
     entry_point = 15,
     execution_mode = 16,
     memory_model = 14,
     decorate = 71,
+    member_decorate = 72,
 
     function = 54,
     label = 248,
@@ -878,7 +960,17 @@ const GlslStdExtOp = enum(WORD) {
     reflect = 71,
     pow = 26,
 };
-const BuiltinDecorationIDS = util.StructFromEnum(BuiltinDecoration, WORD, 0);
+const BuiltinPointerInfos = struct {
+    per_vertex: struct {
+        ptr: PointerInfo = .{},
+        position_load: WORD = 0,
+        point_size_load: WORD = 0,
+        cull_distance_load: WORD = 0,
+
+        type_id_storage: [3]WORD = @splat(0),
+    } = .{},
+    vertex_id: PointerInfo = .{},
+};
 const BuiltinDecoration = enum(WORD) {
     position = 0,
     point_size = 1,
