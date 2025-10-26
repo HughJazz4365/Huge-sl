@@ -164,6 +164,7 @@ pub fn generate(parser: *Parser) Error![]WORD {
         });
         ptr.* += 1;
     }
+    std.debug.print("G: {any}, L: {any}\n", .{ global_offsets, local_offsets });
     try result.appendSlice(self.decorations.items);
     //locations, bindings, deskriptor_sets
     for (self.type_decls.items) |t| try result.appendSlice(switch (t.type) { //types
@@ -579,7 +580,7 @@ fn generateBuiltinVariablePointer(self: *Generator, bv: bi.BuiltinVariable) Erro
                 opWord(.decorate, 4),
                 var_id,
                 @intFromEnum(Decoration.builtin),
-                @intFromEnum(BuiltinDecoration.vertex_id),
+                @intFromEnum(BuiltinDecoration.vertex_index),
             });
             // std.debug.print("DECLEN: \n", .{});
             try self.current_interface_ids.append(self.arena, var_id);
@@ -977,8 +978,10 @@ const BuiltinDecoration = enum(WORD) {
     clip_distance = 3,
     cull_distance = 4,
 
-    vertex_id = 5,
-    instance_id = 6,
+    // vertex_id = 5,
+    // instance_id = 6,
+    vertex_index = 42,
+    instance_index = 43,
     primitive_id = 7,
     invocation_id = 8,
 };
