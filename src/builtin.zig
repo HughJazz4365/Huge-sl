@@ -97,6 +97,12 @@ pub const BuiltinVariable = enum {
     vertex_id,
     // invocation_id,
 
+    pub fn ioDirection(bv: BuiltinVariable) enum { in, out } {
+        return switch (bv) {
+            .position => .out,
+            else => .in,
+        };
+    }
     pub fn isMutable(bv: BuiltinVariable) bool {
         return switch (bv) {
             .position => true,
