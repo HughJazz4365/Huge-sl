@@ -1,4 +1,1 @@
-const main = entrypoint(.fragment){
-const brightness = 0.8
-
-const t = 0.8
+mut a: u32,const b, const c = , a + 2, b + 1 

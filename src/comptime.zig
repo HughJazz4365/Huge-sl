@@ -772,7 +772,7 @@ pub fn implicitCastValue(value: Value, target: Type) Error!Value {
     if (value.type.eql(target)) return value;
 
     return switch (target) {
-        .compint => if (value.type == .compfloat)
+        .compint => if (value.type == .compfloat and isWhole(util.extract(CF, value.payload.wide)))
             .{ .type = .compint, .payload = .{ .wide = util.fit(WIDE, @as(CI, @intFromFloat(blk: {
                 const float = util.extract(CF, value.payload.wide);
                 break :blk if (@floor(float) == float) float else return Error.CannotImplicitlyCast;
@@ -791,16 +791,23 @@ pub fn implicitCastValue(value: Value, target: Type) Error!Value {
                         comptime (tp.Scalar{ .type = t, .width = w }).ToZig(),
                         util.extract(CI, value.payload.wide),
                     )),
-                    .compfloat => util.fit(WIDE, util.numericCast(
-                        comptime (tp.Scalar{ .type = t, .width = w }).ToZig(),
-                        util.extract(CF, value.payload.wide),
-                    )),
+                    .compfloat => if (t != .float and !isWhole(util.extract(CF, value.payload.wide)))
+                        return Error.CannotImplicitlyCast
+                    else
+                        util.fit(WIDE, util.numericCast(
+                            comptime (tp.Scalar{ .type = t, .width = w }).ToZig(),
+                            util.extract(CF, value.payload.wide),
+                        )),
                     else => Error.CannotImplicitlyCast,
                 },
             },
         } } },
         else => Error.CannotImplicitlyCast,
     };
+}
+fn isWhole(v: anytype) bool {
+    const epsilon = 0e-10;
+    return std.math.approxEqAbs(@TypeOf(v), v, @floor(v), epsilon);
 }
 const powValues = createEvalNumericBinOpSameTypeFunction(void, struct {
     pub fn pow(_: void, @"type": Type, left: anytype, right: anytype, result: *Value) void {

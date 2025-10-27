@@ -303,6 +303,7 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
         .out => .output,
         .@"const" => {
             const val = try self.generateExpression(var_decl.initializer);
+            if (self.inGlobalScope()) return; //TODO: ????
             try self.current_name_mappings.append(self.arena, .{
                 .type_id = try self.convertTypeID(var_decl.type),
                 .id = 0,

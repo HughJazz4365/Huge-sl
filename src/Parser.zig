@@ -38,12 +38,14 @@ pub const Error = error{
     RepeatingArgumentNames,
     VariableTypeAndQualifierDontMatch,
     UnexpectedInitializer,
+    NoTypeVariable,
 
     MutatingImmutableVariable,
     UndeclaredVariable,
     InvalidCall,
     InvalidBuiltin,
     NonMatchingArgumentCount,
+    NonMatchingVariableInitializerCount,
 
     CannotImplicitlyCast,
     CannotExplicitlyCast,
@@ -136,6 +138,8 @@ pub fn create(self: *Parser, T: type) !*T {
 }
 
 pub inline fn addStatement(self: *Parser, statement: Statement) Error!void {
+    std.debug.print("SSS: {f}\n", .{statement});
+
     try self.current_scope.addStatement(self, statement);
     try self.trackReferencesInStatement(statement, .track);
 }
@@ -148,37 +152,37 @@ pub fn isStatementComplete(self: *Parser, statement: Statement) Error!bool {
     };
 }
 
-pub fn parseStatement(self: *Parser) Error!?Statement {
+pub fn parseStatement(self: *Parser) Error!usize {
     var token = try self.tokenizer.peek();
     if (token == .endl) {
         self.tokenizer.skip();
         token = try self.tokenizer.peek();
     }
-    if (self.defaultShouldStop(token) catch unreachable) return null;
+    if (self.defaultShouldStop(token) catch unreachable) return 0;
 
-    const statement: ?Statement = switch (token) {
-        .eof => null,
-        .@"const", .mut, .uniform, .push, .shared, .out, .in => blk: {
-            self.tokenizer.skip();
-            break :blk .{ .var_decl = try self.parseVarDecl(token) };
-        },
-
+    return switch (token) {
+        .eof => 0,
+        .@"const", .mut, .uniform, .push, .shared, .out, .in => self.parseVarDecls(),
         .@"return" => blk: {
             self.tokenizer.skip();
             const peek = try self.tokenizer.peek();
             if (self.defaultShouldStop(peek) catch unreachable) {
                 if (peek != .@"}") self.tokenizer.skip();
-                break :blk .{ .@"return" = .empty };
-            }
-            break :blk .{ .@"return" = try self.implicitCast(
+                try self.addStatement(.{ .@"return" = .empty });
+            } else try self.addStatement(.{ .@"return" = try self.implicitCast(
                 try self.parseExpression(defaultShouldStop, false),
                 self.current_scope.result_type,
-            ) };
+            ) });
+
+            break :blk 1;
         },
 
-        else => try self.parseAssignmentOrIgnore(),
+        else => blk: {
+            const statement = try self.parseAssignmentOrIgnore();
+            try self.addStatement(statement);
+            break :blk 1;
+        },
     };
-    return statement;
 }
 pub fn trackReferencesInStatement(self: *Parser, statement: Statement, ref_type: Scope.DeclReferenceType) Error!void {
     switch (statement) {
@@ -234,55 +238,117 @@ fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
         .value = try self.implicitCast(value, try self.typeOf(target)),
     } };
 }
-fn parseVarDecl(self: *Parser, token: Token) Error!VariableDeclaration {
-    const qualifier = try self.parseQualifier(token);
+fn parseVarDecls(self: *Parser) Error!usize {
+    var list: List(VariableDeclaration) = .empty;
+    defer self.current_scope.multi_variable_initialization = null;
 
-    const name_token = try self.tokenizer.next();
-    if (name_token != .identifier)
-        return self.errorOutFmt(Error.UnexpectedToken, "Expected variable name after qualifier", .{});
+    var token = try self.tokenizer.next();
 
-    blk: {
-        _ = self.current_scope.getVariableReference(self, name_token.identifier) catch break :blk;
-        return self.errorOutFmt(Error.VariableRedeclaration, "Variable redeclaration: '{s}'", .{name_token.identifier});
-    }
+    var qualifier: Qualifier = try self.parseQualifier(token);
+    token = try self.tokenizer.next();
 
-    var @"type": Type = .unknownempty;
-
-    //type is explicitly specified
-    if (try self.tokenizer.peek() == .@":") {
-        self.tokenizer.skip();
-
-        @"type" = try self.asTypeCreate(try self.implicitCast(
-            try self.refine(try self.parseExpressionSide(true)),
-            .type,
-        ));
-    }
-
-    const initializer_expr: Expression = switch (try self.tokenizer.peek()) {
-        .endl, .eof => if (qualifier == .@"const")
-            return self.errorOutDefault(Error.MissingInitializer)
-        else
-            .empty,
-        .@"=" => blk: {
-            self.tokenizer.skip();
-
-            if (!qualifier.canHaveInitializer())
-                return self.errorOutFmt(Error.UnexpectedInitializer, "Variable with \'{s}\' qualifier cant have initializers", .{@tagName(qualifier)});
-
-            const expr = try self.implicitCast(try self.parseExpression(defaultShouldStop, false), @"type");
-            if (@"type".isEmpty()) @"type" = try self.typeOf(expr);
-            break :blk expr;
+    var last: enum { qual, name, type, comma } = .qual;
+    sw: switch (token) {
+        .@"," => {
+            if (last != .name and last != .type) return self.errorUnexpectedToken(token);
+            last = .comma;
+            token = try self.tokenizer.next();
+            continue :sw token;
         },
-        else => return self.errorOut(Error.UnexpectedToken),
-    };
 
-    try self.matchVariableTypeWithQualifier(@"type", qualifier);
-    return .{
-        .qualifier = qualifier,
-        .name = name_token.identifier,
-        .type = @"type",
-        .initializer = initializer_expr,
-    };
+        .in, .out, .@"const", .mut, .uniform, .push, .shared => {
+            qualifier = try self.parseQualifier(token);
+            if (last != .comma) return self.errorUnexpectedToken(token);
+            last = .qual;
+            token = try self.tokenizer.next();
+            continue :sw token;
+        },
+        .identifier => |identifier| {
+            if (last != .comma and last != .qual) return self.errorUnexpectedToken(token);
+            last = .name;
+            blk: {
+                _ = self.current_scope.getVariableReference(self, identifier) catch break :blk;
+                return self.errorOut(Error.VariableRedeclaration);
+            }
+            try list.append(self.arena.allocator(), .{
+                .qualifier = qualifier,
+                .name = identifier,
+            });
+            token = try self.tokenizer.next();
+            continue :sw token;
+        },
+        .@":" => {
+            if (last != .name) return self.errorUnexpectedToken(token);
+
+            const type_expr = try self.refine(try self.parseExpressionSide(true));
+            const @"type" = try self.asTypeCreate(type_expr);
+
+            var index = list.items.len - 1;
+            while (list.items[index].type.isEmpty()) : (index -= 1) {
+                list.items[index].type = @"type";
+                if (index == 0) break;
+            }
+            last = .type;
+            token = try self.tokenizer.next();
+            continue :sw token;
+        },
+        .@"=" => {
+            try self.skipEndl();
+
+            if (last != .name and last != .type) return self.errorUnexpectedToken(token);
+            token = try self.tokenizer.peek();
+            var index: usize = 0;
+            var expr: Expression = .empty;
+
+            sw2: switch (token) {
+                .@"," => {
+                    self.tokenizer.skip();
+                    try self.skipEndl();
+                    if (index + 1 >= list.items.len) return self.errorOut(Error.NonMatchingVariableInitializerCount);
+
+                    if (list.items[index].type.isEmpty()) return self.errorOut(Error.NoTypeVariable);
+                    self.current_scope.multi_variable_initialization = list.items[0 .. index + 1];
+                    index += 1;
+
+                    token = try self.tokenizer.peek();
+                    continue :sw2 token;
+                },
+                else => if (try self.defaultShouldStop(token)) {
+                    if (expr.isEmpty()) return self.errorUnexpectedToken(token);
+                    if (index == 0 and list.items.len > 1) {
+                        for (list.items[1..]) |*vd| vd.initializer = expr;
+                    }
+                    break :sw;
+                } else {
+                    const initializer = try self.parseExpression(initializerShouldStop, false);
+                    list.items[index].initializer = initializer;
+
+                    //
+                    if (list.items[index].type.isEmpty()) list.items[index].type = if (list.items[index].initializer.isEmpty())
+                        return self.errorOut(Error.NoTypeVariable)
+                    else
+                        try self.typeOf(list.items[index].initializer);
+                    try self.matchVariableTypeWithQualifier(list.items[index].type, list.items[index].qualifier);
+                    list.items[index].initializer = try self.implicitCast(list.items[index].initializer, list.items[index].type);
+                    //
+
+                    self.current_scope.multi_variable_initialization = list.items[0 .. index + 1];
+                    if (expr.isEmpty()) expr = initializer;
+
+                    token = try self.tokenizer.peek();
+                    continue :sw2 token;
+                },
+            }
+        },
+        else => {
+            if (try self.defaultShouldStop(token)) break :sw;
+            return self.errorUnexpectedToken(token);
+        },
+    }
+
+    for (list.items) |*vd| try self.addStatement(.{ .var_decl = vd.* });
+
+    return list.items.len;
 }
 fn matchVariableTypeWithQualifier(self: *Parser, @"type": Type, qualifier: Qualifier) Error!void {
     if (@"type".isComptimeOnly() and qualifier != .@"const") return self.errorOut(Error.VariableTypeAndQualifierDontMatch);
@@ -315,8 +381,8 @@ pub const Assignment = struct {
 pub const VariableDeclaration = struct {
     qualifier: Qualifier,
     name: []const u8,
-    type: Type,
-    initializer: Expression,
+    type: Type = .unknownempty,
+    initializer: Expression = .empty,
     reference_count: u32 = 0,
 
     pub fn canBeOmitted(self: VariableDeclaration) bool {
@@ -393,7 +459,9 @@ fn argShouldStop(_: *Parser, token: Token) !bool {
 fn constructorShouldStop(_: *Parser, token: Token) !bool {
     return token == .@"}" or token == .@",";
 }
-
+fn initializerShouldStop(self: *Parser, token: Token) !bool {
+    return token == .@"," or try self.defaultShouldStop(token);
+}
 fn defaultShouldStop(self: *Parser, token: Token) !bool {
     return token == .endl or token == .eof or (token == .@"}" and !self.inGlobalScope());
 }
@@ -683,8 +751,10 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
     const last_scope = self.current_scope;
     self.current_scope = scope;
     defer self.current_scope = last_scope;
-    while (try self.parseStatement()) |statement| {
-        try self.addStatement(statement);
+    while (true) {
+        const added_statement_count = try self.parseStatement();
+        if (added_statement_count == 0) break;
+
         var peek = try self.tokenizer.peek();
         if (peek == .endl) {
             self.tokenizer.skip();
@@ -699,6 +769,7 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
     } else if (!self.inGlobalScope()) return self.errorOut(Error.UnclosedScope);
 
     //remove useless statements
+    // if (true) return;
     const body = self.current_scope.body();
     var i: usize = 0;
     while (i < body.len) {
@@ -1012,6 +1083,7 @@ pub const Scope = struct {
 
     parent: *Scope = undefined,
     result_type: Type = Type{ .void = {} },
+    multi_variable_initialization: ?[]VariableDeclaration = null,
 
     pub const DeclReferenceType = enum { track, untrack };
     pub inline fn body(self: *Scope) *[]Statement {
@@ -1022,22 +1094,17 @@ pub const Scope = struct {
     }
 
     pub inline fn getVariableReference(self: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
-        return try self.getVariableReferenceFn(self, parser, name);
+        return self.getVariableReferenceFn(self, parser, name) catch |err| switch (err) {
+            Error.UndeclaredVariable => return if (self.multi_variable_initialization) |m| //
+                (for (m) |*vd| (if (util.strEql(name, vd.name)) break vd.variableReference()) else Error.UndeclaredVariable)
+            else
+                Error.UndeclaredVariable,
+            else => return err,
+        };
     }
 
     pub inline fn trackReference(self: *Scope, name: []const u8, ref_type: DeclReferenceType) Error!void {
         try self.trackReferenceFn(self, name, ref_type);
-    }
-    pub fn defaltGetVariableReference(T: type) fn (*Scope, *Parser, []const u8) Error!VariableReference {
-        return struct {
-            pub fn f(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
-                const impl: *T = @fieldParentPtr("scope", scope);
-                return for (impl.body.items) |*statement| {
-                    if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
-                        break statement.var_decl.variableReference();
-                } else try scope.parent.getVariableReference(parser, name);
-            }
-        }.f;
     }
 };
 pub const VariableReference = struct {
@@ -1061,6 +1128,7 @@ fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
         else => Error.UnexpectedToken,
     };
 }
+
 pub const Qualifier = union(enum) {
     @"const",
     mut,

@@ -51,8 +51,9 @@ pub fn typeOfBuiltInCall(self: *Parser, bf: BuiltinFunction, args: []Expression)
     if (args.len != bf.argumentCount()) return self.errorOut(Error.NonMatchingArgumentCount);
     const @"type": Type = switch (bf) {
         .col_hex => vec3_type,
-        .reflect => try self.typeOf(args[0]),
+
         .array_type => Type{ .type = {} },
+        else => try self.typeOf(args[0]),
     };
     // std.debug.print("@{s} => {f}\n", .{ @tagName(bf), @"type" });
 
@@ -69,6 +70,8 @@ pub fn getBuiltin(name: []const u8) Error!Builtin {
 }
 const name_map: std.StaticStringMap(Builtin) = .initComptime(.{
     .{ "reflect", Builtin{ .function = .reflect } },
+    .{ "transpose", Builtin{ .function = .transpose } },
+    .{ "inverse", Builtin{ .function = .inverse } },
     .{ "colHex", Builtin{ .function = .col_hex } },
 
     .{ "position", Builtin{ .variable = .position } },
@@ -83,12 +86,13 @@ const BuiltinFunction = enum {
     col_hex,
     reflect,
     array_type,
+    transpose,
+    inverse,
+
     pub fn argumentCount(self: BuiltinFunction) usize {
         return switch (self) {
-            .col_hex => 1,
-            .reflect => 2,
-            .array_type => 2,
-            // else => 0,
+            .reflect, .array_type => 2,
+            else => 1,
         };
     }
 };

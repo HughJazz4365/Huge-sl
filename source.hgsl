@@ -22,8 +22,10 @@ const frag = entrypoint(.fragment){
 
 const vert = entrypoint(.vertex){
 	push model, vp : mat4
-	in in_pos, in_normal, out out_normal, world_pos: vec3 = ,, ;(@transpose(@inverse(mat3{model})) * in_normal), in_pos;
+	in in_pos, in_normal, out out_normal, world_pos: vec3 = ,, in_normal, in_pos
+	//;(@transpose(@inverse(mat3{model})) * in_normal)
 
-	@position = matrix * pos.xyz1 
+	//@position = vp * (model * pos.xyz1)
+	@position = .{in_pos, 1}
 }
 

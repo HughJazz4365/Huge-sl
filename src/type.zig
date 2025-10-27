@@ -84,7 +84,7 @@ pub const Type = union(enum) {
 
     pub fn isComptimeOnly(self: Type) bool {
         return switch (self) {
-            .void, .type, .unknown, .function, .entrypoint => true,
+            .compint, .compfloat, .void, .type, .unknown, .function, .entrypoint => true,
             else => false,
         };
     }
@@ -166,6 +166,25 @@ pub const Matrix = struct {
     width: BitWidth,
     pub fn columnVector(self: Matrix) Vector {
         return .{ .len = self.m, .component = .{ .type = .float, .width = self.width } };
+    }
+    pub const allMatrixTypes = blk: {
+        var slice: []const Matrix = &.{};
+        for (VectorLen.allVectorLengths) |m|
+            for (VectorLen.allVectorLengths) |n|
+                for (@typeInfo(BitWidth).@"enum".fields) |w| {
+                    const width: BitWidth = @enumFromInt(w.value);
+                    if (width != .word) continue;
+                    slice = slice ++ &[1]Matrix{.{ .m = m, .n = n, .width = width }};
+                };
+        break :blk slice;
+    };
+    pub fn toLiteral(comptime mat: Matrix) []const u8 {
+        if (mat.width != .word) @compileError(std.fmt.comptimePrint(
+            "no builtin literal for matrix with component bitwidth of {d}",
+            .{mat.width},
+        ));
+
+        return "mat" ++ .{'0' + @intFromEnum(mat.m)} ++ "x" ++ .{'0' + @intFromEnum(mat.n)};
     }
 };
 pub const ArrayValue = [*]Parser.ValuePayload;

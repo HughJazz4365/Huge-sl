@@ -157,6 +157,13 @@ fn getTypeLiteralRaw(bytes: []const u8) ?FatToken {
         if (strExtract(bytes, s))
             return .{ .len = s.len, .token = .{ .type_literal = @unionInit(tp.Type, s, {}) } };
     }
+    inline for (comptime tp.Matrix.allMatrixTypes) |m| {
+        const literal = m.toLiteral();
+        if (strExtract(bytes, literal)) {
+            return .{ .len = literal.len, .token = .{ .type_literal = .{ .matrix = m } } };
+        } else if (m.m == m.n and strExtract(bytes, literal[0 .. literal.len - 2]))
+            return .{ .len = literal.len - 2, .token = .{ .type_literal = .{ .matrix = m } } };
+    }
     inline for (comptime tp.Vector.allVectorTypes) |v| {
         const vec_literal = comptime v.toLiteral();
         if (strExtract(bytes, vec_literal))

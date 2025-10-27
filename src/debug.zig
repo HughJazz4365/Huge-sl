@@ -39,6 +39,7 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
             try writer.print("){f}", .{f.rtype.*});
         },
         .array => |array| try writer.print("[{d}]{f}", .{ array.len, array.component }),
+        .matrix => |matrix| try writer.print("mat{d}x{d}", .{ matrix.m, matrix.n }),
         else => try writer.print("{s}", .{@tagName(t)}),
     }
 }
