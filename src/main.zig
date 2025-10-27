@@ -11,7 +11,8 @@ pub fn main() !void {
     var compiler: hgsl.Compiler = .new(null, &out_writer.interface);
     for ([_][]const u8{
         // "func.hgsl",
-        "vertfrag.hgsl",
+        // "vertfrag.hgsl",
+        "../Huge/shader.hgsl",
         // "source.hgsl",
     }) |path| {
         std.debug.print("======{s}=======\n", .{path});

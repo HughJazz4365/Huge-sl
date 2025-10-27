@@ -38,19 +38,16 @@ const glsl_ext_literal_words = blk: {
 };
 const magic_number: WORD = 0x07230203;
 const generator_number: WORD = 0;
-const IOEntry = struct { id: WORD, type_id: WORD, properties: packed struct {
-    global: bool,
-    qual: u2,
-    index: u29,
-} };
+const IOEntry = struct { id: WORD, type_id: WORD, io_type: IOType };
 const IOType = enum(u2) { in, out, uniform, push };
+decorated_global_io_count: usize = 0,
+global_io: []IOEntry,
 
 parser: *Parser,
 current_id: WORD = 2, //0 - reserved,1 - glsl ext for now
 arena: Allocator,
 
 capabilities: Capabilities = .{ .shader = true }, //flag struct
-io_order: List(IOEntry) = .empty,
 decorations: List(u32) = .empty,
 entry_points: List(EntryPoint) = .empty,
 
@@ -88,7 +85,9 @@ pub fn generate(parser: *Parser) Error![]WORD {
     var self: Generator = .{
         .parser = parser,
         .arena = parser.arena.allocator(),
+        .global_io = try parser.arena.allocator().alloc(IOEntry, parser.global_io.items.len),
     };
+
     var result: std.array_list.Managed(WORD) = .init(self.parser.allocator);
     self.current_buffer = &self.main_buffer;
     for (self.parser.global_scope.body.items) |statement| try self.generateStatment(statement);
@@ -149,24 +148,36 @@ pub fn generate(parser: *Parser) Error![]WORD {
         }
     }
 
-    // decorations
+    //decorations
     var global_offsets: [4]WORD = @splat(0);
-    var local_offsets: [4]WORD = @splat(0);
-    for (self.io_order.items) |io| {
-        // const @"type" = self.typeFromID(io.type_id);
-        const ptr: *WORD = &(if (io.properties.global) &global_offsets else &local_offsets)[io.properties.qual];
-        //different kinds of decorates
-        try result.appendSlice(&.{
-            opWord(.decorate, 4),
-            io.id,
-            @intFromEnum(if (io.properties.qual < 2) Decoration.location else Decoration.binding),
-            ptr.* + if (!io.properties.global) global_offsets[io.properties.qual] else 0,
-        });
-        ptr.* += 1;
+    for (self.entry_points.items) |ep| {
+        var local_offsets: [4]WORD = @splat(0);
+        const gc = ep.val_ptr.global_io_count;
+        if (gc <= self.decorated_global_io_count) {
+            for (self.global_io[gc..]) |g| {
+                try result.appendSlice(&.{
+                    opWord(.decorate, 4),
+                    g.id,
+                    @intFromEnum(if (g.io_type == .in or g.io_type == .out) Decoration.location else Decoration.binding),
+                    global_offsets[@intFromEnum(g.io_type)],
+                });
+                global_offsets[@intFromEnum(g.io_type)] += 1;
+            }
+            self.decorated_global_io_count = ep.val_ptr.global_io_count;
+        }
+        for (ep.local_io) |l| {
+            try result.appendSlice(&.{
+                opWord(.decorate, 4),
+                l.id,
+                @intFromEnum(if (l.io_type == .in or l.io_type == .out) Decoration.location else Decoration.binding),
+                local_offsets[@intFromEnum(l.io_type)] + global_offsets[@intFromEnum(l.io_type)],
+            });
+            local_offsets[@intFromEnum(l.io_type)] += 1;
+        }
     }
-    std.debug.print("G: {any}, L: {any}\n", .{ global_offsets, local_offsets });
     try result.appendSlice(self.decorations.items);
-    //locations, bindings, deskriptor_sets
+
+    //locations, bindings, descriptor_sets
     for (self.type_decls.items) |t| try result.appendSlice(switch (t.type) { //types
         .bool => &.{ opWord(.type_bool, 2), t.id },
         .void => &.{ opWord(.type_void, 2), t.id },
@@ -313,26 +324,23 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
     var initializer: WORD = 0;
     var load: WORD = 0;
     io: { //check if we should add io
-        try self.io_order.append(self.arena, .{
-            .id = var_id,
-            .type_id = type_id,
-            .properties = .{
-                .global = self.inGlobalScope(),
-                .qual = @intFromEnum(@as(IOType, switch (var_decl.qualifier) {
-                    .in => .in,
-                    .out => .out,
-                    .push => .push,
-                    .uniform => .uniform,
-                    else => break :io,
-                })),
-                .index = blk: {
-                    if (!self.inGlobalScope())
-                        for (self.entry_points.items[self.entry_points.items.len -| 1].val_ptr.io, 0..) |li, i|
-                            (if (util.strEql(var_decl.name, li)) break :blk @truncate(i));
-                    break :blk for (self.parser.global_io.items, 0..) |gi, i| (if (util.strEql(var_decl.name, gi)) break @truncate(i)) else unreachable;
-                },
-            },
-        });
+        const io_type: IOType = switch (var_decl.qualifier) {
+            .in => .in,
+            .out => .out,
+            .push => .push,
+            .uniform => .uniform,
+            else => break :io,
+        };
+        if (self.inGlobalScope()) {
+            for (self.parser.global_io.items, 0..) |g, i| {
+                if (util.strEql(g, var_decl.name)) self.global_io[i] = .{ .id = var_id, .type_id = type_id, .io_type = io_type };
+            }
+        } else {
+            const entry_point = self.entry_points.items[self.entry_points.items.len - 1];
+            for (entry_point.val_ptr.io, 0..) |l, i| {
+                if (util.strEql(l, var_decl.name)) entry_point.local_io[i] = .{ .id = var_id, .type_id = type_id, .io_type = io_type };
+            }
+        }
     }
 
     if (!var_decl.initializer.isEmpty()) switch (var_decl.initializer) {
@@ -364,11 +372,18 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
 
             .initializer = initializer,
             .load = 0,
+            .entry_point_index = self.currentEntryPointIndex(),
         });
     }
 
     if (!self.inGlobalScope() and initializer == 0 and load != 0)
         try self.addWords(&.{ opWord(.store, 3), var_id, load });
+}
+fn checkEntryPointIndex(self: *Generator, entry_point_index: u32) bool {
+    return ~entry_point_index == 0 or self.currentEntryPointIndex() == entry_point_index;
+}
+fn currentEntryPointIndex(self: *Generator) u32 {
+    return if (!self.inGlobalScope()) @truncate(self.entry_points.items.len - 1) else ~@as(u32, 0);
 }
 
 fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.EntryPoint) Error!void {
@@ -395,9 +410,13 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.E
 
         .id = entry_point_id,
         .exec_model_info = entry_point.exec_model_info,
+        .local_io = try self.arena.alloc(IOEntry, entry_point.io.len),
     });
+    _ = try self.typeID(.void); //so that ids are assigned before function body
+    _ = try self.typeID(.{ .function = .{ .rtype_id = try self.typeID(.void) } });
 
     for (entry_point.body.items) |statement| try self.generateStatment(statement);
+    std.debug.print("IDS: {any}\n", .{interface_ids.items});
 
     self.entry_points.items[index].interface_ids = try interface_ids.toOwnedSlice(self.arena);
     std.debug.print("interfaces: {any}\n", .{self.entry_points.items[self.entry_points.items.len - 1].interface_ids});
@@ -489,7 +508,7 @@ fn generatePointerRecursive(self: *Generator, expr: Expression, list: *List(WORD
                 };
 
             break :blk for (self.global_vars.items) |*gv| {
-                if (util.strEql(identifier, gv.name)) {
+                if (util.strEql(identifier, gv.name) and self.checkEntryPointIndex(gv.entry_point_index)) {
                     try self.addInterfaceID(gv.id);
                     break .{ .ptr_type_id = gv.type_id, .id = gv.id, .load = &gv.load };
                 }
@@ -761,6 +780,7 @@ const EntryPoint = struct {
     id: WORD,
     exec_model_info: ExecutionModelInfo,
     interface_ids: []WORD = &.{},
+    local_io: []IOEntry,
 };
 const GlobalInitializer = struct {
     index: u32,
@@ -768,13 +788,12 @@ const GlobalInitializer = struct {
 };
 const GlobalVariable = struct {
     name: []const u8 = "\x00",
-
     type_id: WORD,
     id: WORD,
     storage_class: StorageClass,
     initializer: WORD = 0,
-
     load: WORD = 0,
+    entry_point_index: u32 = ~@as(u32, 0),
 };
 const NameMapping = struct { name: []const u8, type_id: WORD, id: WORD, load: WORD = 0 };
 
