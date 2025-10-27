@@ -8,12 +8,14 @@ pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
 
-    var compiler: hgsl.Compiler = .new(null, &out_writer.interface);
+    var compiler: hgsl.Compiler = .new(null, &out_writer.interface, .{
+        .optimize = if (builtin.mode == .Debug) .none else .speed,
+    });
     for ([_][]const u8{
         // "test.hgsl",
-        // "vertfrag.hgsl",
         // "../Huge/shader.hgsl",
         "source.hgsl",
+        // "vertfrag.hgsl",
     }) |path| {
         std.debug.print("======{s}=======\n", .{path});
         var timer = try std.time.Timer.start();

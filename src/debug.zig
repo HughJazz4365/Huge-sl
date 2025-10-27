@@ -82,10 +82,10 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
             try writer.print("{f}{{\n", .{value.type});
 
             try writer.print("[local interfaces: ", .{});
-            for (entry_point.io) |i| try writer.print("{s} ", .{i});
+            for (entry_point.io.items) |i| try writer.print("{s} ", .{i});
             try writer.print("]\n[global ios: {d}, local ios: {d}]\n", .{
                 entry_point.global_io_count,
-                entry_point.io.len,
+                entry_point.io.items.len,
             });
 
             for (entry_point.body.items) |statement| try writer.print("{f}\n", .{statement});

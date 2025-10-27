@@ -1,15 +1,3 @@
-//module structure:
-// boilerplate
-// capabilities
-// extension, exstension instruction imports
-// memory model
-// op entry points
-// execution modes
-// // debug
-// decorations
-// types, constants, global variables
-// all functions
-
 const std = @import("std");
 const util = @import("util.zig");
 const bi = @import("builtin.zig");
@@ -18,6 +6,8 @@ const zigbuiltin = @import("builtin");
 const Parser = @import("Parser.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const Generator = @This();
+const root = @import("root.zig");
+const Settings = root.Settings;
 
 const WORD = u32;
 
@@ -147,6 +137,18 @@ pub fn generate(parser: *Parser) Error![]WORD {
             // .compute => 5,
         }
     }
+    //debug
+    if (self.parser.settings.optimize == .none) for (self.global_vars.items) |gv| {
+        try result.appendSlice(&.{ opWord(.name, @truncate(2 + (gv.name.len + 4) / 4)), gv.id });
+        for (0..(gv.name.len + 4) / 4) |wi| {
+            var word: WORD = 0;
+            for (0..4) |i| {
+                const ci = wi * 4 + i;
+                if (ci < gv.name.len) word |= @as(WORD, gv.name[ci]) << @truncate(i * 8);
+            }
+            try result.append(word);
+        }
+    };
 
     //decorations
     var global_offsets: [4]WORD = @splat(0);
@@ -214,8 +216,9 @@ pub fn generate(parser: *Parser) Error![]WORD {
             });
             break :blk @"struct";
         },
+        .matrix => |matrix| &.{ opWord(.type_matrix, 4), t.id, matrix.column_type_id, @intFromEnum(matrix.column_count) },
 
-        else => unreachable,
+        // else => unreachable,
     });
     for (self.constants.items) |c| { //constants
         const @"type" = self.typeFromID(c.type_id);
@@ -337,7 +340,7 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             }
         } else {
             const entry_point = self.entry_points.items[self.entry_points.items.len - 1];
-            for (entry_point.val_ptr.io, 0..) |l, i| {
+            for (entry_point.val_ptr.io.items, 0..) |l, i| {
                 if (util.strEql(l, var_decl.name)) entry_point.local_io[i] = .{ .id = var_id, .type_id = type_id, .io_type = io_type };
             }
         }
@@ -414,7 +417,7 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.E
 
         .id = entry_point_id,
         .exec_model_info = entry_point.exec_model_info,
-        .local_io = try self.arena.alloc(IOEntry, entry_point.io.len),
+        .local_io = try self.arena.alloc(IOEntry, entry_point.io.items.len),
     });
     _ = try self.typeID(.void); //so that ids are assigned before function body
     _ = try self.typeID(.{ .function = .{ .rtype_id = try self.typeID(.void) } });
@@ -833,6 +836,10 @@ fn convertType(self: *Generator, from: Parser.Type) Error!Type {
             .len = array.len,
             .component_id = try self.convertTypeID(array.component.*),
         } },
+        .matrix => |matrix| .{ .matrix = .{
+            .column_count = matrix.n,
+            .column_type_id = try self.typeID(.{ .vector = .{ .len = matrix.m, .component_id = try self.typeID(.{ .float = matrix.width }) } }),
+        } },
 
         else => {
             std.debug.print("TYPE: {f}\n", .{from});
@@ -890,6 +897,7 @@ const Type = union(enum) {
             .float => |float| float == b.float,
             .int => |int| int.width == b.int.width and int.signed == b.int.signed,
             .vector => |vector| vector.len == b.vector.len and vector.component_id == b.vector.component_id,
+            .matrix => |matrix| matrix.column_count == b.matrix.column_count and matrix.column_type_id == b.matrix.column_type_id,
             .function => |function| function.rtype_id == b.function.rtype_id and
                 if (function.arg_type_ids.len == b.function.arg_type_ids.len)
                     (for (function.arg_type_ids, b.function.arg_type_ids) |a_arg, b_arg| (if (a_arg != b_arg) break false) else true)
@@ -898,7 +906,7 @@ const Type = union(enum) {
             .pointer => |pointer| pointer.pointed_id == b.pointer.pointed_id and pointer.storage_class == b.pointer.storage_class,
             .array => |array| array.component_id == b.array.component_id and array.len == b.array.len,
             .@"struct" => |st| std.mem.eql(WORD, st, b.@"struct"),
-            else => @panic("idk how to compare that type"),
+            // else => @panic("idk how to compare that type"),
         };
     }
     pub fn valueWordConsumption(self: Type) WORD {
@@ -927,6 +935,7 @@ fn opWord(op: Op, count: u16) WORD {
     return (@as(WORD, count) << 16) | @intFromEnum(op);
 }
 const Op = enum(WORD) {
+    name = 5,
     constant_true = 41,
     constant_false = 42,
     constant = 43,

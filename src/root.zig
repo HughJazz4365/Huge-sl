@@ -9,9 +9,10 @@ pub fn compileFile(
     allocator: Allocator,
     path: []const u8,
     err_writer: ?*std.Io.Writer,
+    settings: Settings,
 ) ![]u32 {
     const source = try readFile(allocator, path);
-    return try compile(allocator, source, path, err_writer);
+    return try compile(allocator, source, path, err_writer, settings);
 }
 
 pub fn compile(
@@ -19,21 +20,23 @@ pub fn compile(
     source: []const u8,
     path: []const u8,
     err_writer: ?*std.Io.Writer,
+    settings: Settings,
 ) ![]u32 {
     var error_ctx: ErrCtx = .{};
     error_ctx.init(source, path, err_writer);
 
     var tokenizer: Tokenizer = .new(source, &error_ctx);
-    var parser = Parser.parse(allocator, &tokenizer) catch |err| return error_ctx.outputUpdateIfEmpty(err);
+    var parser = Parser.parse(allocator, &tokenizer, settings) catch |err| return error_ctx.outputUpdateIfEmpty(err);
     defer parser.deinit();
 
     return try SpirvGen.generate(&parser);
-    //   return &.{};
 }
+
 pub const Compiler = struct {
     allocator: Allocator,
 
     err_ctx: ErrCtx = .{},
+    settings: Settings,
 
     pub fn compileFile(self: *Compiler, path: []const u8) ![]u32 {
         const source = try readFile(self.allocator, path);
@@ -43,18 +46,32 @@ pub const Compiler = struct {
 
         self.err_ctx.reinit(source, path);
         var tokenizer: Tokenizer = .new(source, &self.err_ctx);
-        var parser = Parser.parse(self.allocator, &tokenizer) catch |err| return self.err_ctx.outputUpdateIfEmpty(err);
+        var parser = Parser.parse(
+            self.allocator,
+            &tokenizer,
+            self.settings,
+        ) catch |err| return self.err_ctx.outputUpdateIfEmpty(err);
         defer parser.deinit();
 
         return try SpirvGen.generate(&parser);
     }
-    pub fn new(allocator: ?Allocator, err_writer: ?*std.Io.Writer) Compiler {
+    pub fn new(allocator: ?Allocator, err_writer: ?*std.Io.Writer, settings: Settings) Compiler {
         return .{
             .allocator = if (allocator) |a| a else std.heap.page_allocator,
             .err_ctx = .{ .out_writer = err_writer },
+            .settings = settings,
         };
     }
 };
+pub const Settings = struct {
+    target: Target = .spirv1_6,
+    optimize: Optimize = .none,
+
+    max_push_constant_bytes: u32 = 256,
+};
+pub const Optimize = enum { none, speed };
+pub const Target = enum { spirv1_6, glsl430 };
+
 pub const minimal =
     \\const vert = entrypoint(.vertex){}
     \\const frag = entrypoint(.fragment){out col: vec4 = .{1,0,1,0}}

@@ -7,6 +7,8 @@ pub const tp = @import("type.zig");
 const util = @import("util.zig");
 const Parser = @This();
 const Tokenizer = @import("Tokenizer.zig");
+const root = @import("root.zig");
+const Settings = root.Settings;
 
 pub const CF = f64;
 pub const CI = i128;
@@ -17,11 +19,13 @@ tokenizer: *Tokenizer = undefined,
 allocator: Allocator = undefined,
 arena: std.heap.ArenaAllocator = undefined,
 
-global_io: List([]const u8) = .empty,
 global_scope: GlobalScope = undefined,
+global_io: List([]const u8) = .empty,
+
 current_scope: *Scope = undefined,
 
 intermediate_value_index: u32 = 0,
+settings: Settings,
 
 pub const Error = error{
     OutOfMemory,
@@ -67,8 +71,8 @@ pub const Error = error{
 } || Tokenizer.Error;
 
 ///creates its own arena
-pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
-    var self: Parser = .{};
+pub fn parse(allocator: Allocator, tokenizer: *Tokenizer, settings: Settings) Error!Parser {
+    var self: Parser = .{ .settings = settings };
     self.allocator = allocator;
     self.tokenizer = tokenizer;
     self.arena = .init(allocator);
@@ -138,8 +142,6 @@ pub fn create(self: *Parser, T: type) !*T {
 }
 
 pub inline fn addStatement(self: *Parser, statement: Statement) Error!void {
-    std.debug.print("SSS: {f}\n", .{statement});
-
     try self.current_scope.addStatement(self, statement);
     try self.trackReferencesInStatement(statement, .track);
 }
@@ -857,7 +859,8 @@ pub const EntryPoint = struct {
     scope: Scope,
 
     global_io_count: usize = 0,
-    io: [][]const u8 = &.{},
+    io: List([]const u8) = .empty,
+
     body: List(Statement),
 
     pub fn new(self: *Parser, stage_info: ExecutionModelInfo) EntryPoint {
@@ -882,7 +885,7 @@ pub const EntryPoint = struct {
         if (!(try parser.isStatementComplete(statement))) return parser.errorOut(Error.IncompleteStatement);
         try entry_point.body.append(parser.arena.allocator(), statement);
         if (statement == .var_decl and statement.var_decl.qualifier.isIO())
-            entry_point.io = try util.reallocAdd(parser.arena.allocator(), []const u8, entry_point.io, statement.var_decl.name);
+            try entry_point.io.append(parser.arena.allocator(), statement.var_decl.name);
     }
     fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
         const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);

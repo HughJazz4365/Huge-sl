@@ -1,4 +1,3 @@
-push eye_pos: vec3 = .{0}
 
 const light_dir = ;(2 * vec3{3, -4, 0} * .{2}) 
 
@@ -9,6 +8,7 @@ const ambient = 0.1
 const spec_pow = 30
 const spec_intensity = 1
 const frag = entrypoint(.fragment){
+	push eye_pos: vec3 = .{0}
 	in normal, world_pos: vec3
 
 	const albedo : vec3 = .{1,1,1}

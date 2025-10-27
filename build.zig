@@ -3,7 +3,8 @@ const std = @import("std");
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const querried_optimize = b.standardOptimizeOption(.{});
-    const optimize: std.builtin.OptimizeMode = if (querried_optimize == .Debug) .Debug else .ReleaseSmall;
+    // const optimize: std.builtin.OptimizeMode = if (querried_optimize == .Debug) .Debug else .ReleaseSmall;
+    const optimize = querried_optimize;
 
     const lib_mod = b.addModule("hgsl", .{
         .target = target,
