@@ -212,7 +212,6 @@ pub fn generate(parser: *Parser) Error![]WORD {
                 opWord(.type_struct, @truncate(2 + @"struct".len)),
                 t.id,
             });
-            std.debug.print("struct field ids: {any}\n", .{@"struct"});
             break :blk @"struct";
         },
 
@@ -344,17 +343,24 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
     }
 
     if (!var_decl.initializer.isEmpty()) switch (var_decl.initializer) {
-        .identifier => |identifier| initializer = for (self.global_vars.items) |gv| (if (util.strEql(gv.name, identifier)) break gv.id) else 0,
         .value => |value| {
             if (!var_decl.initializer.isEmpty()) initializer = try self.generateValue(value);
         },
-        else => if (self.inGlobalScope()) {
-            try self.deferred_global_initializers.append(self.arena, .{
-                .index = @truncate(self.global_vars.items.len),
-                .expr = &var_decl.initializer,
-            });
-        } else {
-            load = try self.generateExpression(var_decl.initializer);
+        else => blk: {
+            if (var_decl.initializer == .identifier and false) for (self.global_vars.items) |gv|
+                if (util.strEql(gv.name, var_decl.initializer.identifier) and self.checkEntryPointIndex(gv.entry_point_index)) {
+                    initializer = gv.id;
+                    break :blk;
+                };
+            if (self.inGlobalScope()) {
+                try self.deferred_global_initializers.append(self.arena, .{
+                    .index = @truncate(self.global_vars.items.len),
+                    .expr = &var_decl.initializer,
+                });
+            } else {
+                load = try self.generateExpression(var_decl.initializer);
+                try self.addWords(&.{ opWord(.store, 3), var_id, load });
+            }
         },
     };
 
@@ -375,9 +381,6 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             .entry_point_index = self.currentEntryPointIndex(),
         });
     }
-
-    if (!self.inGlobalScope() and initializer == 0 and load != 0)
-        try self.addWords(&.{ opWord(.store, 3), var_id, load });
 }
 fn checkEntryPointIndex(self: *Generator, entry_point_index: u32) bool {
     return ~entry_point_index == 0 or self.currentEntryPointIndex() == entry_point_index;
@@ -416,10 +419,8 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.E
     _ = try self.typeID(.{ .function = .{ .rtype_id = try self.typeID(.void) } });
 
     for (entry_point.body.items) |statement| try self.generateStatment(statement);
-    std.debug.print("IDS: {any}\n", .{interface_ids.items});
 
     self.entry_points.items[index].interface_ids = try interface_ids.toOwnedSlice(self.arena);
-    std.debug.print("interfaces: {any}\n", .{self.entry_points.items[self.entry_points.items.len - 1].interface_ids});
 
     try self.addWords(&.{ opWord(.@"return", 1), opWord(.function_end, 1) });
 
@@ -601,7 +602,6 @@ fn generateBuiltinVariablePointer(self: *Generator, bv: bi.BuiltinVariable) Erro
                 @intFromEnum(Decoration.builtin),
                 @intFromEnum(BuiltinDecoration.vertex_index),
             });
-            // std.debug.print("DECLEN: \n", .{});
             try self.current_interface_ids.append(self.arena, var_id);
             break :blk .{ .id = var_id, .ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = type_id, .storage_class = .input } }) };
         },

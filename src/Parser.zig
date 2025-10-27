@@ -75,11 +75,12 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer) Error!Parser {
 
     try self.parseScope(&self.global_scope.scope);
 
-    std.debug.print("[GLOBAL IO: ", .{});
-    for (self.global_io.items) |gi| std.debug.print("{s}, ", .{gi});
-    std.debug.print("]\n", .{});
-
-    if (zigbuiltin.mode == .Debug) for (self.global_scope.body.items) |statement| std.debug.print("{f}\n", .{statement});
+    if (zigbuiltin.mode == .Debug) {
+        std.debug.print("[GLOBAL IO: ", .{});
+        for (self.global_io.items) |gi| std.debug.print("{s}, ", .{gi});
+        std.debug.print("]\n", .{});
+        for (self.global_scope.body.items) |statement| std.debug.print("{f}\n", .{statement});
+    }
     return self;
 }
 pub fn deinit(self: *Parser) void {
