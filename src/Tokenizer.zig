@@ -397,12 +397,13 @@ pub const UnaryOperator = util.SortEnumDecending(
         @"!", //bitwise/logical not
 
         //custom
-        @"|", //abs
+        @";", //saturate
+        @"\\/", //abs
         @"\\", //sqrt
         @"\\\\", //inverse sqrt
 
-        @";", //normalize
-        @"~", //magnitude
+        @"|", //normalize
+        @"~", //magnitude|
         @"~~", //sqr magnitude
     },
 );

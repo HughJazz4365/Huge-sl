@@ -1145,7 +1145,7 @@ pub const Qualifier = union(enum) {
     shared,
     pub fn isIO(self: Qualifier) bool {
         return switch (self) {
-            .uniform, .push, .in, .out => true,
+            .uniform, .in, .out => true,
             else => false,
         };
     }

@@ -477,7 +477,7 @@ fn refineUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
     return switch (u_op.op) {
         .@"-" => .{ .value = try mulVecOrScalarValues(self, target, minusonecompint) },
         .@"+" => u_op.target.*,
-        .@";" => blk: {
+        .@"|" => blk: {
             const @"type" = try self.typeOf(u_op.target.*);
             if (@"type" != .vector or @"type".vector.component.type != .float)
                 return self.errorOutFmt(Error.InvalidUnaryOperationTarget, "Only floating point vectors can be normalized", .{});

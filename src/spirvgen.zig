@@ -28,8 +28,8 @@ const glsl_ext_literal_words = blk: {
 };
 const magic_number: WORD = 0x07230203;
 const generator_number: WORD = 0;
-const IOEntry = struct { id: WORD, type_id: WORD, io_type: IOType };
-const IOType = enum(u2) { in, out, uniform, push };
+const IOEntry = struct { id: WORD, type_id: WORD, io_type: IOType = .in };
+const IOType = enum(u2) { in = 0, out = 1, uniform = 2 };
 decorated_global_io_count: usize = 0,
 global_io: []IOEntry,
 
@@ -151,9 +151,9 @@ pub fn generate(parser: *Parser) Error![]WORD {
     };
 
     //decorations
-    var global_offsets: [4]WORD = @splat(0);
+    var global_offsets: [3]WORD = @splat(0);
     for (self.entry_points.items) |ep| {
-        var local_offsets: [4]WORD = @splat(0);
+        var local_offsets: [3]WORD = @splat(0);
         const gc = ep.val_ptr.global_io_count;
         if (gc <= self.decorated_global_io_count) {
             for (self.global_io[gc..]) |g| {
@@ -167,6 +167,7 @@ pub fn generate(parser: *Parser) Error![]WORD {
             }
             self.decorated_global_io_count = ep.val_ptr.global_io_count;
         }
+
         for (ep.local_io) |l| {
             try result.appendSlice(&.{
                 opWord(.decorate, 4),
@@ -305,14 +306,12 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
         .in => .input,
         .out => .output,
         .@"const" => {
-            const val = try self.generateExpression(var_decl.initializer);
-            if (self.inGlobalScope()) return; //TODO: ????
-            try self.current_name_mappings.append(self.arena, .{
+            if (!self.inGlobalScope()) try self.current_name_mappings.append(self.arena, .{
                 .type_id = try self.convertTypeID(var_decl.type),
                 .id = 0,
                 .name = var_decl.name,
-                .load = val,
-            });
+                .load = try self.generateExpression(var_decl.initializer),
+            }) else @panic("TODO: global scope constant");
             return;
         },
         //uniform, shared
@@ -330,7 +329,6 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
         const io_type: IOType = switch (var_decl.qualifier) {
             .in => .in,
             .out => .out,
-            .push => .push,
             .uniform => .uniform,
             else => break :io,
         };
@@ -351,7 +349,7 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             if (!var_decl.initializer.isEmpty()) initializer = try self.generateValue(value);
         },
         else => blk: {
-            if (var_decl.initializer == .identifier and false) for (self.global_vars.items) |gv|
+            if (var_decl.initializer == .identifier) for (self.global_vars.items) |gv|
                 if (util.strEql(gv.name, var_decl.initializer.identifier) and self.checkEntryPointIndex(gv.entry_point_index)) {
                     initializer = gv.id;
                     break :blk;
@@ -367,6 +365,11 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             }
         },
     };
+    if (var_decl.qualifier == .push) {
+        try self.addPushConstant(var_decl, initializer, load);
+        return;
+    }
+    if (storage_class == .push_constant) return;
 
     if (storage_class == .function) {
         try self.current_variable_buffer.appendSlice(self.arena, &.{ opWord(.variable, if (initializer == 0) 4 else 5), ptr_type_id, var_id, @intFromEnum(StorageClass.function) });
@@ -386,6 +389,18 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
         });
     }
 }
+fn addPushConstant(self: *Generator, var_decl: Parser.VariableDeclaration, initializer: WORD, load: WORD) Error!void {
+    if (self.inGlobalScope()) @panic("push constant in global scope");
+    const entry_point = &self.entry_points.items[self.entry_points.items.len - 1];
+    try entry_point.push_constants.append(self.arena, .{
+        .name = var_decl.name,
+        .load = load,
+        .initializer = initializer,
+        .type_id = try self.convertTypeID(var_decl.type),
+    });
+    std.debug.print("PC: {any}\n", .{entry_point.push_constants.items[entry_point.push_constants.items.len - 1]});
+}
+
 fn checkEntryPointIndex(self: *Generator, entry_point_index: u32) bool {
     return ~entry_point_index == 0 or self.currentEntryPointIndex() == entry_point_index;
 }
@@ -450,9 +465,9 @@ fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
         .u_op => |u_op| try self.generateUOp(u_op, type_id),
         .call => |call| try self.generateCall(call, type_id),
         .constructor => |constructor| try self.generateConstructor(constructor.components, type_id),
-        .identifier, .member_access => try self.generatePointerLoad(try self.generatePointer(expr)),
+        .identifier => |identifier| try self.generateIdentifier(identifier),
         .indexing => |indexing| try self.generateIndexing(indexing),
-        .builtin => |builtin| if (builtin == .variable) try self.generatePointerLoad(try self.generateBuiltinVariablePointer(builtin.variable)) else @panic("gen builtin function"),
+        .builtin => |builtin| if (builtin == .variable) try self.generatePointerLoad(try self.generateBuiltinVariableIDInfo(builtin.variable)) else @panic("gen builtin function"),
         else => {
             std.debug.print("Cannot gen expr: {f}\n", .{expr});
             @panic("idk how to gen that expr");
@@ -460,6 +475,19 @@ fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
     };
     return result;
 }
+fn generateIdentifier(self: *Generator, identifier: []const u8) Error!WORD {
+    const id_info = try self.getNameInfo(identifier);
+    if (id_info.load.* != 0) return id_info.load.*;
+    const load = try self.addWordsAndReturn2(&.{
+        opWord(.load, 4),
+        self.typeFromID(id_info.type_id).pointer.pointed_id,
+        self.newID(),
+        id_info.id,
+    });
+    id_info.load.* = load;
+    return load;
+}
+
 fn generateIndexing(self: *Generator, indexing: Parser.Indexing) Error!WORD {
     const access_type_id = try self.convertTypeID(try self.parser.typeOf(.{ .indexing = indexing }));
 
@@ -558,20 +586,7 @@ fn generateIndexingTargetIDInfoRecursive(
 
     return switch (indexing.target.*) {
         .indexing => |ind| try self.generateIndexingTargetIDInfoRecursive(ind, access_chain, const_mask),
-        //one length swizzle?
-        else => try self.getExprIDInfo(indexing.target.*),
-    };
-}
-fn getExprIDInfo(self: *Generator, expr: Parser.Expression) Error!IDInfo {
-    return switch (expr) {
-        .identifier => |identifier| try self.getNameInfo(identifier),
-        // .builtin
-        else => .{
-            .type_id = try self.convertTypeID(try self.parser.typeOf(expr)),
-            .id = 0,
-            .load = try self.createValue(try self.generateExpression(expr)),
-            .global = expr == .value,
-        },
+        else => try self.generatePointer(indexing.target.*),
     };
 }
 
@@ -604,77 +619,52 @@ fn generatePointerLoad(self: *Generator, ptr_info: IDInfo) Error!WORD {
     return try self.addWordsAndReturn2(&.{ opWord(.load, 4), type_id, self.newID(), ptr_info.id });
 }
 fn generatePointer(self: *Generator, expr: Expression) Error!IDInfo {
-    var list: List(WORD) = .empty;
-    defer list.deinit(self.arena);
-
-    const ptr_info = try self.generatePointerRecursive(expr, &list, 0);
-    if (list.items.len == 0) return ptr_info;
-    const id = try self.addWordsAndReturn2(&.{
-        opWord(.access_chain, @truncate(4 + list.items.len)),
-        ptr_info.type_id,
-        self.newID(),
-        ptr_info.id,
-    });
-    try self.addWords(list.items);
-    return .{ .id = id, .type_id = ptr_info.type_id };
-}
-fn generatePointerRecursive(self: *Generator, expr: Expression, list: *List(WORD), depth: u32) Error!IDInfo {
     return switch (expr) {
-        .identifier => |identifier| blk: {
-            if (!self.inGlobalScope()) for (self.current_name_mappings.items) |*nm|
-                if (util.strEql(identifier, nm.name)) {
-                    if (nm.id == 0 and depth > 0) { // generate variable for found constant
-                        const var_id = self.newID();
-                        const ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = nm.type_id, .storage_class = .function } });
-
-                        const initialize = for (self.constants.items) |c| {
-                            if (c.id == nm.load) break true;
-                        } else false;
-
-                        try self.current_variable_buffer.appendSlice(self.arena, &.{
-                            opWord(.variable, if (initialize) 5 else 4),
-                            ptr_type_id,
-                            var_id,
-                            @intFromEnum(StorageClass.function),
-                        });
-
-                        if (initialize) {
-                            try self.current_variable_buffer.append(self.arena, nm.load);
-                        } else try self.addWords(&.{ opWord(.store, 3), var_id, nm.load });
-
-                        nm.id = var_id;
-                        nm.type_id = ptr_type_id;
-                    }
-
-                    break :blk .{ .type_id = nm.type_id, .id = nm.id, .load = &nm.load };
-                };
-
-            break :blk for (self.global_vars.items) |*gv| {
-                if (util.strEql(identifier, gv.name) and self.checkEntryPointIndex(gv.entry_point_index)) {
-                    try self.addInterfaceID(gv.id);
-                    break .{ .type_id = gv.type_id, .id = gv.id, .load = &gv.load };
-                }
-            } else @panic("couldnt find variable by name somehow?");
-        },
-        .indexing => |indexing| blk: {
-            const ptr_info = try self.generatePointerRecursive(indexing.target.*, list, depth + 1);
-            const result_type_id = try self.convertTypeID(try self.parser.typeOf(.{ .indexing = indexing }));
-            const type_id = try self.typeID(.{ .pointer = .{
-                .pointed_id = result_type_id,
-                .storage_class = self.typeFromID(ptr_info.type_id).pointer.storage_class,
-            } });
-            const index = try self.generateExpression(indexing.index.*);
-            try list.append(self.arena, index);
-            break :blk .{ .id = ptr_info.id, .type_id = type_id };
-        },
+        .identifier => |identifier| try self.generateIdentifierPointer(identifier),
         .builtin => |builtin| if (builtin == .variable)
-            try self.generateBuiltinVariablePointer(builtin.variable)
+            try self.generateBuiltinVariableIDInfo(builtin.variable)
         else
             unreachable,
-        else => @panic("cant point to that"),
+        else => unreachable,
     };
 }
-fn generateBuiltinVariablePointer(self: *Generator, bv: bi.BuiltinVariable) Error!IDInfo {
+
+fn generateIdentifierPointer(self: *Generator, identifier: []const u8) Error!IDInfo {
+    if (!self.inGlobalScope()) for (self.current_name_mappings.items) |*nm|
+        if (util.strEql(identifier, nm.name)) {
+            const var_id = self.newID();
+            const ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = nm.type_id, .storage_class = .function } });
+
+            const initialize = for (self.constants.items) |c| {
+                if (c.id == nm.load) break true;
+            } else false;
+
+            try self.current_variable_buffer.appendSlice(self.arena, &.{
+                opWord(.variable, if (initialize) 5 else 4),
+                ptr_type_id,
+                var_id,
+                @intFromEnum(StorageClass.function),
+            });
+
+            if (initialize) {
+                try self.current_variable_buffer.append(self.arena, nm.load);
+            } else try self.addWords(&.{ opWord(.store, 3), var_id, nm.load });
+
+            nm.id = var_id;
+            nm.type_id = ptr_type_id;
+
+            return .{ .type_id = nm.type_id, .id = nm.id, .load = &nm.load };
+        };
+
+    return for (self.global_vars.items) |*gv| {
+        if (util.strEql(identifier, gv.name) and self.checkEntryPointIndex(gv.entry_point_index)) {
+            try self.addInterfaceID(gv.id);
+            break .{ .type_id = gv.type_id, .id = gv.id, .load = &gv.load };
+        }
+    } else @panic("couldnt find variable by name somehow?");
+}
+
+fn generateBuiltinVariableIDInfo(self: *Generator, bv: bi.BuiltinVariable) Error!IDInfo {
     return switch (bv) {
         .position, .point_size, .cull_distance => blk: {
             const member: WORD = if (bv == .position) 0 else if (bv == .point_size) 1 else 2;
@@ -878,7 +868,7 @@ fn generateBinOp(self: *Generator, bin_op: Parser.BinOp, result_type_id: WORD) E
 fn generateUOp(self: *Generator, u_op: Parser.UOp, result_type_id: WORD) Error!WORD {
     const target = try self.generateExpression(u_op.target.*);
     return switch (u_op.op) {
-        .@";" => try self.addWordsAndReturn2(&.{ opWord(.ext_inst, 6), result_type_id, self.newID(), glsl_std_id, @intFromEnum(GlslStdExtOp.normalize), target }),
+        .@"|" => try self.addWordsAndReturn2(&.{ opWord(.ext_inst, 6), result_type_id, self.newID(), glsl_std_id, @intFromEnum(GlslStdExtOp.normalize), target }),
         else => @panic("idk how to gen that u op"),
     };
 }
@@ -917,7 +907,19 @@ const EntryPoint = struct {
     id: WORD,
     exec_model_info: ExecutionModelInfo,
     interface_ids: []WORD = &.{},
-    local_io: []IOEntry,
+    local_io: []IOEntry = &.{},
+
+    push_constants: List(PushConstant) = .empty,
+    push_constant_struct_type_id: WORD = 0,
+};
+const PushConstant = struct {
+    name: []const u8,
+
+    load: WORD = 0,
+    ptr: WORD = 0,
+    type_id: WORD = 0,
+
+    initializer: WORD = 0,
 };
 const GlobalInitializer = struct {
     index: u32,
