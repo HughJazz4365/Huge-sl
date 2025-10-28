@@ -451,6 +451,12 @@ fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
         .call => |call| try self.generateCall(call, result_type_id),
         .constructor => |constructor| try self.generateConstructor(constructor.components, result_type_id),
         .identifier, .indexing, .member_access => try self.generatePointerLoad(try self.generatePointer(expr)),
+        //.indexing =>
+        // if(is constant){
+        // if(index is comptime known) => op composite Extract
+        // else if(type is vector)     => op vector extract dynamic
+        // else => copy into variable and access chain
+        //} else op access chain
         .builtin => |builtin| if (builtin == .variable) try self.generatePointerLoad(try self.generateBuiltinVariablePointer(builtin.variable)) else @panic("gen builtin function"),
         else => {
             std.debug.print("Cannot gen expr: {f}\n", .{expr});
@@ -941,7 +947,12 @@ const Op = enum(WORD) {
     constant = 43,
     constant_composite = 44,
 
+    vector_extract_dynamic = 77, //when index is not comptime known only for vectors
+    vector_insert_dynamic = 78, //vector[runtime_known] = x
+    vector_shuffle = 79,
     composite_construct = 80,
+    composite_extract = 81, //when index is comptime known
+    composite_insert = 82,
 
     type_void = 19,
     type_bool = 20,
