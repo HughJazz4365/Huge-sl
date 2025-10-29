@@ -13,8 +13,8 @@ pub fn main() !void {
     });
     for ([_][]const u8{
         // "test.hgsl",
-        // "../Huge/shader.hgsl",
-        "source.hgsl",
+        "../Huge/shader.hgsl",
+        // "source.hgsl",
         // "vertfrag.hgsl",
     }) |path| {
         std.debug.print("======{s}=======\n", .{path});
