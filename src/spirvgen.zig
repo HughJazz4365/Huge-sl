@@ -621,6 +621,14 @@ fn generateIndexing(self: *Generator, indexing: Parser.Indexing) Error!WORD {
     };
 
     const l = access_chain.items.len;
+    if (target_name_info.load.* == 0 and const_mask == 0 and is_target_vector) {
+        target_name_info.load.* = try self.addWordsAndReturn2(&.{
+            opWord(.load, 4),
+            self.typeFromID(target_name_info.type_id).pointer.pointed_id,
+            self.newID(),
+            target_name_info.id,
+        });
+    }
     if (target_name_info.load.* != 0) {
         if (const_mask == 0) {
             const id = self.newID();
@@ -710,6 +718,7 @@ fn getNameInfo(self: *Generator, name: []const u8) Error!IDInfo {
         for (entry_point.push_constants.items, 0..) |*pc, i| {
             if (util.strEql(name, pc.name)) {
                 const ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = pc.type_id, .storage_class = .push_constant } });
+
                 const access = if (pc.ptr != 0) pc.ptr else try self.addWordsAndReturn2(&.{
                     opWord(.access_chain, 5),
                     try self.typeID(.{ .pointer = .{ .pointed_id = pc.type_id, .storage_class = .push_constant } }),
@@ -717,11 +726,13 @@ fn getNameInfo(self: *Generator, name: []const u8) Error!IDInfo {
                     entry_point.push_constant_struct_id,
                     try self.generateValue(.{ .type = tp.u32_type, .payload = .{ .wide = i } }),
                 });
+                pc.ptr = access;
                 return .{
                     .type_id = ptr_type_id,
                     .id = access,
                     .load = &pc.load,
                     .global = false,
+                    .storage_class = .push_constant,
                 };
             }
         }
@@ -765,63 +776,37 @@ fn generatePointer(self: *Generator, expr: Expression) Error!IDInfo {
 }
 
 fn generateIdentifierPointer(self: *Generator, identifier: []const u8) Error!IDInfo {
-    if (!self.inGlobalScope()) {
-        const entry_point = &self.entry_points.items[self.entry_points.items.len - 1];
-        for (entry_point.push_constants.items, 0..) |*pc, i| {
-            if (util.strEql(identifier, pc.name)) {
-                const ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = pc.type_id, .storage_class = .push_constant } });
-                const access = if (pc.ptr != 0) pc.ptr else try self.addWordsAndReturn2(&.{
-                    opWord(.access_chain, 5),
-                    try self.typeID(.{ .pointer = .{ .pointed_id = pc.type_id, .storage_class = .push_constant } }),
-                    self.newID(),
-                    entry_point.push_constant_struct_id,
-                    try self.generateValue(.{ .type = tp.u32_type, .payload = .{ .wide = i } }),
-                });
-                return .{
-                    .type_id = ptr_type_id,
-                    .id = access,
-                    .load = &pc.load,
-                    .global = false,
-                };
-            }
-        }
-        for (self.current_name_mappings.items) |*nm|
-            if (util.strEql(identifier, nm.name)) {
-                const var_id = self.newID();
-                const ptr_type_id =
-                    if (nm.id == 0)
-                        try self.typeID(.{ .pointer = .{ .pointed_id = nm.type_id, .storage_class = .function } })
-                    else
-                        nm.type_id;
+    if (!self.inGlobalScope()) for (self.current_name_mappings.items) |*nm|
+        if (util.strEql(identifier, nm.name)) {
+            const var_id = self.newID();
+            const ptr_type_id =
+                if (nm.id == 0)
+                    try self.typeID(.{ .pointer = .{ .pointed_id = nm.type_id, .storage_class = .function } })
+                else
+                    nm.type_id;
 
-                const initialize = for (self.constants.items) |c| {
-                    if (c.id == nm.load) break true;
-                } else false;
+            const initialize = for (self.constants.items) |c| {
+                if (c.id == nm.load) break true;
+            } else false;
 
-                try self.current_variable_buffer.appendSlice(self.arena, &.{
-                    opWord(.variable, if (initialize) 5 else 4),
-                    ptr_type_id,
-                    var_id,
-                    @intFromEnum(StorageClass.function),
-                });
+            try self.current_variable_buffer.appendSlice(self.arena, &.{
+                opWord(.variable, if (initialize) 5 else 4),
+                ptr_type_id,
+                var_id,
+                @intFromEnum(StorageClass.function),
+            });
 
-                if (initialize) {
-                    try self.current_variable_buffer.append(self.arena, nm.load);
-                } else try self.addWords(&.{ opWord(.store, 3), var_id, nm.load });
+            if (initialize) {
+                try self.current_variable_buffer.append(self.arena, nm.load);
+            } else try self.addWords(&.{ opWord(.store, 3), var_id, nm.load });
 
-                nm.id = var_id;
-                nm.type_id = ptr_type_id;
+            nm.id = var_id;
+            nm.type_id = ptr_type_id;
 
-                return .{ .type_id = nm.type_id, .id = nm.id, .load = &nm.load };
-            };
-    }
+            return .{ .type_id = nm.type_id, .id = nm.id, .load = &nm.load };
+        };
 
-    return for (self.global_vars.items) |*gv| {
-        if (util.strEql(identifier, gv.name) and self.checkEntryPointIndex(gv.entry_point_index)) {
-            try self.addInterfaceID(gv.id);
-            break .{ .type_id = gv.type_id, .id = gv.id, .load = &gv.load, .storage_class = gv.storage_class };
-        }
-    } else @panic("couldnt find variable by name somehow?");
+    return self.getNameInfo(identifier);
 }
 
 fn generateBuiltinVariableIDInfo(self: *Generator, bv: bi.BuiltinVariable) Error!IDInfo {
