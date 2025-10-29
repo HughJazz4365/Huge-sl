@@ -34,6 +34,7 @@ decorated_global_io_count: usize = 0,
 global_io: []IOEntry,
 
 parser: *Parser,
+layout_standart: LayoutStandart = .tight,
 current_id: WORD = 2, //0 - reserved,1 - glsl ext for now
 arena: Allocator,
 
@@ -101,7 +102,31 @@ pub fn generate(parser: *Parser) Error![]WORD {
     //memory model is Vulkan(3)/GLSL450(1)???
     try result.appendSlice(&.{ opWord(.memory_model, 3), 0, 1 }); // memory model
 
-    for (self.entry_points.items) |ep| { // op entry points
+    for (self.entry_points.items, 0..) |ep, i| { // op entry points
+        if (ep.push_constant_struct_type_id != 0) {
+            const slice = try self.arena.alloc(WORD, ep.push_constants.items.len);
+            for (ep.push_constants.items, slice) |*pc, *c| c.* = pc.type_id;
+
+            const @"type": *Type = for (self.type_decls.items) |*td|
+                (if (ep.push_constant_struct_type_id == td.id) break &td.type)
+            else
+                unreachable;
+            @"type".* = .{ .@"struct" = slice };
+
+            try self.decorateStructLayout(ep.push_constant_struct_type_id, false, .tight);
+
+            const ptr_type_id = try self.typeID(.{ .pointer = .{
+                .pointed_id = ep.push_constant_struct_type_id,
+                .storage_class = .push_constant,
+            } });
+            try self.global_vars.append(self.arena, .{
+                .type_id = ptr_type_id,
+                .id = ep.push_constant_struct_id,
+                .storage_class = .push_constant,
+                .entry_point_index = @truncate(i),
+            });
+        }
+
         const execution_model: WORD = switch (ep.exec_model_info) {
             .vertex => 0,
             .fragment => 4,
@@ -114,9 +139,9 @@ pub fn generate(parser: *Parser) Error![]WORD {
 
         for (0..(ep.name.len + 4) / 4) |wi| {
             var word: WORD = 0;
-            for (0..4) |i| {
-                const ci = wi * 4 + i;
-                if (ci < ep.name.len) word |= @as(WORD, ep.name[ci]) << @truncate(i * 8);
+            for (0..4) |j| {
+                const ci = wi * 4 + j;
+                if (ci < ep.name.len) word |= @as(WORD, ep.name[ci]) << @truncate(j * 8);
             }
             try result.append(word);
         }
@@ -139,6 +164,7 @@ pub fn generate(parser: *Parser) Error![]WORD {
     }
     //debug
     if (self.parser.settings.optimize == .none) for (self.global_vars.items) |gv| {
+        if (gv.name.len == 0) continue;
         try result.appendSlice(&.{ opWord(.name, @truncate(2 + (gv.name.len + 4) / 4)), gv.id });
         for (0..(gv.name.len + 4) / 4) |wi| {
             var word: WORD = 0;
@@ -254,6 +280,71 @@ fn versionWord(major: u8, minor: u8) WORD {
 fn inGlobalScope(self: *Generator) bool {
     return @intFromPtr(self.current_buffer) == @intFromPtr(&self.main_buffer);
 }
+fn decorateStructLayout(self: *Generator, type_id: WORD, reorder: bool, layout_standart: LayoutStandart) Error!void {
+    const fields = self.typeFromID(type_id).@"struct";
+    if (reorder) {
+        unreachable;
+    }
+    var offset: WORD = 0;
+    for (fields, 0..) |f, i| {
+        const field_type = self.typeFromID(f);
+        switch (field_type) {
+            .matrix => |matrix| {
+                try self.decorations.appendSlice(self.arena, &.{
+                    opWord(.member_decorate, 4),
+                    type_id,
+                    @truncate(i),
+                    @intFromEnum(Decoration.col_major),
+                });
+                try self.decorations.appendSlice(self.arena, &.{
+                    opWord(.member_decorate, 5),
+                    type_id,
+                    @truncate(i),
+                    @intFromEnum(Decoration.matrix_stride),
+                    self.consumptionOf(self.typeFromID(matrix.column_type_id), layout_standart),
+                });
+            },
+            else => {},
+        }
+        try self.decorations.appendSlice(self.arena, &.{
+            opWord(.member_decorate, 5),
+            type_id,
+            @truncate(i),
+            @intFromEnum(Decoration.offset),
+            offset,
+        });
+        const consumption = self.consumptionOf(field_type, layout_standart);
+        offset += consumption;
+    }
+}
+fn consumptionOf(self: *Generator, @"type": Type, layout_standart: LayoutStandart) WORD {
+    return if (layout_standart == .tight)
+        self.sizeOf(@"type")
+    else
+        rut(self.alignOf(@"type"), self.sizeOf(@"type"));
+}
+fn alignOf(self: *Generator, @"type": Type) WORD {
+    _ = self;
+    return switch (@"type") {
+        .float, .int => 4,
+        .vector => 8,
+        .matrix => 8,
+        else => 0,
+    };
+}
+fn sizeOf(self: *Generator, @"type": Type) WORD {
+    return switch (@"type") {
+        .int => |int| @intFromEnum(int.width) / 8,
+        .float => |width| @intFromEnum(width) / 8,
+        .vector => |vector| @intFromEnum(vector.len) * self.sizeOf(self.typeFromID(vector.component_id)),
+        .matrix => |matrix| @intFromEnum(matrix.column_count) * self.sizeOf(self.typeFromID(matrix.column_type_id)),
+        else => 0,
+    };
+}
+fn rut(a: WORD, b: WORD) WORD {
+    return (a + b - 1) / b * b;
+}
+const LayoutStandart = enum { tight, aligned };
 
 fn generateStatment(self: *Generator, statement: Parser.Statement) Error!void {
     //non formal statment types
@@ -348,12 +439,7 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
         .value => |value| {
             if (!var_decl.initializer.isEmpty()) initializer = try self.generateValue(value);
         },
-        else => blk: {
-            if (var_decl.initializer == .identifier) for (self.global_vars.items) |gv|
-                if (util.strEql(gv.name, var_decl.initializer.identifier) and self.checkEntryPointIndex(gv.entry_point_index)) {
-                    initializer = gv.id;
-                    break :blk;
-                };
+        else => {
             if (self.inGlobalScope()) {
                 try self.deferred_global_initializers.append(self.arena, .{
                     .index = @truncate(self.global_vars.items.len),
@@ -391,14 +477,37 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
 }
 fn addPushConstant(self: *Generator, var_decl: Parser.VariableDeclaration, initializer: WORD, load: WORD) Error!void {
     if (self.inGlobalScope()) @panic("push constant in global scope");
+
     const entry_point = &self.entry_points.items[self.entry_points.items.len - 1];
+
+    if (entry_point.push_constant_struct_type_id == 0) {
+        entry_point.push_constant_struct_type_id = self.newID();
+        try self.decorations.appendSlice(self.arena, &.{ //add block decoration to the structure type
+            opWord(.decorate, 3),
+            entry_point.push_constant_struct_type_id,
+            @intFromEnum(Decoration.block),
+        });
+        try self.type_decls.append(self.arena, .{
+            .id = entry_point.push_constant_struct_type_id,
+            .type = .{ .@"struct" = &.{} },
+        });
+        _ = try self.typeID(.{
+            .pointer = .{ //add pointer type
+                .pointed_id = entry_point.push_constant_struct_type_id,
+                .storage_class = .push_constant,
+            },
+        });
+    }
+
+    if (entry_point.push_constant_struct_id == 0)
+        entry_point.push_constant_struct_id = self.newID();
+
     try entry_point.push_constants.append(self.arena, .{
         .name = var_decl.name,
         .load = load,
         .initializer = initializer,
         .type_id = try self.convertTypeID(var_decl.type),
     });
-    std.debug.print("PC: {any}\n", .{entry_point.push_constants.items[entry_point.push_constants.items.len - 1]});
 }
 
 fn checkEntryPointIndex(self: *Generator, entry_point_index: u32) bool {
@@ -438,6 +547,9 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.E
     _ = try self.typeID(.{ .function = .{ .rtype_id = try self.typeID(.void) } });
 
     for (entry_point.body.items) |statement| try self.generateStatment(statement);
+
+    if (self.entry_points.items[index].push_constant_struct_id != 0)
+        try interface_ids.append(self.arena, self.entry_points.items[index].push_constant_struct_id);
 
     self.entry_points.items[index].interface_ids = try interface_ids.toOwnedSlice(self.arena);
 
@@ -548,8 +660,11 @@ fn generateIndexing(self: *Generator, indexing: Parser.Indexing) Error!WORD {
             target_name_info.id = id;
         }
     }
+    for (access_chain.items, 0..) |*ac, i| { //turn all the index literals into ids anyway
+        if (((const_mask >> @truncate(i)) & 1) == 0)
+            ac.* = try self.generateValue(.{ .type = tp.u32_type, .payload = .{ .wide = ac.* } });
+    }
     const access_ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = access_type_id, .storage_class = target_name_info.storage_class } });
-
     const access_ptr = try self.addWordsAndReturn2(&.{
         opWord(.access_chain, @truncate(4 + l)),
         access_ptr_type_id,
@@ -564,7 +679,6 @@ fn generateIndexing(self: *Generator, indexing: Parser.Indexing) Error!WORD {
         self.newID(),
         access_ptr,
     });
-    target_name_info.load.* = load;
     return load;
 }
 fn generateIndexingTargetIDInfoRecursive(
@@ -591,9 +705,30 @@ fn generateIndexingTargetIDInfoRecursive(
 }
 
 fn getNameInfo(self: *Generator, name: []const u8) Error!IDInfo {
-    if (!self.inGlobalScope()) for (self.current_name_mappings.items) |*nm|
-        if (util.strEql(name, nm.name))
-            return .{ .type_id = nm.type_id, .id = nm.id, .load = &nm.load, .global = false };
+    if (!self.inGlobalScope()) {
+        const entry_point = &self.entry_points.items[self.entry_points.items.len - 1];
+        for (entry_point.push_constants.items, 0..) |*pc, i| {
+            if (util.strEql(name, pc.name)) {
+                const ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = pc.type_id, .storage_class = .push_constant } });
+                const access = if (pc.ptr != 0) pc.ptr else try self.addWordsAndReturn2(&.{
+                    opWord(.access_chain, 5),
+                    try self.typeID(.{ .pointer = .{ .pointed_id = pc.type_id, .storage_class = .push_constant } }),
+                    self.newID(),
+                    entry_point.push_constant_struct_id,
+                    try self.generateValue(.{ .type = tp.u32_type, .payload = .{ .wide = i } }),
+                });
+                return .{
+                    .type_id = ptr_type_id,
+                    .id = access,
+                    .load = &pc.load,
+                    .global = false,
+                };
+            }
+        }
+        for (self.current_name_mappings.items) |*nm|
+            if (util.strEql(name, nm.name))
+                return .{ .type_id = nm.type_id, .id = nm.id, .load = &nm.load, .global = false };
+    }
     return for (self.global_vars.items) |*gv| {
         if (util.strEql(name, gv.name) and self.checkEntryPointIndex(gv.entry_point_index)) {
             if (!self.inGlobalScope()) try self.addInterfaceID(gv.id);
@@ -633,7 +768,11 @@ fn generateIdentifierPointer(self: *Generator, identifier: []const u8) Error!IDI
     if (!self.inGlobalScope()) for (self.current_name_mappings.items) |*nm|
         if (util.strEql(identifier, nm.name)) {
             const var_id = self.newID();
-            const ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = nm.type_id, .storage_class = .function } });
+            const ptr_type_id =
+                if (nm.id == 0)
+                    try self.typeID(.{ .pointer = .{ .pointed_id = nm.type_id, .storage_class = .function } })
+                else
+                    nm.type_id;
 
             const initialize = for (self.constants.items) |c| {
                 if (c.id == nm.load) break true;
@@ -659,7 +798,7 @@ fn generateIdentifierPointer(self: *Generator, identifier: []const u8) Error!IDI
     return for (self.global_vars.items) |*gv| {
         if (util.strEql(identifier, gv.name) and self.checkEntryPointIndex(gv.entry_point_index)) {
             try self.addInterfaceID(gv.id);
-            break .{ .type_id = gv.type_id, .id = gv.id, .load = &gv.load };
+            break .{ .type_id = gv.type_id, .id = gv.id, .load = &gv.load, .storage_class = gv.storage_class };
         }
     } else @panic("couldnt find variable by name somehow?");
 }
@@ -911,6 +1050,7 @@ const EntryPoint = struct {
 
     push_constants: List(PushConstant) = .empty,
     push_constant_struct_type_id: WORD = 0,
+    push_constant_struct_id: WORD = 0,
 };
 const PushConstant = struct {
     name: []const u8,
@@ -926,7 +1066,7 @@ const GlobalInitializer = struct {
     expr: *const Expression,
 };
 const GlobalVariable = struct {
-    name: []const u8 = "\x00",
+    name: []const u8 = "",
     type_id: WORD,
     id: WORD,
     storage_class: StorageClass,
@@ -1176,6 +1316,7 @@ const Decoration = enum(WORD) {
     offset = 35,
     array_stride = 6,
     matrix_stride = 7,
+    col_major = 5,
 
     no_perspective = 13,
     flat = 14,

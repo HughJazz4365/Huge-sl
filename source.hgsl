@@ -15,7 +15,7 @@ const frag = entrypoint(.fragment){
 	const diffuse = -light_dir *** normal
 
 	const view_dir = |(eye_pos - world_pos)
-	mut specular = (|@reflect(-light_dir, normal) *** view_dir) ^ spec_pow * spec_intensity
+	const specular = (|@reflect(-light_dir, normal) *** view_dir) ^ spec_pow * spec_intensity
 
 	out out_color: vec4 = .{(albedo * (diffuse + ambient + specular)), 1}
 }
@@ -25,7 +25,7 @@ const vert = entrypoint(.vertex){
 	in in_pos, in_normal, out out_normal, world_pos: vec3 = ,, in_normal, in_pos
 	//|(@transpose(@inverse(mat3{model})) * in_normal)
 
-	//@position = vp * (model * pos.xyz1)
-	@position = .{in_pos, 1}
+	// @position = vec4{in_pos, 1}
+	@position = vp * (model * vec4{in_pos, 1})
 }
 

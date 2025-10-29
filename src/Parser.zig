@@ -388,7 +388,7 @@ pub const VariableDeclaration = struct {
     reference_count: u32 = 0,
 
     pub fn canBeOmitted(self: VariableDeclaration) bool {
-        return self.reference_count == 0 and !self.qualifier.isIO() and self.type != .entrypoint;
+        return self.reference_count == 0 and !self.qualifier.isIO() and self.qualifier != .push and self.type != .entrypoint;
     }
     pub fn variableReference(self: *VariableDeclaration) VariableReference {
         return .{

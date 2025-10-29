@@ -54,6 +54,7 @@ pub const Compiler = struct {
         defer parser.deinit();
 
         return try SpirvGen.generate(&parser);
+        // return &.{};
     }
     pub fn new(allocator: ?Allocator, err_writer: ?*std.Io.Writer, settings: Settings) Compiler {
         return .{
