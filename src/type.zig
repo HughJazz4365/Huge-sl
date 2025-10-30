@@ -267,6 +267,9 @@ pub const Scalar = struct {
         };
         return literal;
     }
+    pub fn eql(a: Scalar, b: Scalar) bool {
+        return a.width == b.width and a.type == b.type;
+    }
 };
 pub const ScalarType = enum {
     float,

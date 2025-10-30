@@ -9,8 +9,8 @@ const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCa
 fn errorImplicitCast(self: *Parser, expr: Expression, @"type": Type) Error {
     return self.errorOutFmt(
         Error.CannotImplicitlyCast,
-        "Cannot implicitly cast \'{f}\' to \'{f}\'",
-        .{ expr, @"type" },
+        "Cannot implicitly cast \'{f}\'[{f}] to \'{f}\'",
+        .{ expr, try self.typeOf(expr), @"type" },
     );
 }
 pub fn refineDescend(self: *Parser, expr: Expression) Error!Expression {
@@ -502,6 +502,17 @@ fn normalizeValue(value: Parser.Value) void {
 }
 
 fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
+    if (bin_op.left.* == .bin_op) { //should it go other way as well??
+        const inner = bin_op.left.bin_op;
+        const lt = try self.typeOf(inner.left.*);
+        const rt = try self.typeOf(inner.right.*);
+        if (lt == .matrix and rt == .matrix and try self.typeOf(bin_op.right.*) == .vector) {
+            std.mem.swap(Expression, bin_op.left, bin_op.right);
+            std.mem.swap(Expression, bin_op.left, bin_op.right.bin_op.left);
+            std.mem.swap(Expression, bin_op.right.bin_op.left, bin_op.right.bin_op.right);
+        }
+    }
+
     return switch (bin_op.op) {
         .@"*" => try refineMul(self, bin_op.left, bin_op.right),
         .@"+", .@"-" => try refineAddOrSub(self, @enumFromInt(@intFromEnum(bin_op.op)), bin_op.left, bin_op.right),
@@ -636,16 +647,17 @@ fn refineMul(self: *Parser, left: *Expression, right: *Expression) Error!Express
 
     if (!equalizeExprTypesIfUnknown(self, &left_expr, &left_type, &right_expr, &right_type)) return initial;
 
-    //TODO: matrix bs
-    if (left_type == .matrix) {
+    if (left_type == .matrix or right_type == .matrix) {
+        const ls, const rs = .{
+            left_type.scalarPrimitive() orelse return self.errorOut(Error.InvalidOperands),
+            right_type.scalarPrimitive() orelse return self.errorOut(Error.InvalidOperands),
+        };
+        if (!tp.Scalar.eql(ls, rs)) return self.errorOut(Error.InvalidOperands);
         //mat x mat
         // mat x vec
         // mar x scalar
-        return Error.InvalidInput;
-    } else if (right_type == .matrix) {
         //vec x mat
         //scalar x mat
-        return Error.InvalidInput;
     } else if (left_type == .vector or right_type == .vector) {
         if (right_type == .vector) {
             std.mem.swap(Type, &left_type, &right_type);

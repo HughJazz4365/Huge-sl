@@ -65,13 +65,13 @@ pub const Compiler = struct {
     }
 };
 pub const Settings = struct {
-    target: Target = .spirv1_6,
+    target_env: TargetEnv = .vulkan1_4,
     optimize: Optimize = .none,
 
     max_push_constant_bytes: u32 = 256,
 };
 pub const Optimize = enum { none, speed };
-pub const Target = enum { spirv1_6, glsl430 };
+pub const TargetEnv = enum { vulkan1_4, opengl_spirv, opengl_glsl };
 
 pub const minimal =
     \\const vert = entrypoint(.vertex){}

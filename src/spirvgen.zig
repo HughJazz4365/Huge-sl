@@ -34,7 +34,7 @@ decorated_global_io_count: usize = 0,
 global_io: []IOEntry,
 
 parser: *Parser,
-layout_standart: LayoutStandart = .tight,
+alignment: Alignment = .scalar,
 current_id: WORD = 2, //0 - reserved,1 - glsl ext for now
 arena: Allocator,
 
@@ -113,7 +113,7 @@ pub fn generate(parser: *Parser) Error![]WORD {
                 unreachable;
             @"type".* = .{ .@"struct" = slice };
 
-            try self.decorateStructLayout(ep.push_constant_struct_type_id, false, .tight);
+            try self.decorateStructLayout(ep.push_constant_struct_type_id, false, .scalar);
 
             const ptr_type_id = try self.typeID(.{ .pointer = .{
                 .pointed_id = ep.push_constant_struct_type_id,
@@ -280,7 +280,7 @@ fn versionWord(major: u8, minor: u8) WORD {
 fn inGlobalScope(self: *Generator) bool {
     return @intFromPtr(self.current_buffer) == @intFromPtr(&self.main_buffer);
 }
-fn decorateStructLayout(self: *Generator, type_id: WORD, reorder: bool, layout_standart: LayoutStandart) Error!void {
+fn decorateStructLayout(self: *Generator, type_id: WORD, reorder: bool, alignment: Alignment) Error!void {
     const fields = self.typeFromID(type_id).@"struct";
     if (reorder) {
         unreachable;
@@ -288,8 +288,10 @@ fn decorateStructLayout(self: *Generator, type_id: WORD, reorder: bool, layout_s
     var offset: WORD = 0;
     for (fields, 0..) |f, i| {
         const field_type = self.typeFromID(f);
+        const field_size = self.sizeOf(field_type);
         switch (field_type) {
             .matrix => |matrix| {
+                const column_vector_type = self.typeFromID(matrix.column_type_id);
                 try self.decorations.appendSlice(self.arena, &.{
                     opWord(.member_decorate, 4),
                     type_id,
@@ -301,7 +303,7 @@ fn decorateStructLayout(self: *Generator, type_id: WORD, reorder: bool, layout_s
                     type_id,
                     @truncate(i),
                     @intFromEnum(Decoration.matrix_stride),
-                    self.consumptionOf(self.typeFromID(matrix.column_type_id), layout_standart),
+                    rut(self.sizeOf(column_vector_type), self.alignOf(column_vector_type, alignment)),
                 });
             },
             else => {},
@@ -313,23 +315,18 @@ fn decorateStructLayout(self: *Generator, type_id: WORD, reorder: bool, layout_s
             @intFromEnum(Decoration.offset),
             offset,
         });
-        const consumption = self.consumptionOf(field_type, layout_standart);
-        offset += consumption;
+        offset = rut(offset + field_size, self.alignOf(field_type, alignment));
     }
 }
-fn consumptionOf(self: *Generator, @"type": Type, layout_standart: LayoutStandart) WORD {
-    return if (layout_standart == .tight)
-        self.sizeOf(@"type")
-    else
-        rut(self.alignOf(@"type"), self.sizeOf(@"type"));
-}
-fn alignOf(self: *Generator, @"type": Type) WORD {
-    _ = self;
+fn alignOf(self: *Generator, @"type": Type, alignment: Alignment) WORD {
     return switch (@"type") {
-        .float, .int => 4,
-        .vector => 8,
-        .matrix => 8,
-        else => 0,
+        .float => |width| @intFromEnum(width) / 8,
+        .int => |int| @intFromEnum(int.width) / 8,
+        .vector => |vector| self.alignOf(self.typeFromID(vector.component_id), alignment) * //
+            @as(WORD, if (alignment == .scalar) 1 else if (vector.len == ._2) 2 else 4),
+        .array => |array| rut(self.alignOf(self.typeFromID(array.component_id), alignment), if (alignment == .extended) 16 else 1),
+        .matrix => |matrix| rut(self.alignOf(self.typeFromID(matrix.column_type_id), alignment), if (alignment == .extended) 16 else 1),
+        else => @panic("idk alignment of this type"),
     };
 }
 fn sizeOf(self: *Generator, @"type": Type) WORD {
@@ -344,7 +341,7 @@ fn sizeOf(self: *Generator, @"type": Type) WORD {
 fn rut(a: WORD, b: WORD) WORD {
     return (a + b - 1) / b * b;
 }
-const LayoutStandart = enum { tight, aligned };
+const Alignment = enum { scalar, base, extended };
 
 fn generateStatment(self: *Generator, statement: Parser.Statement) Error!void {
     //non formal statment types
@@ -1008,10 +1005,29 @@ fn generateBinOp(self: *Generator, bin_op: Parser.BinOp, result_type_id: WORD) E
         .@"*" => blk: {
             const left_type = try self.parser.typeOf(bin_op.left.*);
             const right_type = try self.parser.typeOf(bin_op.right.*);
-            if (!Parser.Type.eql(left_type, right_type)) @panic("TODO: different type multipilcation");
+            if (!Parser.Type.eql(left_type, right_type)) {
+                var deep, var shallow, var deep_type, var shallow_type = .{ left, right, left_type, right_type };
+                if (deep_type.depth() < shallow_type.depth())
+                    deep, shallow, deep_type, shallow_type = .{ shallow, deep, shallow_type, deep_type };
+
+                if (deep_type == .matrix) break :blk self.addWordsAndReturn2(&.{
+                    opWord(if (deep == left) .matrix_times_vector else .vector_times_matrix, 5),
+                    try self.convertTypeID(shallow_type),
+                    self.newID(),
+                    left,
+                    right,
+                });
+                //asymmetric ones:
+                //scalar x vector (both ways)
+                //matrix x vector (both ways)
+                //matrix x scalar (both ways)
+
+                @panic("TODO: different type multipilcation");
+            }
+            //mat x mat
 
             const scalar = left_type.scalarPrimitive().?;
-            const op: Op = if (scalar.type == .float) .fmul else .imul;
+            const op: Op = if (left_type == .matrix) .matrix_times_matrix else if (scalar.type == .float) .fmul else .imul;
             break :blk try self.addWordsAndReturn2(&.{ opWord(op, 5), result_type_id, self.newID(), left, right });
         },
         else => @panic("idk how to gen that bin op"),
@@ -1277,6 +1293,9 @@ const Op = enum(WORD) {
 
     imul = 132,
     fmul = 133,
+    vector_times_matrix = 144,
+    matrix_times_vector = 145,
+    matrix_times_matrix = 146,
 
     dot = 148,
     sdot = 4450,
