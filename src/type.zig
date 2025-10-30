@@ -18,6 +18,13 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
             break :blk switch (bin_op.op) {
                 .@"+", .@"-", .@"^", .@"|", .@"&", .@">>" => left_type,
                 .@"*" => clk: {
+                    if (left_type == .matrix and right_type == .matrix)
+                        break :clk .{ .matrix = .{ .m = left_type.matrix.m, .n = right_type.matrix.n, .width = left_type.matrix.width } }
+                    else if (left_type == .matrix and right_type == .vector)
+                        break :clk .{ .vector = left_type.matrix.columnVector() }
+                    else if (left_type == .vector and right_type == .matrix)
+                        break :clk .{ .vector = .{ .len = right_type.matrix.n, .component = left_type.vector.component } };
+
                     var deep = left_type;
                     var shallow = right_type;
                     if (shallow.depth() > deep.depth()) std.mem.swap(Type, &deep, &shallow);

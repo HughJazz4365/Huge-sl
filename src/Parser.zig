@@ -42,6 +42,7 @@ pub const Error = error{
     RepeatingArgumentNames,
     VariableTypeAndQualifierDontMatch,
     UnexpectedInitializer,
+    UnexpectedStatement,
     NoTypeVariable,
 
     MutatingImmutableVariable,
@@ -346,7 +347,6 @@ fn parseVarDecls(self: *Parser) Error!usize {
             return self.errorUnexpectedToken(token);
         },
     }
-    for (list.items) |vd| std.debug.print("S: {f}\n", .{Statement{ .var_decl = vd }});
 
     var offset: usize = 0;
     if (list.items.len == 1) {
@@ -1086,10 +1086,12 @@ pub const GlobalScope = struct {
 
     fn addStatementFn(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
         const global_scope: *GlobalScope = @fieldParentPtr("scope", scope);
+        if (statement != .var_decl) return parser.errorOut(Error.UnexpectedStatement);
+
         if (!(try parser.isStatementComplete(statement))) return parser.errorOut(Error.IncompleteStatement);
 
         try global_scope.body.append(parser.arena.allocator(), statement);
-        if (statement == .var_decl and statement.var_decl.qualifier.isIO())
+        if (statement.var_decl.qualifier.isIO())
             try parser.global_io.append(parser.arena.allocator(), statement.var_decl.name);
     }
     fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {

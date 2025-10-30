@@ -66,6 +66,7 @@ pub fn printInstructions(slice: []WORD) void {
         const op_word = copy[0];
         const code: u16 = @truncate(op_word);
         const count: usize = (op_word >> 16);
+        if (count == 0) return;
         const tag_name = inline for (@typeInfo(Op).@"enum".fields) |ef| (if (ef.value == code) break ef.name) else "UNKNOWN";
         std.debug.print("[{s}] {any}\n", .{ tag_name, copy[0..count] });
         copy = copy[count..];
@@ -593,12 +594,72 @@ fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
         .identifier => |identifier| try self.generateIdentifier(identifier),
         .indexing => |indexing| try self.generateIndexing(indexing),
         .builtin => |builtin| if (builtin == .variable) try self.generatePointerLoad(try self.generateBuiltinVariableIDInfo(builtin.variable)) else @panic("gen builtin function"),
+        .cast => |cast| try self.generateCast(cast),
         else => {
             std.debug.print("Cannot gen expr: {f}\n", .{expr});
             @panic("idk how to gen that expr");
         },
     };
     return result;
+}
+fn generateCast(self: *Generator, cast: Parser.Cast) Error!WORD {
+    const result_type_id = try self.convertTypeID(cast.type);
+
+    const from_type = try self.parser.typeOf(cast.expr.*);
+    if (cast.type == .matrix) {
+        if (from_type.isNumber()) @panic("mat from scalar");
+        if (from_type == .matrix) {
+            //load matrix so that generateIndexing uses the loaded value
+            _ = try self.generateExpression(cast.expr.*);
+
+            const n: WORD = @intFromEnum(cast.type.matrix.n);
+            const m: WORD = @intFromEnum(cast.type.matrix.m);
+            const v01 = if (m > @intFromEnum(from_type.matrix.m) or n > @intFromEnum(from_type.matrix.n)) switch (cast.type.matrix.width) {
+                inline else => |width| blk: {
+                    const V = @Vector(2, @Type(.{ .float = .{ .bits = @intFromEnum(width) } }));
+                    const vec: V = .{ 0, 1 };
+                    break :blk try self.generateValue(.{
+                        .type = .{ .vector = .{ .len = ._2, .component = .{ .type = .float, .width = width } } },
+                        .payload = .{ .ptr = @ptrCast(@alignCast(@constCast(&vec))) },
+                    });
+                },
+            } else 0;
+            var column_ids: [4]WORD = @splat(0);
+            for (0..n) |x| {
+                if (x < @intFromEnum(from_type.matrix.n)) {
+                    const column = try self.generateIndexing(.{ .target = cast.expr, .index = @constCast(&Parser.Expression{ .value = .{
+                        .type = tp.u32_type,
+                        .payload = .{ .wide = x },
+                    } }) });
+                    column_ids[x] = try self.addWordsAndReturn2(&.{
+                        opWord(.vector_shuffle, @truncate(5 + m)),
+                        try self.convertTypeID(.{ .vector = cast.type.matrix.columnVector() }),
+                        self.newID(),
+                        column,
+                        if (v01 == 0) column else v01,
+                    });
+                    for (0..m) |index| try self.addWord(if (index < @intFromEnum(from_type.matrix.m)) @truncate(index) else if (index == x) 1 else 0);
+                } else {
+                    column_ids[x] = try self.addWordsAndReturn2(&.{
+                        opWord(.vector_shuffle, @truncate(5 + m)),
+                        try self.convertTypeID(.{ .vector = cast.type.matrix.columnVector() }),
+                        self.newID(),
+                        v01,
+                        v01,
+                    });
+                    for (0..m) |index| try self.addWord(if (index == x) 1 else 0);
+                }
+            }
+            const result = try self.addWordsAndReturn2(&.{
+                opWord(.composite_construct, @truncate(3 + n)),
+                result_type_id,
+                self.newID(),
+            });
+            try self.addWords(column_ids[0..n]);
+            return result;
+        } else unreachable;
+    }
+    @panic("idk how to gen that cast");
 }
 fn generateIdentifier(self: *Generator, identifier: []const u8) Error!WORD {
     const id_info = try self.getNameInfo(identifier);
@@ -920,6 +981,20 @@ fn generateCall(self: *Generator, call: Parser.Call, result_type_id: WORD) Error
                 @intFromEnum(GlslStdExtOp.reflect),
                 try self.generateExpression(call.args[0]),
                 try self.generateExpression(call.args[1]),
+            }),
+            .inverse => try self.addWordsAndReturn2(&.{
+                opWord(.ext_inst, 6),
+                result_type_id,
+                self.newID(),
+                glsl_std_id,
+                @intFromEnum(GlslStdExtOp.matrix_inverse),
+                try self.generateExpression(call.args[0]),
+            }),
+            .transpose => try self.addWordsAndReturn2(&.{
+                opWord(.transpose, 4),
+                result_type_id,
+                self.newID(),
+                try self.generateExpression(call.args[0]),
             }),
             else => @panic("idk how to gen that builtin call"),
         },
@@ -1339,6 +1414,8 @@ const Op = enum(WORD) {
     sdot = 4450,
     udot = 4451,
 
+    transpose = 84,
+
     ext_inst_import = 11,
     ext_inst = 12,
 };
@@ -1347,6 +1424,7 @@ const GlslStdExtOp = enum(WORD) {
     normalize = 69,
     reflect = 71,
     pow = 26,
+    matrix_inverse = 34,
 
     fmax = 40,
     umax = 41,

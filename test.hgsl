@@ -1,4 +1,3 @@
-const main = entrypoint(.fragment){
-	out(.flat) output : vec3
-	//const LightType = enum(u32){directional, point, spot, area}
-}
+
+mut var : vec3
+var = .{1}

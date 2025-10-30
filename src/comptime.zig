@@ -6,10 +6,10 @@ const Parser = @import("Parser.zig");
 
 const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(CI, -1)) } };
 
-fn errorImplicitCast(self: *Parser, expr: Expression, @"type": Type) Error {
+fn errorImplicitCast(self: *Parser, expr: Expression, @"type": Type, comptime explicit: bool) Error {
     return self.errorOutFmt(
         Error.CannotImplicitlyCast,
-        "Cannot implicitly cast \'{f}\'[{f}] to \'{f}\'",
+        "Cannot " ++ (if (explicit) "explicitly" else "implicitly") ++ " cast \'{f}\'[{f}] to \'{f}\'",
         .{ expr, try self.typeOf(expr), @"type" },
     );
 }
@@ -195,7 +195,7 @@ fn refineCast(self: *Parser, cast: Parser.Cast) Error!Expression {
 
     return (self.implicitCast(cast.expr.*, cast.type)) catch {
         const type_of = try self.typeOf(cast.expr.*);
-        if (!isExplicitlyCastable(type_of, cast.type)) return Error.CannotExplicitlyCast;
+        if (!isExplicitlyCastable(type_of, cast.type)) return errorImplicitCast(self, cast.expr.*, cast.type, true);
 
         switch (cast.type) {
             .vector, .array, .matrix => {
@@ -259,6 +259,7 @@ fn isScalarOrEachVectorComponentsEqualToNumber(value: Value, comptime number: co
 }
 fn isExplicitlyCastable(from: Type, to: Type) bool {
     return switch (to) {
+        .matrix => from.isNumber() or from == .matrix,
         .scalar, .compint, .compfloat, .bool, .@"enum" => to.isNumber() or to == .bool or to == .@"enum",
         .vector => |vector| switch (from) {
             .vector => |fromvec| fromvec.len == vector.len,
@@ -653,6 +654,13 @@ fn refineMul(self: *Parser, left: *Expression, right: *Expression) Error!Express
             right_type.scalarPrimitive() orelse return self.errorOut(Error.InvalidOperands),
         };
         if (!tp.Scalar.eql(ls, rs)) return self.errorOut(Error.InvalidOperands);
+        if (left_type == .vector and left_type.vector.len != right_type.matrix.m)
+            return self.errorOut(Error.InvalidOperands)
+        else if (right_type == .vector and right_type.vector.len != left_type.matrix.n)
+            return self.errorOut(Error.InvalidOperands)
+        else if (left_type == .matrix and right_type == .matrix and left_type.matrix.n != right_type.matrix.m)
+            return self.errorOut(Error.InvalidOperands);
+
         //mat x mat
         // mat x vec
         // mar x scalar
@@ -771,7 +779,7 @@ pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expres
         .cast => |cast| try implicitCastCast(self, cast, @"type"),
         .enum_literal => |enum_literal| try implicitCastEnumLiteral(self, enum_literal, @"type"),
     };
-    return if (@"type".eql(try self.typeOf(result))) result else errorImplicitCast(self, result, @"type");
+    return if (@"type".eql(try self.typeOf(result))) result else errorImplicitCast(self, result, @"type", false);
 }
 fn implicitCastEnumLiteral(self: *Parser, enum_literal: []const u8, @"type": Type) Error!Expression {
     const e: tp.Enum = if (@"type" == .@"enum") @"type".@"enum" else return self.errorOut(Error.CannotImplicitlyCast);
