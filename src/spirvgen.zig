@@ -15,6 +15,7 @@ const Error = error{
     OutOfMemory,
     InvalidSpirvType,
     GenError,
+    PushConstantBlockTooBig,
 } || Writer.Error || Parser.Error;
 
 const glsl_std_id: WORD = 1;
@@ -113,6 +114,7 @@ pub fn generate(parser: *Parser) Error![]WORD {
             else
                 unreachable;
             @"type".* = .{ .@"struct" = slice };
+            if (self.sizeOf(self.typeFromID(ep.push_constant_struct_type_id)) > self.parser.settings.max_push_constant_bytes) return Error.PushConstantBlockTooBig;
 
             try self.decorateStructLayout(ep.push_constant_struct_type_id, false, .scalar);
 
@@ -547,6 +549,7 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.E
     defer self.current_buffer = &self.main_buffer;
 
     const entry_point_id = self.newID();
+    const label_id = self.newID();
 
     const index = self.entry_points.items.len;
     try self.entry_points.append(self.arena, .{
@@ -576,7 +579,7 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.E
         @intFromEnum(FunctionControl.none),
         try self.typeID(.{ .function = .{ .rtype_id = try self.typeID(.void) } }),
     });
-    try self.main_buffer.appendSlice(self.arena, &.{ opWord(.label, 2), self.newID() });
+    try self.main_buffer.appendSlice(self.arena, &.{ opWord(.label, 2), label_id });
     try self.main_buffer.appendSlice(self.arena, variable_buffer.items);
     try self.main_buffer.appendSlice(self.arena, buffer.items);
     buffer.deinit(self.arena);

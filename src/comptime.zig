@@ -5,6 +5,8 @@ const util = @import("util.zig");
 const Parser = @import("Parser.zig");
 
 const minusonecompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(CI, -1)) } };
+const zerocompint: Value = .{ .type = .compint, .payload = .{ .wide = @bitCast(@as(CI, 0)) } };
+const zerocompintexpr: Expression = .{ .value = zerocompint };
 
 fn errorImplicitCast(self: *Parser, expr: Expression, @"type": Type, comptime explicit: bool) Error {
     return self.errorOutFmt(
@@ -300,7 +302,7 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
             break :sw @intCast(ci);
         },
         .compfloat => continue :sw blk: {
-            indexing.target.* = .{ .value = try implicitCastValue(indexing.index.value, .compint) };
+            indexing.target.* = .{ .value = try implicitCastValue(self, indexing.index.value, .compint) };
             break :blk .compint;
         },
         .scalar => |scalar| switch (scalar.width) {
@@ -585,13 +587,13 @@ fn refineRightShift(self: *Parser, left: *Expression, right: *Expression) Error!
     } else {
         //rewrite that scope
         if (left_type == .compfloat or left_type == .compint) {
-            left_expr = .{ .value = try implicitCastValue(left_expr.value, tp.u32_type) };
+            left_expr = .{ .value = try implicitCastValue(self, left_expr.value, tp.u32_type) };
             left_type = tp.u32_type;
         } else if (left_type != .scalar or left_type.scalar.type == .uint)
             return self.errorOut(Error.InvalidOperands);
 
         if (right_type == .compfloat or right_type == .compint) {
-            right_expr = .{ .value = try implicitCastValue(right_expr.value, tp.u32_type) };
+            right_expr = .{ .value = try implicitCastValue(self, right_expr.value, tp.u32_type) };
             right_type = tp.u32_type;
         } else if (right_type != .scalar or right_type.scalar.type != .uint)
             return self.errorOut(Error.InvalidOperands);
@@ -695,10 +697,11 @@ fn resolvePatternsMul(self: *Parser, left: *Expression, right: *Expression) Erro
         if (curr.* == .value) {
             const other = if (i == 0) right else left;
             const other_type = try self.typeOf(other.*);
-            if (isScalarOrEachVectorComponentsEqualToNumber(curr.value, 0)) break .{ .value = try implicitCastValue(
-                minusonecompint,
-                if (curr.value.type.depth() > other_type.depth()) curr.value.type else other_type,
-            ) };
+            std.debug.print("CURRVAL: {f}\n", .{curr.value});
+            if (isScalarOrEachVectorComponentsEqualToNumber(curr.value, 0)) break try refineCast(self, .{
+                .expr = @constCast(&zerocompintexpr),
+                .type = if (curr.value.type.depth() > other_type.depth()) curr.value.type else other_type,
+            });
             if (isScalarOrEachVectorComponentsEqualToNumber(curr.value, 1)) break if (curr.value.type.depth() > other_type.depth())
                 try splatCast(self, other, curr.value.type)
             else
@@ -733,10 +736,10 @@ fn mulVecOrScalarValues(self: *Parser, left: Value, right: Value) Error!Value {
         try splatScalar(
             self,
             left_value.type.vector,
-            (try implicitCastValue(right_value, .{ .scalar = left_value.type.vector.component })).payload.wide,
+            (try implicitCastValue(self, right_value, .{ .scalar = left_value.type.vector.component })).payload.wide,
         )
     else
-        try implicitCastValue(right_value, left_value.type);
+        try implicitCastValue(self, right_value, left_value.type);
 
     const t, const a, const b = .{ left_value.type, left_value.payload, right_value.payload };
     return try mulValuesSameType({}, t, a, b);
@@ -770,7 +773,7 @@ pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expres
     const type_of = try self.typeOf(expr);
     if (type_of.eql(@"type")) return expr;
     const result: Expression = switch (expr) {
-        .value => |value| .{ .value = try implicitCastValue(value, @"type") },
+        .value => |value| .{ .value = try implicitCastValue(self, value, @"type") },
         .constructor => |constructor| try refineConstructor(self, if (constructor.type == .unknown)
             .{ .components = constructor.components, .type = @"type" }
         else
@@ -796,21 +799,21 @@ fn implicitCastCast(self: *Parser, cast: Parser.Cast, @"type": Type) Error!Expre
     if (cast.type == .unknown) return initial;
     return if (cast.type.eql(@"type")) initial else self.errorOut(Error.CannotImplicitlyCast);
 }
-pub fn implicitCastValue(value: Value, target: Type) Error!Value {
+pub fn implicitCastValue(self: *Parser, value: Value, target: Type) Error!Value {
     if (value.type.eql(target)) return value;
 
     return switch (target) {
         .compint => if (value.type == .compfloat and isWhole(util.extract(CF, value.payload.wide)))
             .{ .type = .compint, .payload = .{ .wide = util.fit(WIDE, @as(CI, @intFromFloat(blk: {
                 const float = util.extract(CF, value.payload.wide);
-                break :blk if (@floor(float) == float) float else return Error.CannotImplicitlyCast;
+                break :blk if (@floor(float) == float) float else return self.errorOut(Error.CannotImplicitlyCast);
             }))) } }
         else
-            Error.CannotImplicitlyCast,
+            self.errorOut(Error.CannotImplicitlyCast),
         .compfloat => if (value.type == .compint)
             .{ .type = .compfloat, .payload = .{ .wide = util.fit(WIDE, @as(CF, @floatFromInt(util.extract(CI, value.payload.wide)))) } }
         else
-            Error.CannotImplicitlyCast,
+            self.errorOut(Error.CannotImplicitlyCast),
         //@PREVENT ROUNDING COMPTIME FLOATS WHEN CASING TO INTEGER
         .scalar => |scalar| .{ .type = target, .payload = .{ .wide = try switch (scalar.type) {
             inline else => |t| switch (scalar.width) {
@@ -820,17 +823,17 @@ pub fn implicitCastValue(value: Value, target: Type) Error!Value {
                         util.extract(CI, value.payload.wide),
                     )),
                     .compfloat => if (t != .float and !isWhole(util.extract(CF, value.payload.wide)))
-                        return Error.CannotImplicitlyCast
+                        return self.errorOut(Error.CannotImplicitlyCast)
                     else
                         util.fit(WIDE, util.numericCast(
                             comptime (tp.Scalar{ .type = t, .width = w }).ToZig(),
                             util.extract(CF, value.payload.wide),
                         )),
-                    else => Error.CannotImplicitlyCast,
+                    else => self.errorOut(Error.CannotImplicitlyCast),
                 },
             },
         } } },
-        else => Error.CannotImplicitlyCast,
+        else => self.errorOut(Error.CannotImplicitlyCast),
     };
 }
 fn isWhole(v: anytype) bool {

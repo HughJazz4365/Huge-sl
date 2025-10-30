@@ -558,7 +558,7 @@ fn parseExpressionSidePrimary(self: *Parser, comptime access: bool) Error!Expres
             var len_val = array_len_expr.value;
             len_val = sw: switch (len_val.type) {
                 .compfloat => {
-                    len_val = try ct.implicitCastValue(len_val, .compint);
+                    len_val = try ct.implicitCastValue(self, len_val, .compint);
                     continue :sw .compint;
                 },
                 .compint => if ((len_val.payload.wide >> 32) != 0)
