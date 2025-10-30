@@ -4,8 +4,7 @@ const tp = @import("type.zig");
 const ct = @import("comptime.zig");
 const Parser = @import("Parser.zig");
 
-pub const InterpolationQualifier = enum { smooth, flat, noperspective };
-pub const UniformAccessQualifier = enum { private, public };
+pub const Interpolation = enum(u64) { smooth = 0, flat = 1, noperspective = 2 };
 
 pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression, callee_ptr: *Expression) Error!Expression {
     if (args.len != bf.argumentCount()) return self.errorOut(Error.NonMatchingArgumentCount);
@@ -19,13 +18,13 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
             const components = try self.arena.allocator().alloc(Expression, 3);
             for (0..3) |i| {
                 components[2 - i] = .{ .cast = .{
-                    .type = f32_type,
+                    .type = tp.f32_type,
                     .expr = try self.createVal(Expression{ .bin_op = .{
                         .left = try self.createVal(Expression{ .bin_op = .{
                             .left = hex,
                             .op = .@">>",
                             .right = try self.createVal(Expression{ .value = .{
-                                .type = u32_type,
+                                .type = tp.u32_type,
                                 .payload = .{ .wide = util.fit(Parser.WIDE, @as(u32, @intCast(i * 8))) },
                             } }),
                         } }),
@@ -37,12 +36,12 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
 
             break :blk try self.implicitCast(try ct.refineDescend(self, .{ .bin_op = .{
                 .left = try self.createVal(Expression{ .constructor = .{
-                    .type = vec3_type,
+                    .type = tp.vec3_type,
                     .components = components,
                 } }),
                 .op = .@"*",
                 .right = @constCast(&inv_oxFF),
-            } }), vec3_type);
+            } }), tp.vec3_type);
         },
         else => initial,
     };
@@ -50,7 +49,7 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
 pub fn typeOfBuiltInCall(self: *Parser, bf: BuiltinFunction, args: []Expression) Error!Type {
     if (args.len != bf.argumentCount()) return self.errorOut(Error.NonMatchingArgumentCount);
     const @"type": Type = switch (bf) {
-        .col_hex => vec3_type,
+        .col_hex => tp.vec3_type,
 
         .array_type => Type{ .type = {} },
         else => try self.typeOf(args[0]),
@@ -132,9 +131,8 @@ const inv_oxFF = Expression{ .value = .{
     .type = .compfloat,
     .payload = .{ .wide = util.fit(Parser.WIDE, @as(Parser.CF, 1.0 / 255.0)) },
 } };
-const u32_type: Type = .{ .scalar = .{ .type = .uint, .width = .word } };
-const f32_type: Type = .{ .scalar = .{ .type = .float, .width = .word } };
-const vec3_type: Type = .{ .vector = .{ .len = ._3, .component = .{ .type = .float, .width = .word } } };
+pub const stage_type: Type = .{ .@"enum" = .fromZig(Parser.ExecutionModel) };
+pub const interpolation_type: Type = .{ .@"enum" = .fromZig(Interpolation) };
 
 const Type = tp.Type;
 const Expression = Parser.Expression;

@@ -7,7 +7,12 @@ const Parser = @import("Parser.zig");
 pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
     switch (statement) {
         .var_decl => |var_decl| {
-            try writer.print("[RC:{d}]{s} {s} : {f} = {f}", .{ var_decl.reference_count, @tagName(var_decl.qualifier), var_decl.name, var_decl.type, var_decl.initializer });
+            try writer.print("[RC:{d}]{s}", .{ var_decl.reference_count, @tagName(var_decl.qualifier) });
+            switch (var_decl.qualifier) {
+                .in, .out => try writer.print("({})", .{if (var_decl.qualifier == .in) var_decl.qualifier.in else var_decl.qualifier.out}),
+                else => {},
+            }
+            try writer.print(" {s} : {f} = {f}", .{ var_decl.name, var_decl.type, var_decl.initializer });
         },
         .assignment => |ass| try writer.print("{f} = {f}", .{
             ass.target,
@@ -46,6 +51,7 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
 
 pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
     switch (expr) {
+        .enum_literal => |enum_literal| try writer.print(".{s}", .{enum_literal}),
         .identifier => |id| try writer.print("{s}", .{id}),
         .builtin => |builtin| switch (builtin) {
             inline else => |val| try writer.print("@{s}", .{@tagName(val)}),
@@ -109,6 +115,7 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
                 },
             },
         },
+        .@"enum" => |@"enum"| try writer.print("[enum].{s}", .{for (@"enum".fields) |ef| (if (util.extract(u64, value.payload.wide) == ef.value) break ef.name) else "?"}),
         .type => if (value.payload.type == .unknown)
             try writer.print("[EMPTY]", .{})
         else

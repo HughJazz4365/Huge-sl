@@ -769,8 +769,16 @@ pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expres
             return self.errorOut(Error.CannotImplicitlyCast)),
         else => expr,
         .cast => |cast| try implicitCastCast(self, cast, @"type"),
+        .enum_literal => |enum_literal| try implicitCastEnumLiteral(self, enum_literal, @"type"),
     };
     return if (@"type".eql(try self.typeOf(result))) result else errorImplicitCast(self, result, @"type");
+}
+fn implicitCastEnumLiteral(self: *Parser, enum_literal: []const u8, @"type": Type) Error!Expression {
+    const e: tp.Enum = if (@"type" == .@"enum") @"type".@"enum" else return self.errorOut(Error.CannotImplicitlyCast);
+    return for (e.fields) |ef| (if (util.strEql(enum_literal, ef.name)) break .{ .value = .{
+        .type = .{ .@"enum" = e },
+        .payload = .{ .wide = ef.value },
+    } }) else return self.errorOut(Error.CannotImplicitlyCast);
 }
 fn implicitCastCast(self: *Parser, cast: Parser.Cast, @"type": Type) Error!Expression {
     const initial: Expression = .{ .cast = cast };

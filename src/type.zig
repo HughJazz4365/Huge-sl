@@ -2,10 +2,6 @@ const std = @import("std");
 const Parser = @import("Parser.zig");
 const bi = @import("builtin.zig");
 
-pub const u32_type: Type = .{ .scalar = .{ .type = .uint, .width = .word } };
-pub const f32_type: Type = .{ .scalar = .{ .type = .float, .width = .word } };
-pub const vec4_type: Type = .{ .vector = .{ .len = ._4, .component = .{ .type = .float, .width = .word } } };
-
 pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
     return switch (expr) {
         .value => |value| value.type,
@@ -74,10 +70,10 @@ pub const Type = union(enum) {
     buffer,
     image,
 
-    @"enum",
+    @"enum": Enum,
 
     function: FunctionType,
-    entrypoint: ExecutionModel,
+    entrypoint: Parser.ExecutionModel,
 
     pub const unknownempty: Type = .{ .unknown = &Expression.empty };
     pub const format = @import("debug.zig").formatType;
@@ -148,6 +144,21 @@ pub const Type = union(enum) {
         return .{ .value = .{ .type = .type, .payload = .{ .type = self } } };
     }
 };
+pub const Enum = struct {
+    tag_type: EnumTag = .{ .width = .word, .signed = false },
+    fields: []const EnumField,
+    pub fn fromZig(EnumT: type) Enum {
+        const tinfo = @typeInfo(EnumT).@"enum";
+        var fields: []const EnumField = &.{};
+        inline for (tinfo.fields) |ef| {
+            fields = fields ++ &[1]EnumField{.{ .name = ef.name, .value = ef.value }};
+        }
+        return .{ .fields = fields };
+    }
+};
+pub const EnumTag = struct { width: BitWidth, signed: bool };
+pub const EnumField = struct { name: []const u8, value: u64 };
+
 pub const ConstructorStructure = struct {
     component: Type,
     len: u32 = 1,
@@ -157,8 +168,6 @@ pub const FunctionType = struct {
     rtype: *const Type,
     arg_types: []const Type,
 };
-
-pub const ExecutionModel = enum { vertex, fragment, compute };
 
 pub const Matrix = struct {
     m: VectorLen,
@@ -283,6 +292,11 @@ pub const ScalarType = enum {
         };
     }
 };
+pub const u32_type: Type = .{ .scalar = .{ .type = .uint, .width = .word } };
+pub const f32_type: Type = .{ .scalar = .{ .type = .float, .width = .word } };
+pub const vec3_type: Type = .{ .vector = .{ .len = ._3, .component = .{ .type = .float, .width = .word } } };
+pub const vec4_type: Type = .{ .vector = .{ .len = ._4, .component = .{ .type = .float, .width = .word } } };
+
 pub const BitWidth = enum(u32) { short = 16, word = 32, long = 64 };
 
 const Expression = Parser.Expression;

@@ -1,13 +1,13 @@
 
-const light_dir = |(2 * vec3{3, -4, 0} * .{2}) 
-
-const light_color : vec3 = .{0xff1 & 834} //@colHex(0xFA_FD_55)
-
-const ambient = 0.1
-
-const spec_pow = 30
-const spec_intensity = 1
 const frag = entrypoint(.fragment){
+	const light_dir = |vec3{3, -4, 0}
+	const light_color: vec3 = .{0xff1 & 834} //@colHex(0xFA_FD_55)
+	
+	const ambient = 0.1
+	
+	const spec_pow = 30
+	const spec_intensity = 1
+
 	push eye_pos: vec3 = .{0}
 	in normal, world_pos: vec3
 
@@ -22,8 +22,9 @@ const frag = entrypoint(.fragment){
 
 const vert = entrypoint(.vertex){
 	push model, vp : mat4
-	in in_pos, in_normal, out out_normal, world_pos: vec3 = ,, in_normal, in_pos
-	//|(@transpose(@inverse(mat3{model})) * in_normal)
+	in in_pos, in_normal, out out_normal, world_pos: vec3 = ,,
+	in_normal,//|(@transpose(@inverse(mat3{model})) * in_normal)
+	in_pos
 
 	@position = vp * model * vec4{in_pos, 1}
 }

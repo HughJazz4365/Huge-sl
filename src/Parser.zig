@@ -585,10 +585,15 @@ fn parseExpressionSidePrimary(self: *Parser, comptime access: bool) Error!Expres
         .@"(" => try self.parseExpression(bracketShouldStop, true),
         .@"." => switch (try self.tokenizer.next()) {
             .@"{" => try refine_func(self, try self.parseUnknownConstructor()),
+            .identifier => |identifier| .{ .enum_literal = identifier },
             else => return self.errorOut(Error.UnexpectedToken),
         },
         .@"fn" => try self.parseFunctionTypeOrValue(),
-        .entrypoint => try self.parseEntryPointTypeOrValue(),
+        .entrypoint => blk: {
+            const res = try self.parseEntryPointTypeOrValue();
+            if (try self.tokenizer.peek() == .@"}") self.tokenizer.skip();
+            break :blk res;
+        },
         else => .{ .value = try self.parseValue(token) },
     };
 }
@@ -750,15 +755,17 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
 }
 fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
     if (try self.tokenizer.next() != .@"(") return self.errorOut(Error.UnexpectedToken);
-    var token = try self.tokenizer.next();
-    const exec_model_info: ExecutionModelInfo =
-        if (token == .@"." and try self.tokenizer.peek() == .identifier and util.strEql((try self.tokenizer.peek()).identifier, "fragment"))
-            .fragment
-        else
-            .vertex;
+    const stage_enum_expr = try self.implicitCast(try self.parseExpressionSide(true), bi.stage_type);
+    if (stage_enum_expr != .value) return self.errorOut(Error.IncompleteStatement);
 
-    self.tokenizer.skip();
-    token = try self.tokenizer.next();
+    const exec_model: ExecutionModel = @enumFromInt(@as(u64, @truncate(stage_enum_expr.value.payload.wide)));
+    const exec_model_info: ExecutionModelInfo = switch (exec_model) {
+        .vertex => .vertex,
+        .fragment => .fragment,
+        .compute => .{ .compute = @splat(0) },
+    };
+
+    const token = try self.tokenizer.next();
     if (token != .@")") return self.errorOut(Error.InvalidInput);
 
     const ep_type: Type = .{ .entrypoint = std.meta.activeTag(exec_model_info) };
@@ -934,7 +941,8 @@ pub const EntryPoint = struct {
     }
 };
 
-pub const ExecutionModelInfo = union(tp.ExecutionModel) {
+pub const ExecutionModel = enum(u64) { vertex = 0, fragment = 1, compute = 2 };
+pub const ExecutionModelInfo = union(ExecutionModel) {
     vertex,
     fragment,
     compute: [3]u32,
@@ -951,6 +959,8 @@ fn parseValue(self: *Parser, token: Token) Error!Value {
 }
 
 pub const Expression = union(enum) {
+    enum_literal: []const u8,
+
     call: Call,
     identifier: []const u8,
     named_value: NamedValue,
@@ -963,14 +973,9 @@ pub const Expression = union(enum) {
     u_op: UOp,
 
     swizzle: Swizzle,
-    //   [expr] [swizzle]
     member_access: MemberAccess,
-    //   [expr] ['.'] [name]
     indexing: Indexing,
-    //   [expr] ['['] [index] [']']
 
-    //type fields should be Exprssession for both of those
-    //ex. @TypeOf([dependent on generic or smth]){value}// cast to @TypeOf(...)
     cast: Cast,
     constructor: Constructor,
 
@@ -1153,14 +1158,22 @@ pub const VariableReference = struct {
 };
 
 fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
-    _ = self;
     return switch (token) {
-        .in => .{ .in = .smooth },
-        .out => .{ .out = .smooth },
+        .in, .out => blk: {
+            var interpolation: bi.Interpolation = .smooth;
+            if (try self.tokenizer.peek() == .@"(") {
+                const expr = try self.implicitCast(try self.parseExpressionSide(true), bi.interpolation_type);
+                if (expr != .value) return self.errorOut(Error.IncompleteStatement);
+
+                interpolation = @enumFromInt(util.extract(u64, expr.value.payload.wide));
+            }
+            break :blk if (token == .in) .{ .in = interpolation } else .{ .out = interpolation };
+            // .{ .in = .smooth },
+        },
         .@"const" => .@"const",
         .mut => .mut,
-        .uniform => .{ .uniform = .private },
-        .push => .{ .push = .private },
+        .uniform => .uniform,
+        .push => .push,
         .shared => .shared,
         else => Error.UnexpectedToken,
     };
@@ -1170,11 +1183,11 @@ pub const Qualifier = union(enum) {
     @"const",
     mut,
 
-    uniform: bi.UniformAccessQualifier,
-    push: bi.UniformAccessQualifier,
+    uniform,
+    push,
 
-    in: bi.InterpolationQualifier,
-    out: bi.InterpolationQualifier,
+    in: bi.Interpolation,
+    out: bi.Interpolation,
 
     shared,
     pub fn isIO(self: Qualifier) bool {

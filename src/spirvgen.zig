@@ -448,9 +448,25 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             }
         },
     };
-    if (var_decl.qualifier == .push) {
-        try self.addPushConstant(var_decl, initializer, load);
-        return;
+    switch (var_decl.qualifier) {
+        .in, .out => {
+            const interpolation = if (var_decl.qualifier == .in) var_decl.qualifier.in else var_decl.qualifier.out;
+            if (interpolation != .smooth)
+                try self.decorations.appendSlice(self.arena, &.{
+                    opWord(.decorate, 3),
+                    var_id,
+                    @intFromEnum(@as(Decoration, switch (interpolation) {
+                        .noperspective => .no_perspective,
+                        .flat => .flat,
+                        .smooth => unreachable,
+                    })),
+                });
+        },
+        .push => {
+            try self.addPushConstant(var_decl, initializer, load);
+            return;
+        },
+        else => {},
     }
     if (storage_class == .push_constant) return;
 
@@ -994,13 +1010,35 @@ fn generateBinOp(self: *Generator, bin_op: Parser.BinOp, result_type_id: WORD) E
             //zero value for dotClamped
             // const ptype = self.parser.typeOf(bin_op.left.*) catch unreachable;
             // const zero_value: WORD = try self.generateValue(.{ .type = (ptype).vector.component, .payload = .{ .wide = 0 } });
-            const op: Op = switch (self.typeFromID(result_type_id)) {
+            const rt = self.typeFromID(result_type_id);
+            const op: Op = switch (rt) {
                 .float => .dot,
                 .int => |int| if (int.signed) .sdot else .udot,
                 else => unreachable,
             };
 
-            break :blk try self.addWordsAndReturn2(&.{ opWord(op, 5), result_type_id, self.newID(), left, right });
+            const dot = try self.addWordsAndReturn2(&.{ opWord(op, 5), result_type_id, self.newID(), left, right });
+            if (bin_op.op == .@"**") break :blk dot;
+
+            const max_op: GlslStdExtOp = switch (rt) {
+                .float => .fmax,
+                .int => |int| if (int.signed) .smax else .umax,
+                else => unreachable,
+            };
+
+            const zero_const = try self.generateValue(
+                .{ .type = try self.parser.typeOf(.{ .bin_op = bin_op }), .payload = .{ .wide = 0 } },
+            );
+            const clamped = try self.addWordsAndReturn2(&.{
+                opWord(.ext_inst, 7),
+                result_type_id,
+                self.newID(),
+                glsl_std_id,
+                @intFromEnum(max_op),
+                dot,
+                zero_const,
+            });
+            break :blk clamped;
         },
         .@"*" => blk: {
             const left_type = try self.parser.typeOf(bin_op.left.*);
@@ -1309,6 +1347,10 @@ const GlslStdExtOp = enum(WORD) {
     normalize = 69,
     reflect = 71,
     pow = 26,
+
+    fmax = 40,
+    umax = 41,
+    smax = 42,
 };
 const BuiltinIDInfos = struct {
     per_vertex: struct {
