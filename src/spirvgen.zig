@@ -78,7 +78,7 @@ pub fn generate(parser: *Parser) Error![]WORD {
     var self: Generator = .{
         .parser = parser,
         .arena = parser.arena.allocator(),
-        .global_io = try parser.arena.allocator().alloc(IOEntry, parser.global_io.items.len),
+        .global_io = try parser.arena.allocator().alloc(IOEntry, parser.global_scope.global_io.items.len),
     };
 
     var result: std.array_list.Managed(WORD) = .init(self.parser.allocator);
@@ -130,7 +130,7 @@ pub fn generate(parser: *Parser) Error![]WORD {
             });
         }
 
-        const execution_model: WORD = switch (ep.exec_model_info) {
+        const execution_model: WORD = switch (ep.shader_stage_info) {
             .vertex => 0,
             .fragment => 4,
             .compute => 5,
@@ -152,7 +152,7 @@ pub fn generate(parser: *Parser) Error![]WORD {
     }
 
     for (self.entry_points.items) |ep| { // execution modes
-        switch (ep.exec_model_info) {
+        switch (ep.shader_stage_info) {
             .fragment => try result.appendSlice(&.{
                 opWord(.execution_mode, 3),
                 ep.id,
@@ -311,6 +311,7 @@ fn decorateStructLayout(self: *Generator, type_id: WORD, reorder: bool, alignmen
             },
             else => {},
         }
+        offset = rut(offset, self.alignOf(field_type, .scalar)); //???
         try self.decorations.appendSlice(self.arena, &.{
             opWord(.member_decorate, 5),
             type_id,
@@ -318,6 +319,7 @@ fn decorateStructLayout(self: *Generator, type_id: WORD, reorder: bool, alignmen
             @intFromEnum(Decoration.offset),
             offset,
         });
+        // std.debug.print("t: {any} ALIGN : {d}, {d}\n", .{ field_type, self.alignOf(field_type, alignment), offset });
         offset = rut(offset + field_size, self.alignOf(field_type, alignment));
     }
 }
@@ -424,7 +426,7 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             else => break :io,
         };
         if (self.inGlobalScope()) {
-            for (self.parser.global_io.items, 0..) |g, i| {
+            for (self.parser.global_scope.global_io.items, 0..) |g, i| {
                 if (util.strEql(g, var_decl.name)) self.global_io[i] = .{ .id = var_id, .type_id = type_id, .io_type = io_type };
             }
         } else {
@@ -557,7 +559,7 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.E
         .name = name,
 
         .id = entry_point_id,
-        .exec_model_info = entry_point.exec_model_info,
+        .shader_stage_info = entry_point.shader_stage_info,
         .local_io = try self.arena.alloc(IOEntry, entry_point.io.items.len),
     });
     _ = try self.typeID(.void); //so that ids are assigned before function body
@@ -1189,7 +1191,7 @@ const EntryPoint = struct {
     name: []const u8,
 
     id: WORD,
-    exec_model_info: ExecutionModelInfo,
+    shader_stage_info: ExecutionModelInfo,
     interface_ids: []WORD = &.{},
     local_io: []IOEntry = &.{},
 
@@ -1468,8 +1470,6 @@ const Decoration = enum(WORD) {
 
     builtin = 11,
     block = 2,
-    glsl_shared = 8,
-    glsl_packed = 9,
 
     offset = 35,
     array_stride = 6,
@@ -1538,7 +1538,7 @@ const FunctionControl = enum(WORD) {
     @"const" = 4,
 };
 
-const ExecutionModelInfo = Parser.ExecutionModelInfo;
+const ExecutionModelInfo = Parser.ShaderStageInfo;
 const Expression = Parser.Expression;
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;

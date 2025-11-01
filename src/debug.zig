@@ -4,6 +4,8 @@ const util = @import("util.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
 
+pub var p: *Parser = undefined;
+
 pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
     switch (statement) {
         .var_decl => |var_decl| {
@@ -45,6 +47,7 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
         },
         .array => |array| try writer.print("[{d}]{f}", .{ array.len, array.component }),
         .matrix => |matrix| try writer.print("mat{d}x{d}", .{ matrix.m, matrix.n }),
+        .@"struct" => |struct_id| _ = try writer.write(p.getStructFromID(struct_id).name),
         else => try writer.print("{s}", .{@tagName(t)}),
     }
 }
@@ -70,6 +73,16 @@ pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
             }
             try writer.print(" }}", .{});
         },
+        .struct_constructor => |struct_constructor| {
+            if (struct_constructor.type == .@"struct") {
+                const s = p.getStructFromID(struct_constructor.type.@"struct");
+                try writer.print("{s}{{\n", .{s.name});
+            } else try writer.print("{f}{{\n", .{struct_constructor.type});
+            for (struct_constructor.elements) |elem| {
+                try writer.print("\t.{s} = {f},\n", .{ elem.name, elem.expr });
+            }
+            try writer.print("}}", .{});
+        },
         .cast => |cast| try writer.print("{f}{{ {f} }}", .{ cast.type, cast.expr.* }),
         .indexing => |indexing| try writer.print("{f}[{f}]", .{ indexing.target, indexing.index }),
         .call => |call| {
@@ -81,6 +94,7 @@ pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
 }
 pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
     switch (value.type) {
+        .bool => try writer.print("{}", .{util.extract(bool, value.payload.wide)}),
         .compint => try writer.print("{d}", .{util.extract(Parser.CI, value.payload.wide)}),
         .compfloat => try writer.print("{d}f", .{util.extract(Parser.CF, value.payload.wide)}),
         .entrypoint => {
@@ -105,6 +119,16 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
                 }),
             },
         },
+        .@"struct" => |struct_id| {
+            const s = p.getStructFromID(struct_id);
+            const values = @as([*]const Expression, @ptrCast(@alignCast(value.payload.ptr)))[0..s.members.items.len];
+
+            try writer.print("|{s}|{{\n", .{s.name});
+            for (values, s.members.items) |v, m| {
+                try writer.print("\t.{s} = {f},\n", .{ m.name, v });
+            }
+            try writer.print("}}", .{});
+        },
         .vector => |vector| switch (vector.len) {
             inline else => |len| switch (vector.component.width) {
                 inline else => |width| switch (vector.component.type) {
@@ -118,8 +142,15 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
         .@"enum" => |@"enum"| try writer.print("[enum].{s}", .{for (@"enum".fields) |ef| (if (util.extract(u64, value.payload.wide) == ef.value) break ef.name) else "?"}),
         .type => if (value.payload.type == .unknown)
             try writer.print("[EMPTY]", .{})
-        else
-            try writer.print("{f}", .{value.payload.type}),
+        else if (value.payload.type == .@"struct") {
+            const s = p.getStructFromID(value.payload.type.@"struct");
+
+            try writer.print("struct[{s}]{{\n", .{s.name});
+            for (s.members.items) |m| try writer.print("[.{s} : {f} = {f}]\n", .{ m.name, m.type, m.defalt_value });
+            if (s.body.items.len > 0) _ = try writer.write("\n");
+            for (s.body.items) |statement| try writer.print("{f}\n", .{statement});
+            try writer.print("}}\n", .{});
+        } else try writer.print("{f}", .{value.payload.type}),
         .function => {
             try writer.print("{f}{{\n", .{value.type});
 

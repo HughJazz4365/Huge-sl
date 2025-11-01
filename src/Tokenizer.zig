@@ -25,6 +25,18 @@ pub fn skip(self: *Tokenizer) void {
     _ = self.next() catch unreachable;
 }
 
+pub fn peekArray(self: *Tokenizer, comptime num: usize) Error![num]Token {
+    var result: [num]Token = undefined;
+    const save_state = self.state;
+    defer self.state = save_state;
+
+    for (&result, 0..) |*t, i| {
+        t.* = try self.peek();
+        if (i + 1 < num) self.skip();
+    }
+
+    return result;
+}
 pub fn peekTimes(self: *Tokenizer, num: usize) Error!Token {
     const save_state = self.state;
     defer self.state = save_state;
@@ -298,6 +310,7 @@ pub const Token = union(enum) {
     @"{",
     @"}",
     //keywords
+    member,
     @"const",
     mut,
     in,

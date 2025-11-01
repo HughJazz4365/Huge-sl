@@ -51,6 +51,7 @@ pub fn refine(self: *Parser, expr: Expression) Error!Expression {
         .bin_op => |bin_op| try refineBinOp(self, bin_op),
         .u_op => |u_op| try refineUOp(self, u_op),
         .constructor => |constructor| try refineConstructor(self, constructor),
+        .struct_constructor => |struct_constructor| try refineStructConstructor(self, struct_constructor),
         .cast => |cast| try refineCast(self, cast),
         .indexing => |indexing| try refineIndexing(self, indexing),
         .identifier => |identifier| try refineIdentifier(self, identifier, true),
@@ -134,7 +135,7 @@ const FunctionDispatch = struct {
         const dispatch: *FunctionDispatch = @fieldParentPtr("scope", scope);
 
         const refined_statement = try refineStatementDispatch(parser, statement);
-        if (!(try parser.isStatementComplete(refined_statement))) return parser.errorOut(Error.IncompleteStatement);
+        if (!(try parser.isStatementComplete(statement))) return parser.errorIncompleteStatement(statement);
 
         switch (refined_statement) {
             .var_decl => |var_decl| {
@@ -369,6 +370,33 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
     };
 }
 
+fn refineStructConstructor(self: *Parser, struct_constructor: Parser.StructConstructor) Error!Expression {
+
+    // IncompleteStructConstructor
+    const initial: Expression = .{ .struct_constructor = struct_constructor };
+    const @"type": Type = struct_constructor.type;
+    if (@"type" == .unknown) return initial;
+    if (struct_constructor.type != .@"struct") return Error.InvalidConstructor;
+
+    const s = self.getStructFromID(struct_constructor.type.@"struct");
+    const slice = try self.arena.allocator().alloc(Expression, s.members.items.len);
+    @memset(slice, .empty);
+    for (struct_constructor.elements) |elem| {
+        for (s.members.items, 0..) |m, i| {
+            if (util.strEql(elem.name, m.name)) slice[i] = try self.implicitCast(elem.expr, m.type);
+        }
+    }
+    loop: for (s.members.items) |m| {
+        for (struct_constructor.elements) |elem|
+            (if (util.strEql(m.name, elem.name)) continue :loop)
+        else if (m.defalt_value.isEmpty())
+            return self.errorOut(Error.IncompleteStructConstructor);
+    }
+    return .{ .value = .{
+        .type = .{ .@"struct" = struct_constructor.type.@"struct" },
+        .payload = .{ .ptr = @ptrCast(@alignCast(slice.ptr)) },
+    } };
+}
 fn refineConstructor(self: *Parser, constructor: Parser.Constructor) Error!Expression {
     const initial: Expression = .{ .constructor = constructor };
     const @"type": Type = constructor.type;

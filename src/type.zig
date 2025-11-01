@@ -7,6 +7,7 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
         .value => |value| value.type,
         .named_value => |named_value| named_value.value.type,
         .constructor => |constructor| constructor.type,
+        .struct_constructor => |struct_constructor| struct_constructor.type,
         .cast => |cast| cast.type,
         .identifier => |identifier| (try self.current_scope.getVariableReference(self, identifier)).type,
         .builtin => |builtin| try bi.typeOfBuiltin(self, builtin),
@@ -73,14 +74,14 @@ pub const Type = union(enum) {
     array: Array,
     matrix: Matrix,
 
-    @"struct",
+    @"struct": Parser.StructID,
     buffer,
     image,
 
     @"enum": Enum,
 
     function: FunctionType,
-    entrypoint: Parser.ExecutionModel,
+    entrypoint: Parser.ShaderStage,
 
     pub const unknownempty: Type = .{ .unknown = &Expression.empty };
     pub const format = @import("debug.zig").formatType;
@@ -125,6 +126,7 @@ pub const Type = union(enum) {
             .scalar => |scalar| scalar,
             .vector => |vector| vector.component,
             .matrix => |matrix| .{ .type = .float, .width = matrix.width },
+            .array => |array| array.component.scalarPrimitive(),
             else => null,
         };
     }

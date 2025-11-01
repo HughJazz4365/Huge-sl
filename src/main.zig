@@ -12,8 +12,8 @@ pub fn main() !void {
         .optimize = if (builtin.mode == .Debug) .none else .speed,
     });
     for ([_][]const u8{
-        // "test.hgsl",
-        "../Huge/shader.hgsl",
+        "test.hgsl",
+        // "../Huge/shader.hgsl",
         // "source.hgsl",
         // "vertfrag.hgsl",
     }) |path| {

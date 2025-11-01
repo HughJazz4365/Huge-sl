@@ -26,7 +26,7 @@ pub fn compile(
     error_ctx.init(source, path, err_writer);
 
     var tokenizer: Tokenizer = .new(source, &error_ctx);
-    var parser = Parser.parse(allocator, &tokenizer, settings) catch |err| return error_ctx.outputUpdateIfEmpty(err);
+    var parser = Parser.parse(allocator, &tokenizer, settings, "FILE") catch |err| return error_ctx.outputUpdateIfEmpty(err);
     defer parser.deinit();
 
     return try SpirvGen.generate(&parser);
@@ -46,15 +46,17 @@ pub const Compiler = struct {
 
         self.err_ctx.reinit(source, path);
         var tokenizer: Tokenizer = .new(source, &self.err_ctx);
+        const file_name = path;
         var parser = Parser.parse(
             self.allocator,
             &tokenizer,
             self.settings,
+            file_name,
         ) catch |err| return self.err_ctx.outputUpdateIfEmpty(err);
         defer parser.deinit();
 
-        return try SpirvGen.generate(&parser);
-        // return &.{};
+        // return try SpirvGen.generate(&parser);
+        return &.{};
     }
     pub fn new(allocator: ?Allocator, err_writer: ?*std.Io.Writer, settings: Settings) Compiler {
         return .{
