@@ -23,7 +23,7 @@ const frag = entrypoint(.fragment){
 const vert = entrypoint(.vertex){
 	push model, vp : mat4
 	in in_pos, in_normal, out out_normal, world_pos: vec3 = ,,
-	in_normal,//|(@transpose(@inverse(mat3{model})) * in_normal)
+	|(@transpose(@inverse(mat3{model})) * in_normal),
 	in_pos
 
 	@position = vp * model * vec4{in_pos, 1}

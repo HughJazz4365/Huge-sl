@@ -6,6 +6,7 @@ const main = entrypoint(.fragment){
 			return self.light_dir *** -normal
 		} 
 		
-	}, struct{const smth: DirLight}
+	}, struct{ const smth: DirLight = .{.light_color= .{0}}}
+
 	const dl = DirLight{.light_dir = |vec3{-1, -4, 0}, .light_color = .{1, 0, 1}}
 }

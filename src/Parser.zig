@@ -266,13 +266,18 @@ fn parseVarDecls(self: *Parser) Error!usize {
     var last: enum { qual, name, type, comma } = .qual;
     sw: switch (token) {
         .@"," => {
+            if (last == .type) self.tokenizer.skip();
+
             if (last != .name and last != .type) return self.errorUnexpectedToken(token);
             last = .comma;
+            try self.skipEndl();
             token = try self.tokenizer.next();
             continue :sw token;
         },
 
         .in, .out, .@"const", .mut, .uniform, .push, .shared => {
+            if (last == .type) self.tokenizer.skip();
+
             qualifier = try self.parseQualifier(token);
             if (last != .comma) return self.errorUnexpectedToken(token);
             last = .qual;
@@ -280,6 +285,8 @@ fn parseVarDecls(self: *Parser) Error!usize {
             continue :sw token;
         },
         .identifier => |identifier| {
+            if (last == .type) self.tokenizer.skip();
+
             if (last != .comma and last != .qual) return self.errorUnexpectedToken(token);
             last = .name;
             blk: {
@@ -310,10 +317,11 @@ fn parseVarDecls(self: *Parser) Error!usize {
                 if (index == 0) break;
             }
             last = .type;
-            token = try self.tokenizer.next();
+            token = try self.tokenizer.peek();
             continue :sw token;
         },
         .@"=" => {
+            if (last == .type) self.tokenizer.skip();
             try self.skipEndl();
 
             if (last != .name and last != .type) return self.errorUnexpectedToken(token);
@@ -324,6 +332,7 @@ fn parseVarDecls(self: *Parser) Error!usize {
             sw2: switch (token) {
                 .@"," => {
                     self.tokenizer.skip();
+                    try self.skipEndl();
                     if (list.items[index].type.isEmpty()) return self.errorOut(Error.NoTypeVariable);
                     index += 1;
 
@@ -647,10 +656,10 @@ fn parseStructDeclaration(self: *Parser) Error!StructID {
     const id: StructID = @enumFromInt(self.structs.items.len);
     try self.structs.append(self.arena.allocator(), Struct.new(id));
     const s = self.getStructFromID(id);
+    s.scope.parent = self.current_scope;
+
     if (self.current_scope.current_variable_value_index < self.current_scope.multi_variable_initialization.len)
         s.name = self.current_scope.multi_variable_initialization[self.current_scope.current_variable_value_index].name;
-    std.debug.print("STRUCT NAME: {s}, {d}\n", .{ s.name, self.current_scope.current_variable_value_index });
-    for (self.current_scope.multi_variable_initialization) |m| std.debug.print("M: {s}\n", .{m.name});
 
     try self.parseScope(&s.scope);
 
@@ -683,7 +692,11 @@ fn parseCastOrConstructor(self: *Parser, @"type": Type) Error!Expression {
 
     const components = try self.parseExpressionSequence(.@"}");
 
-    if (components.len == 0) return self.errorOut(Error.InvalidConstructor);
+    if (components.len == 0)
+        return if (@"type" == .@"struct" or @"type" == .unknown)
+            .{ .struct_constructor = .{ .type = @"type", .members = &.{} } }
+        else
+            self.errorOut(Error.InvalidConstructor);
 
     return if (components.len == 1) .{ .cast = .{
         .type = @"type",
@@ -731,7 +744,7 @@ fn parseStructConstructor(self: *Parser, @"type": Type) Error!Expression {
 
     return .{ .struct_constructor = .{
         .type = @"type",
-        .elements = try list.toOwnedSlice(self.arena.allocator()),
+        .members = try list.toOwnedSlice(self.arena.allocator()),
     } };
 }
 fn parseExpressionSequence(self: *Parser, comptime until: Token) Error![]Expression {
@@ -913,7 +926,7 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
 
     //remove useless statements??
     // if (true) return;
-    const body = self.current_scope.body();
+    const body = scope.body();
     var i: usize = 0;
     while (i < body.len) {
         const index = body.len - 1 - i;
@@ -939,7 +952,7 @@ pub const StructID = enum(u32) { self = ~@as(u32, 0), _ };
 pub const StructMember = struct {
     name: []const u8,
     type: Type,
-    defalt_value: Expression = .empty,
+    default_value: Expression = .empty,
 };
 pub const Struct = struct {
     name: []const u8 = "",
@@ -981,7 +994,7 @@ pub const Struct = struct {
             try s.members.append(parser.arena.allocator(), .{
                 .name = statement.var_decl.name,
                 .type = statement.var_decl.type,
-                .defalt_value = statement.var_decl.initializer,
+                .default_value = statement.var_decl.initializer,
             });
         } else {
             try s.body.append(parser.arena.allocator(), statement);
@@ -1005,7 +1018,7 @@ pub const Struct = struct {
                 .type = .type,
                 .payload = .{ .type = .{ .@"struct" = s.id } },
             } },
-        } else if (@intFromPtr(scope) != @intFromPtr(&parser.global_scope.scope))
+        } else if (!parser.isScopeGlobal(scope))
             try parser.global_scope.scope.getVariableReference(parser, name)
         else
             parser.errorUndeclaredVariable(name);
@@ -1226,7 +1239,7 @@ pub fn isExpressionMutable(self: *Parser, expr: Expression) Error!bool {
 }
 pub const StructConstructor = struct {
     type: Type,
-    elements: []NameExpr,
+    members: []NameExpr,
 };
 
 pub const NameExpr = struct { name: []const u8, expr: Expression };
@@ -1290,13 +1303,15 @@ pub const Scope = struct {
 
     pub fn getVariableReference(self: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
         return self.getVariableReferenceFn(self, parser, name) catch |err| switch (err) {
-            Error.UndeclaredVariable => return for (self.multi_variable_initialization) |*vd| {
-                std.debug.print("N:{s}, vd: {s}\n", .{ name, vd.name });
-                if (util.strEql(name, vd.name)) break vd.variableReference();
-            } else Error.UndeclaredVariable,
-            // Error.UndeclaredVariable => return (for (self.multi_variable_initialization) |*vd| (if (util.strEql(name, vd.name)) break vd.variableReference()) else Error.UndeclaredVariable),
+            Error.UndeclaredVariable => try self.getMultivarableInitializationReference(parser, name),
             else => return err,
         };
+    }
+    pub fn getMultivarableInitializationReference(self: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
+        if (self.multi_variable_initialization.len == 0) return parser.errorOut(Error.UndeclaredVariable);
+        return for (self.multi_variable_initialization) |*vd| {
+            if (util.strEql(name, vd.name)) break vd.variableReference();
+        } else if (!parser.isScopeGlobal(self)) try self.parent.getMultivarableInitializationReference(parser, name) else parser.errorOut(Error.UndeclaredVariable);
     }
 
     pub fn trackReference(self: *Scope, name: []const u8, ref_type: DeclReferenceType) Error!void {
@@ -1426,8 +1441,11 @@ pub fn errorOutFmt(self: *Parser, err: Error, comptime fmt: []const u8, args: an
     self.tokenizer.err_ctx.printError(offset, err, fmt, args);
     return err;
 }
+pub fn isScopeGlobal(self: *Parser, scope: *Scope) bool {
+    return @intFromPtr(scope) == @intFromPtr(&self.global_scope.scope);
+}
 pub fn inGlobalScope(self: *Parser) bool {
-    return @intFromPtr(self.current_scope) == @intFromPtr(&self.global_scope.scope);
+    return self.isScopeGlobal(self.current_scope);
 }
 
 const ShouldStopFn = fn (*Parser, Token) Error!bool;
@@ -1443,5 +1461,3 @@ pub const Type = tp.Type;
 pub const FunctionType = tp.FunctionType;
 const UnaryOperator = Tokenizer.UnaryOperator;
 pub const Token = Tokenizer.Token;
-
-pub const pr = std.debug.print;

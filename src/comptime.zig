@@ -371,8 +371,6 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
 }
 
 fn refineStructConstructor(self: *Parser, struct_constructor: Parser.StructConstructor) Error!Expression {
-
-    // IncompleteStructConstructor
     const initial: Expression = .{ .struct_constructor = struct_constructor };
     const @"type": Type = struct_constructor.type;
     if (@"type" == .unknown) return initial;
@@ -381,16 +379,18 @@ fn refineStructConstructor(self: *Parser, struct_constructor: Parser.StructConst
     const s = self.getStructFromID(struct_constructor.type.@"struct");
     const slice = try self.arena.allocator().alloc(Expression, s.members.items.len);
     @memset(slice, .empty);
-    for (struct_constructor.elements) |elem| {
+    for (struct_constructor.members) |cm| {
         for (s.members.items, 0..) |m, i| {
-            if (util.strEql(elem.name, m.name)) slice[i] = try self.implicitCast(elem.expr, m.type);
-        }
+            if (util.strEql(cm.name, m.name)) {
+                slice[i] = try self.implicitCast(cm.expr, m.type);
+                break;
+            }
+        } else return self.errorOut(Error.NoMemberWithName);
     }
-    loop: for (s.members.items) |m| {
-        for (struct_constructor.elements) |elem|
-            (if (util.strEql(m.name, elem.name)) continue :loop)
-        else if (m.defalt_value.isEmpty())
-            return self.errorOut(Error.IncompleteStructConstructor);
+    for (s.members.items, 0..) |m, i| {
+        slice[i] = for (struct_constructor.members) |elem| (if (util.strEql(m.name, elem.name)) //
+            break try self.implicitCast(elem.expr, m.type)) else //
+            if (!m.default_value.isEmpty()) m.default_value else return self.errorOut(Error.IncompleteStructConstructor);
     }
     return .{ .value = .{
         .type = .{ .@"struct" = struct_constructor.type.@"struct" },
@@ -806,9 +806,14 @@ pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expres
             .{ .components = constructor.components, .type = @"type" }
         else
             return self.errorOut(Error.CannotImplicitlyCast)),
-        else => expr,
+        .struct_constructor => |struct_constructor| try refineStructConstructor(self, if (struct_constructor.type == .unknown)
+            .{ .members = struct_constructor.members, .type = @"type" }
+        else
+            return self.errorOut(Error.CannotImplicitlyCast)),
         .cast => |cast| try implicitCastCast(self, cast, @"type"),
         .enum_literal => |enum_literal| try implicitCastEnumLiteral(self, enum_literal, @"type"),
+
+        else => expr,
     };
     return if (@"type".eql(try self.typeOf(result))) result else errorImplicitCast(self, result, @"type", false);
 }
