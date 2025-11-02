@@ -48,6 +48,7 @@ pub const Error = error{
 
     MutatingImmutableVariable,
     UndeclaredVariable,
+    NoMemberWithName,
     InvalidCall,
     InvalidBuiltin,
     NonMatchingArgumentCount,
@@ -64,6 +65,7 @@ pub const Error = error{
     InvalidIndexingTarget,
     InvalidAssignmentTarget,
     InvalidArrayLen,
+    InvalidMemberAccess,
     NonVoidValueIgnored,
 
     NumericError,
@@ -557,9 +559,18 @@ fn parseExpressionSide(self: *Parser, comptime access: bool) Error!Expression {
             } });
             continue :sw try self.tokenizer.peek();
         },
-        else => {},
+        .@"." => {
+            self.tokenizer.skip();
+            const next = try self.tokenizer.next();
+            if (next != .identifier) return self.errorUnexpectedToken(next);
+            expr = try refine_func(self, .{ .member_access = .{
+                .target = try self.createVal(expr),
+                .member_name = next.identifier,
+            } });
+            continue :sw try self.tokenizer.peek();
+        },
+        else => return expr,
     }
-    return expr;
 
     //::::secondary::::
     //(check proceeding tokens)
@@ -949,6 +960,11 @@ pub const Struct = struct {
                 .result_type = .unknownempty,
             },
         };
+    }
+    pub fn getMemberType(self: *Struct, name: []const u8) Error!Type {
+        return for (self.members.items) |m| {
+            if (util.strEql(name, m.name)) return m.type;
+        } else Error.NoMemberWithName;
     }
     fn bodyFn(scope: *Scope) *[]Statement {
         return &@as(*@This(), @fieldParentPtr("scope", scope)).body.items;

@@ -10,6 +10,10 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
         .struct_constructor => |struct_constructor| struct_constructor.type,
         .cast => |cast| cast.type,
         .identifier => |identifier| (try self.current_scope.getVariableReference(self, identifier)).type,
+        .member_access => |member_access| switch (try self.typeOf(member_access.target.*)) {
+            .@"struct" => |s| try self.getStructFromID(s).getMemberType(member_access.member_name),
+            else => return Error.InvalidMemberAccess,
+        },
         .builtin => |builtin| try bi.typeOfBuiltin(self, builtin),
         .bin_op => |bin_op| blk: {
             const left_type = try self.typeOf(bin_op.left.*);
