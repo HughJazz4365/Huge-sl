@@ -1,11 +1,11 @@
 const main = entrypoint(.fragment){
-	const DirLight = struct{
+	const DirLight, A = struct{
 		member light_dir, light_color : vec3 = .{0,-1,0}
 
 		const diffuse = fn(self: DirLight, normal : vec3) f32 {
 			return self.light_dir *** -normal
 		} 
 		
-	}
+	}, struct{const smth: DirLight}
 	const dl = DirLight{.light_dir = |vec3{-1, -4, 0}, .light_color = .{1, 0, 1}}
 }

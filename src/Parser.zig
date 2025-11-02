@@ -331,7 +331,7 @@ fn parseVarDecls(self: *Parser) Error!usize {
                     try self.skipEndl();
                     if (index + 1 > list.items.len) return self.errorOut(Error.NonMatchingVariableInitializerCount);
 
-                    self.current_scope.multi_variable_initialization = list.items[0..index];
+                    self.current_scope.multi_variable_initialization = list.items;
 
                     token = try self.tokenizer.peek();
                     continue :sw2 token;
@@ -649,6 +649,9 @@ fn parseStructDeclaration(self: *Parser) Error!StructID {
     const s = self.getStructFromID(id);
     if (self.current_scope.current_variable_value_index < self.current_scope.multi_variable_initialization.len)
         s.name = self.current_scope.multi_variable_initialization[self.current_scope.current_variable_value_index].name;
+    std.debug.print("STRUCT NAME: {s}, {d}\n", .{ s.name, self.current_scope.current_variable_value_index });
+    for (self.current_scope.multi_variable_initialization) |m| std.debug.print("M: {s}\n", .{m.name});
+
     try self.parseScope(&s.scope);
 
     return id;
@@ -791,7 +794,7 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
 
                     for (arg_names.items) |past_name| if (util.strEql(name, past_name)) return self.errorOut(Error.RepeatingArgumentNames);
                     blk: {
-                        _ = self.global_scope.getVariableReference(self, name) catch break :blk;
+                        _ = self.global_scope.scope.getVariableReference(self, name) catch break :blk;
                         return self.errorOutFmt(Error.VariableRedeclaration, "Function argument name '{s}' aliases with a global variable", .{name});
                     }
                     const index = arg_types.items.len;
@@ -1003,7 +1006,7 @@ pub const Struct = struct {
                 .payload = .{ .type = .{ .@"struct" = s.id } },
             } },
         } else if (@intFromPtr(scope) != @intFromPtr(&parser.global_scope.scope))
-            try parser.global_scope.getVariableReference(parser, name)
+            try parser.global_scope.scope.getVariableReference(parser, name)
         else
             parser.errorUndeclaredVariable(name);
     }
@@ -1278,21 +1281,25 @@ pub const Scope = struct {
     current_variable_value_index: usize = 0,
 
     pub const DeclReferenceType = enum { track, untrack };
-    pub inline fn body(self: *Scope) *[]Statement {
+    pub fn body(self: *Scope) *[]Statement {
         return self.bodyFn(self);
     }
-    pub inline fn addStatement(self: *Scope, parser: *Parser, statement: Statement) Error!void {
+    pub fn addStatement(self: *Scope, parser: *Parser, statement: Statement) Error!void {
         try self.addStatementFn(self, parser, statement);
     }
 
-    pub inline fn getVariableReference(self: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
+    pub fn getVariableReference(self: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
         return self.getVariableReferenceFn(self, parser, name) catch |err| switch (err) {
-            Error.UndeclaredVariable => return (for (self.multi_variable_initialization) |*vd| (if (util.strEql(name, vd.name)) break vd.variableReference()) else Error.UndeclaredVariable),
+            Error.UndeclaredVariable => return for (self.multi_variable_initialization) |*vd| {
+                std.debug.print("N:{s}, vd: {s}\n", .{ name, vd.name });
+                if (util.strEql(name, vd.name)) break vd.variableReference();
+            } else Error.UndeclaredVariable,
+            // Error.UndeclaredVariable => return (for (self.multi_variable_initialization) |*vd| (if (util.strEql(name, vd.name)) break vd.variableReference()) else Error.UndeclaredVariable),
             else => return err,
         };
     }
 
-    pub inline fn trackReference(self: *Scope, name: []const u8, ref_type: DeclReferenceType) Error!void {
+    pub fn trackReference(self: *Scope, name: []const u8, ref_type: DeclReferenceType) Error!void {
         return self.trackReferenceFn(self, name, ref_type) catch |err| switch (err) {
             Error.UndeclaredVariable => (for (self.multi_variable_initialization) |*vd| (if (util.strEql(name, vd.name)) break) else return Error.UndeclaredVariable),
             else => return err,
