@@ -458,7 +458,6 @@ pub const VariableDeclaration = struct {
         return self.reference_count == 0 and
             !self.qualifier.isIO() and
             self.qualifier != .push and
-            self.qualifier != .member and
             self.type != .entrypoint;
     }
     pub fn variableReference(self: *VariableDeclaration) VariableReference {
@@ -933,7 +932,9 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
         const statement = body.*[index];
         if (shouldUntrackInStatement(statement))
             try self.trackReferencesInStatement(statement, .untrack);
-        if (try self.isStatementOmittable(statement) and false) {
+        if (try self.isStatementOmittable(statement) //
+        and false //
+        ) {
             util.removeAt(Statement, body, index);
         } else i += 1;
     }
@@ -1185,6 +1186,7 @@ pub const Expression = union(enum) {
 
     swizzle: Swizzle,
     member_access: MemberAccess,
+    method_call: void, //?
     indexing: Indexing,
 
     cast: Cast,

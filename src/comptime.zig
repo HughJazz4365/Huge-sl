@@ -56,9 +56,29 @@ pub fn refine(self: *Parser, expr: Expression) Error!Expression {
         .indexing => |indexing| try refineIndexing(self, indexing),
         .identifier => |identifier| try refineIdentifier(self, identifier, true),
         .call => |call| try refineCall(self, call),
+        .member_access => |member_access| try refineMemberAccess(self, member_access),
         // .value => |value| expr,
         else => expr,
     };
+}
+fn refineMemberAccess(self: *Parser, member_access: Parser.MemberAccess) Error!Expression {
+    const initial: Expression = .{ .member_access = member_access };
+    if (member_access.target.* == .value) {
+        const value = member_access.target.value;
+        switch (value.type) {
+            .type => @panic("TODO: member access on type"),
+            .@"struct" => |struct_id| {
+                const s = self.getStructFromID(struct_id);
+                const index = for (s.members.items, 0..) |m, i| {
+                    if (util.strEql(m.name, member_access.member_name)) break i;
+                } else return self.errorOut(Error.NoMemberWithName);
+                return @as([*]const Expression, @ptrCast(@alignCast(value.payload.ptr)))[index];
+            },
+            else => return self.errorOut(Error.InvalidMemberAccess),
+        }
+    }
+
+    return initial;
 }
 fn refineCall(self: *Parser, call: Parser.Call) Error!Expression {
     const initial: Expression = .{ .call = call };

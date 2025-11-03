@@ -89,6 +89,7 @@ pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
             try writer.print("{f}(", .{call.callee.*});
             for (call.args, 0..) |arg, i| try writer.print("{f}{s}", .{ arg, if (i + 1 < call.args.len) ", " else ")" });
         },
+        .member_access => |member_access| try writer.print("{f}.{s}", .{ member_access.target.*, member_access.member_name }),
         inline else => |_, tag| try writer.print("{s}", .{@tagName(tag)}),
     }
 }

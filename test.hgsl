@@ -1,12 +1,14 @@
+const V2 = struct{
+	member x, y : f32
+}
+const ret = fn(a) V2{
+	return a
+}
+
 const main = entrypoint(.fragment){
-	const DirLight, A = struct{
-		member light_dir, light_color : vec3 = .{0,-1,0}
+	//uniform ubo : @Buffer(struct{
+	//	member eye_pos: vec3
+	//})
+	const test = ret(.{.x = 1, .y = 2}).y
 
-		const diffuse = fn(self: DirLight, normal : vec3) f32 {
-			return self.light_dir *** -normal
-		} 
-		
-	}, struct{ const smth: DirLight = .{.light_color= .{0}}}
-
-	const dl = DirLight{.light_dir = |vec3{-1, -4, 0}, .light_color = .{1, 0, 1}}
 }
