@@ -5,6 +5,8 @@ const ct = @import("comptime.zig");
 const Parser = @import("Parser.zig");
 
 pub const Interpolation = enum(u64) { smooth = 0, flat = 1, noperspective = 2 };
+// pub const BufferType = enum(u64)
+
 pub fn getBuiltin(name: []const u8) Error!Builtin {
     return name_map.get(name) orelse Error.InvalidBuiltin;
 }
@@ -21,6 +23,7 @@ const name_map: std.StaticStringMap(Builtin) = .initComptime(.{
     //variables
     .{ "position", Builtin{ .variable = .position } },
     .{ "vertex_id", Builtin{ .variable = .vertex_id } },
+    .{ "Interpolation", Builtin{ .variable = .interpolation } },
 });
 
 pub const Builtin = union(enum) {
@@ -36,16 +39,17 @@ const BuiltinFunction = enum {
     buffer,
 
     pub fn argumentCount(self: BuiltinFunction) usize {
-        return switch (self) {
-            .reflect, .array_type => 2,
-            else => 1,
-        };
+        return self.typeOf().function.arg_types.len;
     }
     pub fn typeOf(self: BuiltinFunction) Type {
         return switch (self) {
             .buffer => .{ .function = .{
                 .rtype = &Type{ .type = {} },
-                .arg_types = &.{Type{ .type = {} }},
+                .arg_types = &.{ Type{ .type = {} }, buffer_type_type },
+            } },
+            .transpose, .inverse => .{ .function = .{
+                .rtype = &Type.unknownempty,
+                .arg_types = &.{Type.unknownempty},
             } },
             else => .{ .unknown = @constCast(&Expression{ .builtin = .{ .function = self } }) },
         };
@@ -56,6 +60,7 @@ pub const BuiltinVariable = enum {
     point_size,
     cull_distance,
     vertex_id,
+    interpolation,
     // invocation_id,
 
     pub fn ioDirection(bv: BuiltinVariable) enum { in, out } {
@@ -76,6 +81,7 @@ pub const BuiltinVariable = enum {
             .point_size => tp.f32_type,
             .cull_distance => Type{ .array = .{ .len = 1, .component = &tp.f32_type } },
             .vertex_id => tp.u32_type,
+            .interpolation => Type{ .type = {} },
         };
     }
 };
@@ -118,11 +124,15 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
             } }), tp.vec3_type);
         },
         .buffer => blk: {
-            if (args[0] != .value) break :blk initial;
+            if (args[0] != .value or args[1] != .value) break :blk initial;
             const @"type" = args[0].value.payload.type;
             if (@"type" != .@"struct") return self.errorOut(Error.InvalidCall);
+
             break :blk .{ .value = .{ .type = .type, .payload = .{
-                .type = .{ .buffer = @"type".@"struct" },
+                .type = .{ .buffer = .{
+                    .struct_id = @"type".@"struct",
+                    .type = @enumFromInt(util.extract(u64, args[1].value.payload.wide)),
+                } },
             } } };
         },
 
@@ -156,7 +166,9 @@ const inv_oxFF = Expression{ .value = .{
     .payload = .{ .wide = util.fit(Parser.WIDE, @as(Parser.CF, 1.0 / 255.0)) },
 } };
 pub const stage_type: Type = .{ .@"enum" = .fromZig(Parser.ShaderStage) };
+
 pub const interpolation_type: Type = .{ .@"enum" = .fromZig(Interpolation) };
+pub const buffer_type_type: Type = .{ .@"enum" = .fromZig(tp.BufferType) };
 
 const Type = tp.Type;
 const Expression = Parser.Expression;

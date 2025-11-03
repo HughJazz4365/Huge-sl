@@ -980,10 +980,11 @@ pub const Struct = struct {
             },
         };
     }
+    pub fn memberIndex(self: *Struct, name: []const u8) ?u32 {
+        return for (self.members.items, 0..) |m, i| (if (util.strEql(m.name, name)) break @truncate(i)) else null;
+    }
     pub fn getMemberType(self: *Struct, name: []const u8) Error!Type {
-        return for (self.members.items) |m| {
-            if (util.strEql(name, m.name)) return m.type;
-        } else Error.NoMemberWithName;
+        return self.members.items[self.memberIndex(name) orelse return Error.NoMemberWithName].type;
     }
     fn bodyFn(scope: *Scope) *[]Statement {
         return &@as(*@This(), @fieldParentPtr("scope", scope)).body.items;

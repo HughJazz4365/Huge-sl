@@ -116,7 +116,12 @@ pub fn generate(parser: *Parser) Error![]WORD {
             @"type".* = .{ .@"struct" = slice };
             if (self.sizeOf(self.typeFromID(ep.push_constant_struct_type_id)) > self.parser.settings.max_push_constant_bytes) return Error.PushConstantBlockTooBig;
 
-            try self.decorateStructLayout(ep.push_constant_struct_type_id, false, .scalar);
+            try self.decorateStructLayout(
+                ep.push_constant_struct_type_id,
+                self.typeFromID(ep.push_constant_struct_type_id).@"struct",
+                false,
+                .scalar,
+            );
 
             const ptr_type_id = try self.typeID(.{ .pointer = .{
                 .pointed_id = ep.push_constant_struct_type_id,
@@ -178,6 +183,13 @@ pub fn generate(parser: *Parser) Error![]WORD {
             try result.append(word);
         }
     };
+    //add all the decoration for buffer types before emitting decoration instructions
+    for (self.type_decls.items) |td| {
+        if (td.type != .buffer) continue;
+        const id, const fields = .{ td.id, self.typeFromID(td.type.buffer.struct_id).@"struct" };
+        try self.decorations.appendSlice(self.arena, &.{ opWord(.decorate, 3), id, @intFromEnum(Decoration.block) });
+        try self.decorateStructLayout(id, fields, false, .scalar);
+    }
 
     //decorations
     var global_offsets: [3]WORD = @splat(0);
@@ -189,10 +201,16 @@ pub fn generate(parser: *Parser) Error![]WORD {
                 try result.appendSlice(&.{
                     opWord(.decorate, 4),
                     g.id,
-                    @intFromEnum(if (g.io_type == .in or g.io_type == .out) Decoration.location else Decoration.binding),
+                    @intFromEnum(if (g.io_type != .uniform) Decoration.location else Decoration.binding),
                     global_offsets[@intFromEnum(g.io_type)],
                 });
                 global_offsets[@intFromEnum(g.io_type)] += 1;
+                if (g.io_type == .uniform) try self.decorations.appendSlice(self.arena, &.{
+                    opWord(.decorate, 4),
+                    g.id,
+                    @intFromEnum(Decoration.descriptor_set),
+                    0,
+                });
             }
             self.decorated_global_io_count = ep.val_ptr.global_io_count;
         }
@@ -201,8 +219,14 @@ pub fn generate(parser: *Parser) Error![]WORD {
             try result.appendSlice(&.{
                 opWord(.decorate, 4),
                 l.id,
-                @intFromEnum(if (l.io_type == .in or l.io_type == .out) Decoration.location else Decoration.binding),
+                @intFromEnum(if (l.io_type != .uniform) Decoration.location else Decoration.binding),
                 local_offsets[@intFromEnum(l.io_type)] + global_offsets[@intFromEnum(l.io_type)],
+            });
+            if (l.io_type == .uniform) try self.decorations.appendSlice(self.arena, &.{
+                opWord(.decorate, 4),
+                l.id,
+                @intFromEnum(Decoration.descriptor_set),
+                0,
             });
             local_offsets[@intFromEnum(l.io_type)] += 1;
         }
@@ -240,13 +264,14 @@ pub fn generate(parser: *Parser) Error![]WORD {
             break :blk function.arg_type_ids;
         },
         .@"struct" => |@"struct"| blk: {
-            try result.appendSlice(&.{
-                opWord(.type_struct, @truncate(2 + @"struct".len)),
-                t.id,
-            });
+            try result.appendSlice(&.{ opWord(.type_struct, @truncate(2 + @"struct".len)), t.id });
             break :blk @"struct";
         },
-        .buffer => @panic("TODO : specify layout of struct and decorate with block"),
+        .buffer => |buffer| blk: {
+            const s = self.typeFromID(buffer.struct_id).@"struct";
+            try result.appendSlice(&.{ opWord(.type_struct, @truncate(2 + s.len)), t.id });
+            break :blk s;
+        },
         .matrix => |matrix| &.{ opWord(.type_matrix, 4), t.id, matrix.column_type_id, @intFromEnum(matrix.column_count) },
 
         // else => unreachable,
@@ -284,8 +309,7 @@ fn versionWord(major: u8, minor: u8) WORD {
 fn inGlobalScope(self: *Generator) bool {
     return @intFromPtr(self.current_buffer) == @intFromPtr(&self.main_buffer);
 }
-fn decorateStructLayout(self: *Generator, type_id: WORD, reorder: bool, alignment: Alignment) Error!void {
-    const fields = self.typeFromID(type_id).@"struct";
+fn decorateStructLayout(self: *Generator, type_id: WORD, fields: []const WORD, reorder: bool, alignment: Alignment) Error!void {
     if (reorder) {
         unreachable;
     }
@@ -320,7 +344,6 @@ fn decorateStructLayout(self: *Generator, type_id: WORD, reorder: bool, alignmen
             @intFromEnum(Decoration.offset),
             offset,
         });
-        // std.debug.print("t: {any} ALIGN : {d}, {d}\n", .{ field_type, self.alignOf(field_type, alignment), offset });
         offset = rut(offset + field_size, self.alignOf(field_type, alignment));
     }
 }
@@ -408,8 +431,9 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             }) else @panic("TODO: global scope constant");
             return;
         },
-        //uniform, shared
-        else => @panic("idk storage class of this qualifier"),
+        .shared => .workgroup,
+        .uniform => if (var_decl.type == .buffer and var_decl.type.buffer.type == .ssbo) .storage_buffer else .uniform,
+        .member => unreachable,
     };
     const type_id = try self.convertTypeID(var_decl.type);
     const ptr_type_id = try self.typeID(.{ .pointer = .{
@@ -598,7 +622,7 @@ fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
         .call => |call| try self.generateCall(call, type_id),
         .constructor => |constructor| try self.generateConstructor(constructor.components, type_id),
         .identifier => |identifier| try self.generateIdentifier(identifier),
-        .indexing => |indexing| try self.generateIndexing(indexing),
+        .indexing, .member_access => try self.generateAccessChain(expr),
         .builtin => |builtin| if (builtin == .variable) try self.generatePointerLoad(try self.generateBuiltinVariableIDInfo(builtin.variable)) else @panic("gen builtin function"),
         .cast => |cast| try self.generateCast(cast),
         else => {
@@ -608,6 +632,7 @@ fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
     };
     return result;
 }
+
 fn generateCast(self: *Generator, cast: Parser.Cast) Error!WORD {
     const result_type_id = try self.convertTypeID(cast.type);
 
@@ -633,10 +658,10 @@ fn generateCast(self: *Generator, cast: Parser.Cast) Error!WORD {
             var column_ids: [4]WORD = @splat(0);
             for (0..n) |x| {
                 if (x < @intFromEnum(from_type.matrix.n)) {
-                    const column = try self.generateIndexing(.{ .target = cast.expr, .index = @constCast(&Parser.Expression{ .value = .{
+                    const column = try self.generateAccessChain(.{ .indexing = .{ .target = cast.expr, .index = @constCast(&Parser.Expression{ .value = .{
                         .type = tp.u32_type,
                         .payload = .{ .wide = x },
-                    } }) });
+                    } }) } });
                     column_ids[x] = try self.addWordsAndReturn2(&.{
                         opWord(.vector_shuffle, @truncate(5 + m)),
                         try self.convertTypeID(.{ .vector = cast.type.matrix.columnVector() }),
@@ -680,14 +705,14 @@ fn generateIdentifier(self: *Generator, identifier: []const u8) Error!WORD {
     return load;
 }
 
-fn generateIndexing(self: *Generator, indexing: Parser.Indexing) Error!WORD {
-    const access_type_id = try self.convertTypeID(try self.parser.typeOf(.{ .indexing = indexing }));
+fn generateAccessChain(self: *Generator, expr: Expression) Error!WORD {
+    const access_type_id = try self.convertTypeID(try self.parser.typeOf(expr));
 
     var access_chain: List(WORD) = .empty;
     defer access_chain.deinit(self.arena);
 
     var const_mask: u64 = 0;
-    var target_name_info = try self.generateIndexingTargetIDInfoRecursive(indexing, &access_chain, &const_mask);
+    var target_name_info = try self.generateAccessChainTargetIDInfoRecursive(expr, &access_chain, &const_mask);
 
     const is_target_vector = if (target_name_info.id != 0)
         self.typeFromID(self.typeFromID(target_name_info.type_id).pointer.pointed_id) == .vector
@@ -769,26 +794,44 @@ fn generateIndexing(self: *Generator, indexing: Parser.Indexing) Error!WORD {
     });
     return load;
 }
-fn generateIndexingTargetIDInfoRecursive(
+fn generateAccessChainTargetIDInfoRecursive(
     self: *Generator,
-    indexing: Parser.Indexing,
+    expr: Expression,
     access_chain: *List(WORD),
     const_mask: *u64,
 ) Error!IDInfo {
-    const index_word: WORD = if (indexing.index.* == .value)
-        @truncate(indexing.index.value.payload.wide)
-    else
-        try self.generateExpression(indexing.index.*);
+    const index_word: WORD, //
+    const is_index_comptime: bool, //
+    const target: Expression = switch (expr) {
+        .indexing => |indexing| .{
+            if (indexing.index.* == .value)
+                @truncate(indexing.index.value.payload.wide)
+            else
+                try self.generateExpression(indexing.index.*),
+            indexing.index.* == .value,
+            indexing.target.*,
+        },
+        .member_access => |member_access| .{
+            switch (try self.parser.typeOf(member_access.target.*)) {
+                .@"struct" => |struct_id| self.parser.getStructFromID(struct_id).memberIndex(member_access.member_name).?,
+                .buffer => |buffer| self.parser.getStructFromID(buffer.struct_id).memberIndex(member_access.member_name).?,
+                else => unreachable,
+            },
+            true,
+            member_access.target.*,
+        },
+        else => unreachable,
+    };
 
     const_mask.* = const_mask.* << 1;
-    if (indexing.index.* != .value) const_mask.* |= 1;
+    if (!is_index_comptime) const_mask.* |= 1;
     if (access_chain.items.len >= 64) return Error.GenError;
 
     try access_chain.append(self.arena, index_word);
 
-    return switch (indexing.target.*) {
-        .indexing => |ind| try self.generateIndexingTargetIDInfoRecursive(ind, access_chain, const_mask),
-        else => try self.generatePointer(indexing.target.*),
+    return switch (target) {
+        .indexing, .member_access => try self.generateAccessChainTargetIDInfoRecursive(target, access_chain, const_mask),
+        else => try self.generatePointer(target),
     };
 }
 
@@ -961,6 +1004,7 @@ fn generateBuiltinVariableIDInfo(self: *Generator, bv: bi.BuiltinVariable) Error
             try self.current_interface_ids.append(self.arena, var_id);
             break :blk .{ .id = var_id, .type_id = try self.typeID(.{ .pointer = .{ .pointed_id = type_id, .storage_class = .input } }) };
         },
+        else => @panic("idk how to gen that builtin"),
     };
 }
 
@@ -1263,9 +1307,19 @@ fn convertType(self: *Generator, from: Parser.Type) Error!Type {
             .column_count = matrix.n,
             .column_type_id = try self.typeID(.{ .vector = .{ .len = matrix.m, .component_id = try self.typeID(.{ .float = matrix.width }) } }),
         } },
+        .@"struct" => |struct_id| blk: {
+            const s = self.parser.getStructFromID(struct_id);
+            const slice = try self.arena.alloc(WORD, s.members.items.len);
+            for (slice, s.members.items) |*id, m| id.* = try self.convertTypeID(m.type);
+            break :blk .{ .@"struct" = slice };
+        },
+        .buffer => |buffer| .{ .buffer = .{
+            .struct_id = try self.convertTypeID(.{ .@"struct" = buffer.struct_id }),
+            .storage_class = .uniform,
+        } },
 
         else => {
-            std.debug.print("TYPE: {f}\n", .{from});
+            std.debug.print("TYPE: {f}, {s}\n", .{ from, @tagName(from) });
             @panic("cant convert type");
         },
     };
@@ -1307,17 +1361,17 @@ const Type = union(enum) {
     bool,
 
     float: BitWidth,
-    int: IntType,
-    vector: VectorType,
-    matrix: MatrixType,
+    int: Int,
+    vector: Vector,
+    matrix: Matrix,
 
-    array: ArrayType,
+    array: Array,
 
-    function: FunctionType,
-    pointer: PointerType,
+    function: Function,
+    pointer: Pointer,
 
     @"struct": []const WORD,
-    buffer: WORD, //struct id
+    buffer: Buffer, //struct id
 
     pub fn eql(a: Type, b: Type) bool {
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
@@ -1335,12 +1389,13 @@ const Type = union(enum) {
             .pointer => |pointer| pointer.pointed_id == b.pointer.pointed_id and pointer.storage_class == b.pointer.storage_class,
             .array => |array| array.component_id == b.array.component_id and array.len == b.array.len,
             .@"struct" => |st| std.mem.eql(WORD, st, b.@"struct"),
-            .buffer => |struct_id| struct_id == b.buffer,
+            .buffer => |buffer| buffer.struct_id == b.buffer.struct_id and buffer.storage_class == b.buffer.storage_class,
             // else => @panic("idk how to compare that type"),
         };
     }
 };
 pub fn typeWordConsumption(self: *Generator, @"type": Type) WORD {
+    _ = self;
     return switch (@"type") {
         .float => |float| @as(WORD, if (float == .long) 2 else 1),
         .int => |int| @as(WORD, if (int.width == .long) 2 else 1),
@@ -1348,19 +1403,19 @@ pub fn typeWordConsumption(self: *Generator, @"type": Type) WORD {
         .matrix => |matrix| @intFromEnum(matrix.column_count),
         .array => |array| array.len,
         .@"struct" => |st| @truncate(st.len),
-        .buffer => |struct_id| self.typeWordConsumption(self.typeFromID(struct_id)),
         else => 1,
     };
 }
-const PointerType = struct { pointed_id: WORD, storage_class: StorageClass };
-const FunctionType = struct { rtype_id: WORD, arg_type_ids: []WORD = &.{} };
+const Buffer = struct { struct_id: WORD, storage_class: StorageClass };
+const Pointer = struct { pointed_id: WORD, storage_class: StorageClass };
+const Function = struct { rtype_id: WORD, arg_type_ids: []WORD = &.{} };
 
-const MatrixType = struct { column_count: VectorLen, column_type_id: WORD };
-const VectorType = struct { len: VectorLen, component_id: WORD };
-const IntType = struct { width: BitWidth, signed: bool };
+const Matrix = struct { column_count: VectorLen, column_type_id: WORD };
+const Vector = struct { len: VectorLen, component_id: WORD };
+const Int = struct { width: BitWidth, signed: bool };
 const BitWidth = Parser.tp.BitWidth;
 const VectorLen = Parser.tp.VectorLen;
-const ArrayType = struct { len: WORD, component_id: WORD };
+const Array = struct { len: WORD, component_id: WORD };
 const TypeDeclaration = struct { type: Type, id: WORD };
 fn opWord(op: Op, count: u16) WORD {
     return (@as(WORD, count) << 16) | @intFromEnum(op);

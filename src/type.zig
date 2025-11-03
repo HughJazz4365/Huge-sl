@@ -12,7 +12,9 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
         .identifier => |identifier| (try self.current_scope.getVariableReference(self, identifier)).type,
         .member_access => |member_access| switch (try self.typeOf(member_access.target.*)) {
             .@"struct" => |s| try self.getStructFromID(s).getMemberType(member_access.member_name),
-            else => return Error.InvalidMemberAccess,
+            .buffer => |buffer| try self.getStructFromID(buffer.struct_id).getMemberType(member_access.member_name),
+            .type => @panic("member access type on 'type'"),
+            else => return self.errorOut(Error.InvalidMemberAccess),
         },
         .builtin => |builtin| try bi.typeOfBuiltin(self, builtin),
         .bin_op => |bin_op| blk: {
@@ -79,7 +81,7 @@ pub const Type = union(enum) {
     matrix: Matrix,
 
     @"struct": Parser.StructID,
-    buffer: Parser.StructID,
+    buffer: Buffer,
 
     image,
 
@@ -158,6 +160,9 @@ pub const Type = union(enum) {
         return .{ .value = .{ .type = .type, .payload = .{ .type = self } } };
     }
 };
+pub const Buffer = struct { struct_id: Parser.StructID, type: BufferType };
+pub const BufferType = enum { ubo, ssbo };
+
 pub const Enum = struct {
     tag_type: EnumTag = .{ .width = .word, .signed = false },
     fields: []const EnumField,

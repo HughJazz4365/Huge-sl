@@ -7,9 +7,9 @@ const ret = fn(a) V2{
 
 const main = entrypoint(.fragment){
 	uniform ubo : @Buffer(struct{
-		member eye_pos: vec3
-	})
+		member albedo : vec3
+	}, .ubo)
 
-	const test = ret(.{.x = 1, .y = 2}).y
+	out test = .{ret(.{.x = 1, .y = 2}).y} * ubo.albedo
 
 }

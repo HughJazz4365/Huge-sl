@@ -69,9 +69,7 @@ fn refineMemberAccess(self: *Parser, member_access: Parser.MemberAccess) Error!E
             .type => @panic("TODO: member access on type"),
             .@"struct" => |struct_id| {
                 const s = self.getStructFromID(struct_id);
-                const index = for (s.members.items, 0..) |m, i| {
-                    if (util.strEql(m.name, member_access.member_name)) break i;
-                } else return self.errorOut(Error.NoMemberWithName);
+                const index = s.memberIndex(member_access.member_name) orelse return self.errorOut(Error.NoMemberWithName);
                 return @as([*]const Expression, @ptrCast(@alignCast(value.payload.ptr)))[index];
             },
             else => return self.errorOut(Error.InvalidMemberAccess),
@@ -400,12 +398,8 @@ fn refineStructConstructor(self: *Parser, struct_constructor: Parser.StructConst
     const slice = try self.arena.allocator().alloc(Expression, s.members.items.len);
     @memset(slice, .empty);
     for (struct_constructor.members) |cm| {
-        for (s.members.items, 0..) |m, i| {
-            if (util.strEql(cm.name, m.name)) {
-                slice[i] = try self.implicitCast(cm.expr, m.type);
-                break;
-            }
-        } else return self.errorOut(Error.NoMemberWithName);
+        const index = s.memberIndex(cm.name) orelse return self.errorOut(Error.NoMemberWithName);
+        slice[index] = try self.implicitCast(cm.expr, s.members.items[index].type);
     }
     for (s.members.items, 0..) |m, i| {
         slice[i] = for (struct_constructor.members) |elem| (if (util.strEql(m.name, elem.name)) //
