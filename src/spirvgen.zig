@@ -114,7 +114,7 @@ pub fn generate(parser: *Parser) Error![]WORD {
             else
                 unreachable;
             @"type".* = .{ .@"struct" = slice };
-            if (self.sizeOf(self.typeFromID(ep.push_constant_struct_type_id)) > self.parser.settings.max_push_constant_bytes) return Error.PushConstantBlockTooBig;
+            if (self.sizeOf(self.typeFromID(ep.push_constant_struct_type_id)) > self.parser.settings.max_push_constant_buffer_size) return Error.PushConstantBlockTooBig;
 
             try self.decorateStructLayout(
                 ep.push_constant_struct_type_id,
@@ -188,7 +188,7 @@ pub fn generate(parser: *Parser) Error![]WORD {
         if (td.type != .buffer) continue;
         const id, const fields = .{ td.id, self.typeFromID(td.type.buffer.struct_id).@"struct" };
         try self.decorations.appendSlice(self.arena, &.{ opWord(.decorate, 3), id, @intFromEnum(Decoration.block) });
-        try self.decorateStructLayout(id, fields, false, .scalar);
+        try self.decorateStructLayout(id, fields, false, .base);
     }
 
     //decorations
@@ -713,6 +713,8 @@ fn generateAccessChain(self: *Generator, expr: Expression) Error!WORD {
 
     var const_mask: u64 = 0;
     var target_name_info = try self.generateAccessChainTargetIDInfoRecursive(expr, &access_chain, &const_mask);
+    for (0..access_chain.items.len / 2) |i| //reverse access chain
+        std.mem.swap(WORD, &access_chain.items[i], &access_chain.items[access_chain.items.len - i - 1]);
 
     const is_target_vector = if (target_name_info.id != 0)
         self.typeFromID(self.typeFromID(target_name_info.type_id).pointer.pointed_id) == .vector

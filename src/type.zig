@@ -93,6 +93,28 @@ pub const Type = union(enum) {
     pub const unknownempty: Type = .{ .unknown = &Expression.empty };
     pub const format = @import("debug.zig").formatType;
 
+    pub fn valuePayloadBytes(self: Type) u32 {
+        return switch (self) {
+            .vector => |vector| switch (vector.len) {
+                inline else => |len| switch (vector.component.type) {
+                    inline else => |st| switch (vector.component.width) {
+                        inline else => |width| @sizeOf((Type{ .vector = .{
+                            .len = len,
+                            .component = .{ .width = width, .type = st },
+                        } }).ToZig()),
+                    },
+                },
+            },
+            else => 0,
+        };
+    }
+    pub fn valuePayloadType(self: Type) enum { ptr, wide, type } {
+        return switch (self) {
+            .type => .type,
+            .scalar, .compint, .compfloat, .bool => .wide,
+            else => .ptr,
+        };
+    }
     pub fn isComptimeOnly(self: Type) bool {
         return switch (self) {
             .compint, .compfloat, .void, .type, .unknown, .function, .entrypoint => true,

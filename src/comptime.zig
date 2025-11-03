@@ -207,7 +207,18 @@ const DispatchVariable = struct {
 };
 fn refineIdentifier(self: *Parser, identifier: []const u8, access: bool) Error!Expression {
     const var_ref = try self.current_scope.getVariableReference(self, identifier);
-    return if (access and var_ref.type != .array) var_ref.value else .{ .identifier = identifier };
+    return if (access and var_ref.type != .array) ( //
+        if (var_ref.value == .value and var_ref.value.value.type.valuePayloadType() == .ptr)
+            .{ .value = .{
+                .type = var_ref.value.value.type,
+                .payload = .{ .ptr = blk: {
+                    const ptr = try self.arena.allocator().alloc(u8, var_ref.value.value.type.valuePayloadBytes());
+                    @memcpy(ptr, @as([*]const u8, @ptrCast(var_ref.value.value.payload.ptr)));
+                    break :blk @ptrCast(ptr);
+                } },
+            } }
+        else
+            var_ref.value) else .{ .identifier = identifier };
 }
 
 fn refineCast(self: *Parser, cast: Parser.Cast) Error!Expression {

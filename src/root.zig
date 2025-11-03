@@ -70,7 +70,7 @@ pub const Settings = struct {
     target_env: TargetEnv = .vulkan1_4,
     optimize: Optimize = .none,
 
-    max_push_constant_bytes: u32 = 256,
+    max_push_constant_buffer_size: u32 = 128,
 };
 pub const Optimize = enum { none, speed };
 pub const TargetEnv = enum { vulkan1_4, opengl_spirv, opengl_glsl };

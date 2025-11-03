@@ -51,7 +51,12 @@ const BuiltinFunction = enum {
                 .rtype = &Type.unknownempty,
                 .arg_types = &.{Type.unknownempty},
             } },
-            else => .{ .unknown = @constCast(&Expression{ .builtin = .{ .function = self } }) },
+            .reflect => .{ .function = .{
+                .rtype = &Type.unknownempty,
+                .arg_types = &.{ Type.unknownempty, Type.unknownempty },
+            } },
+
+            else => @panic("unknown builtin function type"),
         };
     }
 };
