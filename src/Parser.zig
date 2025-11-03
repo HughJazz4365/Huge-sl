@@ -99,7 +99,7 @@ pub fn deinit(self: *Parser) void {
 }
 pub fn turnIntoIntermediateVariableIfNeeded(self: *Parser, expr: Expression) Error!Expression {
     return if (switch (expr) {
-        .named_value, .identifier => true,
+        .named_value, .identifier, .builtin => true,
         .value => |value| !value.shouldBeNamed(),
         else => false,
     }) expr else try self.turnIntoIntermediateVariable(expr);
@@ -419,7 +419,8 @@ fn addInitializerToVarDecl(self: *Parser, var_decl: *VariableDeclaration, initia
     var_decl.initializer = try self.implicitCast(var_decl.initializer, var_decl.type);
 }
 fn matchVariableTypeWithQualifier(self: *Parser, @"type": Type, qualifier: Qualifier) Error!void {
-    if (@"type".isComptimeOnly() and qualifier != .@"const") return self.errorOut(Error.VariableTypeAndQualifierDontMatch);
+    if ((@"type" == .buffer and qualifier != .uniform) or //
+        (@"type".isComptimeOnly() and qualifier != .@"const")) return self.errorOut(Error.VariableTypeAndQualifierDontMatch);
     if (qualifier == .push and if (@"type".scalarPrimitive()) |sp| sp.width == .short else false) return self.errorOut(Error.VariableTypeAndQualifierDontMatch);
 }
 
@@ -657,8 +658,10 @@ fn parseStructDeclaration(self: *Parser) Error!StructID {
     const s = self.getStructFromID(id);
     s.scope.parent = self.current_scope;
 
-    if (self.current_scope.current_variable_value_index < self.current_scope.multi_variable_initialization.len)
-        s.name = self.current_scope.multi_variable_initialization[self.current_scope.current_variable_value_index].name;
+    if (self.current_scope.current_variable_value_index < self.current_scope.multi_variable_initialization.len) {
+        const vd = self.current_scope.multi_variable_initialization[self.current_scope.current_variable_value_index];
+        s.name = if (vd.type == .@"struct") vd.name else try self.createIntermediateVariableName();
+    } else s.name = try self.createIntermediateVariableName();
 
     try self.parseScope(&s.scope);
 
@@ -924,7 +927,6 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
     } else if (!self.inGlobalScope()) return self.errorOut(Error.UnclosedScope);
 
     //remove useless statements??
-    // if (true) return;
     const body = scope.body();
     var i: usize = 0;
     while (i < body.len) {
@@ -933,7 +935,7 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
         if (shouldUntrackInStatement(statement))
             try self.trackReferencesInStatement(statement, .untrack);
         if (try self.isStatementOmittable(statement) //
-        and false //
+        // and false //
         ) {
             util.removeAt(Statement, body, index);
         } else i += 1;

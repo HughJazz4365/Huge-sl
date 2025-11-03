@@ -745,7 +745,6 @@ fn resolvePatternsMul(self: *Parser, left: *Expression, right: *Expression) Erro
         if (curr.* == .value) {
             const other = if (i == 0) right else left;
             const other_type = try self.typeOf(other.*);
-            std.debug.print("CURRVAL: {f}\n", .{curr.value});
             if (isScalarOrEachVectorComponentsEqualToNumber(curr.value, 0)) break try refineCast(self, .{
                 .expr = @constCast(&zerocompintexpr),
                 .type = if (curr.value.type.depth() > other_type.depth()) curr.value.type else other_type,

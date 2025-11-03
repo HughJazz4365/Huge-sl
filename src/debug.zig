@@ -48,6 +48,7 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
         .array => |array| try writer.print("[{d}]{f}", .{ array.len, array.component }),
         .matrix => |matrix| try writer.print("mat{d}x{d}", .{ matrix.m, matrix.n }),
         .@"struct" => |struct_id| _ = try writer.write(p.getStructFromID(struct_id).name),
+        .buffer => |struct_id| try writer.print("BufferType({f})", .{Parser.Type{ .@"struct" = struct_id }}),
         else => try writer.print("{s}", .{@tagName(t)}),
     }
 }

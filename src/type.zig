@@ -79,7 +79,8 @@ pub const Type = union(enum) {
     matrix: Matrix,
 
     @"struct": Parser.StructID,
-    buffer,
+    buffer: Parser.StructID,
+
     image,
 
     @"enum": Enum,

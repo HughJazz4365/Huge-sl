@@ -246,13 +246,14 @@ pub fn generate(parser: *Parser) Error![]WORD {
             });
             break :blk @"struct";
         },
+        .buffer => @panic("TODO : specify layout of struct and decorate with block"),
         .matrix => |matrix| &.{ opWord(.type_matrix, 4), t.id, matrix.column_type_id, @intFromEnum(matrix.column_count) },
 
         // else => unreachable,
     });
     for (self.constants.items) |c| { //constants
         const @"type" = self.typeFromID(c.type_id);
-        const word_count = @"type".valueWordConsumption();
+        const word_count = self.typeWordConsumption(@"type");
         try result.appendSlice(&.{ opWord(
             if (@"type" == .int or @"type" == .float) .constant else .constant_composite,
             @truncate(3 + word_count),
@@ -1059,7 +1060,7 @@ fn generateValue(self: *Generator, value: Parser.Value) Error!WORD {
     return result;
 }
 fn addConstant(self: *Generator, type_id: WORD, value: ConstantValue) Error!WORD {
-    for (self.constants.items) |c| if (c.type_id == type_id and constantValueEql(c.value, value, self.typeFromID(type_id).valueWordConsumption())) return c.id;
+    for (self.constants.items) |c| if (c.type_id == type_id and constantValueEql(c.value, value, self.typeWordConsumption(self.typeFromID(type_id)))) return c.id;
     const id = self.newID();
     try self.constants.append(self.arena, .{ .id = id, .type_id = type_id, .value = value });
     return id;
@@ -1316,6 +1317,7 @@ const Type = union(enum) {
     pointer: PointerType,
 
     @"struct": []const WORD,
+    buffer: WORD, //struct id
 
     pub fn eql(a: Type, b: Type) bool {
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
@@ -1333,21 +1335,23 @@ const Type = union(enum) {
             .pointer => |pointer| pointer.pointed_id == b.pointer.pointed_id and pointer.storage_class == b.pointer.storage_class,
             .array => |array| array.component_id == b.array.component_id and array.len == b.array.len,
             .@"struct" => |st| std.mem.eql(WORD, st, b.@"struct"),
+            .buffer => |struct_id| struct_id == b.buffer,
             // else => @panic("idk how to compare that type"),
         };
     }
-    pub fn valueWordConsumption(self: Type) WORD {
-        return switch (self) {
-            .float => |float| @as(WORD, if (float == .long) 2 else 1),
-            .int => |int| @as(WORD, if (int.width == .long) 2 else 1),
-            .vector => |vector| @intFromEnum(vector.len),
-            .matrix => |matrix| @intFromEnum(matrix.column_count),
-            .array => |array| array.len,
-            .@"struct" => |st| @truncate(st.len),
-            else => 1,
-        };
-    }
 };
+pub fn typeWordConsumption(self: *Generator, @"type": Type) WORD {
+    return switch (@"type") {
+        .float => |float| @as(WORD, if (float == .long) 2 else 1),
+        .int => |int| @as(WORD, if (int.width == .long) 2 else 1),
+        .vector => |vector| @intFromEnum(vector.len),
+        .matrix => |matrix| @intFromEnum(matrix.column_count),
+        .array => |array| array.len,
+        .@"struct" => |st| @truncate(st.len),
+        .buffer => |struct_id| self.typeWordConsumption(self.typeFromID(struct_id)),
+        else => 1,
+    };
+}
 const PointerType = struct { pointed_id: WORD, storage_class: StorageClass };
 const FunctionType = struct { rtype_id: WORD, arg_type_ids: []WORD = &.{} };
 

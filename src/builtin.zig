@@ -5,6 +5,80 @@ const ct = @import("comptime.zig");
 const Parser = @import("Parser.zig");
 
 pub const Interpolation = enum(u64) { smooth = 0, flat = 1, noperspective = 2 };
+pub fn getBuiltin(name: []const u8) Error!Builtin {
+    return name_map.get(name) orelse Error.InvalidBuiltin;
+}
+const name_map: std.StaticStringMap(Builtin) = .initComptime(.{
+    //single instruction
+    .{ "reflect", Builtin{ .function = .reflect } },
+    .{ "transpose", Builtin{ .function = .transpose } },
+    .{ "inverse", Builtin{ .function = .inverse } },
+    .{ "colHex", Builtin{ .function = .col_hex } },
+
+    //comptime
+    .{ "Buffer", Builtin{ .function = .buffer } },
+
+    //variables
+    .{ "position", Builtin{ .variable = .position } },
+    .{ "vertex_id", Builtin{ .variable = .vertex_id } },
+});
+
+pub const Builtin = union(enum) {
+    function: BuiltinFunction,
+    variable: BuiltinVariable,
+};
+const BuiltinFunction = enum {
+    col_hex,
+    reflect,
+    array_type,
+    transpose,
+    inverse,
+    buffer,
+
+    pub fn argumentCount(self: BuiltinFunction) usize {
+        return switch (self) {
+            .reflect, .array_type => 2,
+            else => 1,
+        };
+    }
+    pub fn typeOf(self: BuiltinFunction) Type {
+        return switch (self) {
+            .buffer => .{ .function = .{
+                .rtype = &Type{ .type = {} },
+                .arg_types = &.{Type{ .type = {} }},
+            } },
+            else => .{ .unknown = @constCast(&Expression{ .builtin = .{ .function = self } }) },
+        };
+    }
+};
+pub const BuiltinVariable = enum {
+    position,
+    point_size,
+    cull_distance,
+    vertex_id,
+    // invocation_id,
+
+    pub fn ioDirection(bv: BuiltinVariable) enum { in, out } {
+        return switch (bv) {
+            .position, .point_size, .cull_distance => .out,
+            else => .in,
+        };
+    }
+    pub fn isMutable(bv: BuiltinVariable) bool {
+        return switch (bv) {
+            .position, .point_size, .cull_distance => true,
+            else => false,
+        };
+    }
+    pub fn typeOf(bv: BuiltinVariable) Type {
+        return switch (bv) {
+            .position => tp.vec4_type,
+            .point_size => tp.f32_type,
+            .cull_distance => Type{ .array = .{ .len = 1, .component = &tp.f32_type } },
+            .vertex_id => tp.u32_type,
+        };
+    }
+};
 
 pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression, callee_ptr: *Expression) Error!Expression {
     if (args.len != bf.argumentCount()) return self.errorOut(Error.NonMatchingArgumentCount);
@@ -43,6 +117,15 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
                 .right = @constCast(&inv_oxFF),
             } }), tp.vec3_type);
         },
+        .buffer => blk: {
+            if (args[0] != .value) break :blk initial;
+            const @"type" = args[0].value.payload.type;
+            if (@"type" != .@"struct") return self.errorOut(Error.InvalidCall);
+            break :blk .{ .value = .{ .type = .type, .payload = .{
+                .type = .{ .buffer = @"type".@"struct" },
+            } } };
+        },
+
         else => initial,
     };
 }
@@ -50,8 +133,7 @@ pub fn typeOfBuiltInCall(self: *Parser, bf: BuiltinFunction, args: []Expression)
     if (args.len != bf.argumentCount()) return self.errorOut(Error.NonMatchingArgumentCount);
     const @"type": Type = switch (bf) {
         .col_hex => tp.vec3_type,
-
-        .array_type => Type{ .type = {} },
+        .array_type, .buffer => Type{ .type = {} },
         else => try self.typeOf(args[0]),
     };
     // std.debug.print("@{s} => {f}\n", .{ @tagName(bf), @"type" });
@@ -59,70 +141,12 @@ pub fn typeOfBuiltInCall(self: *Parser, bf: BuiltinFunction, args: []Expression)
     return @"type";
 }
 pub fn typeOfBuiltin(self: *Parser, builtin: Builtin) Error!Type {
+    _ = self;
     return if (builtin == .variable)
         builtin.variable.typeOf()
     else
-        .{ .unknown = try self.createVal(Expression{ .builtin = builtin }) };
+        builtin.function.typeOf();
 }
-pub fn getBuiltin(name: []const u8) Error!Builtin {
-    return name_map.get(name) orelse Error.InvalidBuiltin;
-}
-const name_map: std.StaticStringMap(Builtin) = .initComptime(.{
-    .{ "reflect", Builtin{ .function = .reflect } },
-    .{ "transpose", Builtin{ .function = .transpose } },
-    .{ "inverse", Builtin{ .function = .inverse } },
-    .{ "colHex", Builtin{ .function = .col_hex } },
-
-    .{ "position", Builtin{ .variable = .position } },
-    .{ "vertex_id", Builtin{ .variable = .vertex_id } },
-});
-
-pub const Builtin = union(enum) {
-    function: BuiltinFunction,
-    variable: BuiltinVariable,
-};
-const BuiltinFunction = enum {
-    col_hex,
-    reflect,
-    array_type,
-    transpose,
-    inverse,
-
-    pub fn argumentCount(self: BuiltinFunction) usize {
-        return switch (self) {
-            .reflect, .array_type => 2,
-            else => 1,
-        };
-    }
-};
-pub const BuiltinVariable = enum {
-    position,
-    point_size,
-    cull_distance,
-    vertex_id,
-    // invocation_id,
-
-    pub fn ioDirection(bv: BuiltinVariable) enum { in, out } {
-        return switch (bv) {
-            .position, .point_size, .cull_distance => .out,
-            else => .in,
-        };
-    }
-    pub fn isMutable(bv: BuiltinVariable) bool {
-        return switch (bv) {
-            .position, .point_size, .cull_distance => true,
-            else => false,
-        };
-    }
-    pub fn typeOf(bv: BuiltinVariable) Type {
-        return switch (bv) {
-            .position => tp.vec4_type,
-            .point_size => tp.f32_type,
-            .cull_distance => Type{ .array = .{ .len = 1, .component = &tp.f32_type } },
-            .vertex_id => tp.u32_type,
-        };
-    }
-};
 const oxFF = Expression{ .value = .{
     .type = .compint,
     .payload = .{ .wide = 0xFF },
