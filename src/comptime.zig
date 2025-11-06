@@ -212,7 +212,7 @@ fn refineIdentifier(self: *Parser, identifier: []const u8, access: bool) Error!E
             .{ .value = .{
                 .type = var_ref.value.value.type,
                 .payload = .{ .ptr = blk: {
-                    const ptr = try self.arena.allocator().alloc(u8, var_ref.value.value.type.valuePayloadBytes());
+                    const ptr = try self.arena.allocator().alloc(u8, var_ref.value.value.type.size());
                     @memcpy(ptr, @as([*]const u8, @ptrCast(var_ref.value.value.payload.ptr)));
                     break :blk @ptrCast(ptr);
                 } },

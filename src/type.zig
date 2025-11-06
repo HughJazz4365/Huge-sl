@@ -1,4 +1,5 @@
 const std = @import("std");
+const util = @import("util.zig");
 const Parser = @import("Parser.zig");
 const bi = @import("builtin.zig");
 
@@ -93,21 +94,6 @@ pub const Type = union(enum) {
     pub const unknownempty: Type = .{ .unknown = &Expression.empty };
     pub const format = @import("debug.zig").formatType;
 
-    pub fn valuePayloadBytes(self: Type) u32 {
-        return switch (self) {
-            .vector => |vector| switch (vector.len) {
-                inline else => |len| switch (vector.component.type) {
-                    inline else => |st| switch (vector.component.width) {
-                        inline else => |width| @sizeOf((Type{ .vector = .{
-                            .len = len,
-                            .component = .{ .width = width, .type = st },
-                        } }).ToZig()),
-                    },
-                },
-            },
-            else => 0,
-        };
-    }
     pub fn valuePayloadType(self: Type) enum { ptr, wide, type } {
         return switch (self) {
             .type => .type,
@@ -162,7 +148,7 @@ pub const Type = union(enum) {
     pub fn size(self: Type) usize {
         return switch (self) {
             .scalar => |number| @intFromEnum(number.width) >> 3,
-            .vector => |vector| (Type.size(.{ .scalar = vector.component }) * @intFromEnum(vector.len) + 15) / 16 * 16,
+            .vector => |vector| util.rut(usize, Type.size(.{ .scalar = vector.component }) * @intFromEnum(vector.len), 16),
             .array => |array| array.component.size() * array.len,
             .matrix => |matrix| Type.size(.{ .vector = matrix.columnVector() }) * @intFromEnum(matrix.n),
             .bool => 1,

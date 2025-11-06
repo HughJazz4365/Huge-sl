@@ -331,12 +331,12 @@ fn decorateStructLayout(self: *Generator, type_id: WORD, fields: []const WORD, r
                     type_id,
                     @truncate(i),
                     @intFromEnum(Decoration.matrix_stride),
-                    rut(self.sizeOf(column_vector_type), self.alignOf(column_vector_type, alignment)),
+                    util.wrut(self.sizeOf(column_vector_type), self.alignOf(column_vector_type, alignment)),
                 });
             },
             else => {},
         }
-        offset = rut(offset, self.alignOf(field_type, .scalar)); //???
+        offset = util.wrut(offset, self.alignOf(field_type, .scalar)); //???
         try self.decorations.appendSlice(self.arena, &.{
             opWord(.member_decorate, 5),
             type_id,
@@ -344,7 +344,7 @@ fn decorateStructLayout(self: *Generator, type_id: WORD, fields: []const WORD, r
             @intFromEnum(Decoration.offset),
             offset,
         });
-        offset = rut(offset + field_size, self.alignOf(field_type, alignment));
+        offset = util.wrut(offset + field_size, self.alignOf(field_type, alignment));
     }
 }
 fn alignOf(self: *Generator, @"type": Type, alignment: Alignment) WORD {
@@ -353,8 +353,8 @@ fn alignOf(self: *Generator, @"type": Type, alignment: Alignment) WORD {
         .int => |int| @intFromEnum(int.width) / 8,
         .vector => |vector| self.alignOf(self.typeFromID(vector.component_id), alignment) * //
             @as(WORD, if (alignment == .scalar) 1 else if (vector.len == ._2) 2 else 4),
-        .array => |array| rut(self.alignOf(self.typeFromID(array.component_id), alignment), if (alignment == .extended) 16 else 1),
-        .matrix => |matrix| rut(self.alignOf(self.typeFromID(matrix.column_type_id), alignment), if (alignment == .extended) 16 else 1),
+        .array => |array| util.wrut(self.alignOf(self.typeFromID(array.component_id), alignment), if (alignment == .extended) 16 else 1),
+        .matrix => |matrix| util.wrut(self.alignOf(self.typeFromID(matrix.column_type_id), alignment), if (alignment == .extended) 16 else 1),
         else => @panic("idk alignment of this type"),
     };
 }
@@ -366,9 +366,6 @@ fn sizeOf(self: *Generator, @"type": Type) WORD {
         .matrix => |matrix| @intFromEnum(matrix.column_count) * self.sizeOf(self.typeFromID(matrix.column_type_id)),
         else => 0,
     };
-}
-fn rut(a: WORD, b: WORD) WORD {
-    return (a + b - 1) / b * b;
 }
 const Alignment = enum { scalar, base, extended };
 

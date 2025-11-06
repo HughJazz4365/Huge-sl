@@ -1,6 +1,12 @@
 const std = @import("std");
 const Type = std.builtin.Type;
 const Allocator = std.mem.Allocator;
+pub fn wrut(a: u32, b: u32) u32 {
+    return rut(u32, a, b);
+}
+pub fn rut(T: type, a: T, b: T) T {
+    return (a + b - 1) / b * b;
+}
 
 pub fn removeAt(T: type, slice_ptr: *[]T, index: usize) void {
     @memmove(slice_ptr.*[index .. slice_ptr.len - 1], slice_ptr.*[index + 1 ..]);

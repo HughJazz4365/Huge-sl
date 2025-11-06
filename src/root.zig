@@ -1,8 +1,8 @@
 const std = @import("std");
-const Tokenizer = @import("Tokenizer.zig");
-const Parser = @import("Parser.zig");
-const SpirvGen = @import("spirvgen.zig");
-const ErrCtx = @import("errorctx.zig");
+pub const Tokenizer = @import("Tokenizer.zig");
+pub const Parser = @import("Parser.zig");
+pub const SpirvGen = @import("spirvgen.zig");
+pub const ErrCtx = @import("errorctx.zig");
 
 pub const Error = error{};
 pub fn compileFile(
