@@ -22,6 +22,14 @@ pub fn main() !void {
         for (0..t_count) |_| {
             // const compiled = try hgsl.compileFile(allocator, path, &out_writer.interface);
             const compiled = try compiler.compileFile(path);
+            if (false) for (compiled.mappings) |m| {
+                std.debug.print(
+                    \\name: {s}
+                    \\pc: {any}
+                    \\ou: {any}
+                    \\
+                , .{ m.name, m.push_constant_mappings, m.opaque_uniform_mappings });
+            };
             // defer allocator.free(compiled);
 
             const out_file = try std.fs.cwd().createFile("out.spv", .{ .read = true });
@@ -29,7 +37,7 @@ pub fn main() !void {
             var out_buf: [128]u8 = undefined;
             var writer = out_file.writer(&out_buf);
 
-            _ = try writer.interface.write(compiled);
+            _ = try writer.interface.write(compiled.bytes);
             try writer.interface.flush();
         }
         if (builtin.mode != .Debug or true) std.debug.print("Time: {d}ms\n", .{@as(f64, @floatFromInt(timer.read())) / 1_000_000.0 / t_count});

@@ -10,8 +10,6 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
         .root_source_file = b.path("src/root.zig"),
-        .link_libc = true,
-        .link_libcpp = true,
     });
 
     const cli = b.addExecutable(.{

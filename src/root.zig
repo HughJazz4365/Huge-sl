@@ -30,11 +30,12 @@ pub fn compile(
     var parser = Parser.parse(allocator, &tokenizer, settings, "FILE") catch |err| return error_ctx.outputUpdateIfEmpty(err);
     defer parser.deinit();
 
-    return try SpirvGen.generate(&parser);
+    return try SpirvGen.generate(&parser, allocator);
 }
 
 pub const Compiler = struct {
     allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
 
     err_ctx: ErrCtx = .{},
     settings: Settings,
@@ -42,7 +43,7 @@ pub const Compiler = struct {
     cache: [cache_size]CachedShader = @splat(.{}),
     const cache_size: usize = 10;
 
-    pub fn compileFile(self: *Compiler, path: []const u8) ![]u8 {
+    pub fn compileFile(self: *Compiler, path: []const u8) !Result {
         const source = try readFile(self.allocator, path);
         const hash = std.hash.Fnv1a_128.hash(source);
 
@@ -69,20 +70,24 @@ pub const Compiler = struct {
                 c.misses += @intFromBool(c.hits > 0);
             }
         }
-        if (hit) return self.cache[index].bytes;
+        if (hit) return self.cache[index].result;
 
-        const result: []u8 = try self.compileRaw(source, path);
-        if (index < cache_size) self.cache[index] = .{
-            .hash = hash,
-            .bytes = result,
-            .path = path,
-            .hits = self.cache[index].hits + 1,
-            .misses = self.cache[index].misses,
-        };
+        const result = try self.compileRaw(source, path);
+        if (index < cache_size) {
+            if (last_replacable == index)
+                self.cache[index].result.deinit(self.allocator);
+            self.cache[index] = .{
+                .hash = hash,
+                .result = result,
+                .path = path,
+                .hits = self.cache[index].hits + 1,
+                .misses = self.cache[index].misses,
+            };
+        }
         return result;
     }
 
-    fn compileRaw(self: *Compiler, source: []const u8, path: []const u8) ![]u8 {
+    fn compileRaw(self: *Compiler, source: []const u8, path: []const u8) !Result {
         self.err_ctx.reinit(source, path);
         var tokenizer: Tokenizer = .new(source, &self.err_ctx);
         const file_name = path;
@@ -94,12 +99,15 @@ pub const Compiler = struct {
         ) catch |err| return self.err_ctx.outputUpdateIfEmpty(err);
         defer parser.deinit();
 
-        return @ptrCast(@alignCast(try SpirvGen.generate(&parser)));
+        return try SpirvGen.generate(&parser, self.arena.allocator());
     }
 
     pub fn new(allocator: ?Allocator, err_writer: ?*std.Io.Writer, settings: Settings) Compiler {
+        const a = if (allocator) |a| a else std.heap.page_allocator;
         return .{
-            .allocator = if (allocator) |a| a else std.heap.page_allocator,
+            .allocator = a,
+            .arena = .init(a),
+
             .err_ctx = .{ .out_writer = err_writer },
             .settings = settings,
         };
@@ -107,17 +115,55 @@ pub const Compiler = struct {
     pub fn deinit(self: *Compiler) void {
         for (&self.cache) |c| {
             if (c.hits == 0) break;
-            self.allocator.free(c.bytes);
+            c.result.deinit(self.arena.allocator());
         }
+        self.arena.deinit();
     }
     const CachedShader = struct {
         path: []const u8 = "\x00",
         hash: u128 = 0,
-        bytes: []u8 = &.{},
+        result: Result = .{},
         hits: usize = 0,
         misses: usize = 0,
     };
 };
+pub const Result = struct {
+    bytes: []u8 = &.{},
+    mappings: []const EntryPointMappings = &.{},
+    pub fn alloc(self: Result, allocator: Allocator) Error!Result {
+        _ = allocator;
+        return self;
+    }
+    pub fn deinit(self: Result, allocator: Allocator) void {
+        allocator.free(self.bytes);
+        for (self.mappings) |m| {
+            allocator.free(m.name);
+            for (m.push_constant_mappings) |pcm|
+                allocator.free(pcm.name);
+
+            allocator.free(m.push_constant_mappings);
+        }
+        allocator.free(self.mappings);
+    }
+};
+pub const EntryPointMappings = struct {
+    name: []const u8,
+    push_constant_mappings: []const PushConstantMapping,
+    opaque_uniform_mappings: []const OpaqueUniformMapping,
+};
+
+pub const PushConstantMapping = struct {
+    name: []const u8,
+    offset: u32,
+    size: u32,
+};
+pub const OpaqueUniformMapping = struct {
+    name: []const u8,
+    type: OpaqueType,
+    binding: u32,
+};
+pub const OpaqueType = enum { buffer, texture };
+
 pub const Settings = struct {
     target_env: TargetEnv = .vulkan1_4,
     optimize: Optimize = .none,

@@ -6,8 +6,8 @@ const zigbuiltin = @import("builtin");
 const Parser = @import("Parser.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const Generator = @This();
-const root = @import("root.zig");
-const Settings = root.Settings;
+const hgsl = @import("root.zig");
+const Settings = hgsl.Settings;
 
 const WORD = u32;
 
@@ -74,14 +74,14 @@ pub fn printInstructions(slice: []WORD) void {
     }
 }
 
-pub fn generate(parser: *Parser) Error![]WORD {
+pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result {
     var self: Generator = .{
         .parser = parser,
         .arena = parser.arena.allocator(),
         .global_io = try parser.arena.allocator().alloc(IOEntry, parser.global_scope.global_io.items.len),
     };
 
-    var result: std.array_list.Managed(WORD) = .init(self.parser.allocator);
+    var result: std.array_list.Managed(WORD) = .init(result_allocator);
     self.current_buffer = &self.main_buffer;
     for (self.parser.global_scope.body.items) |statement| try self.generateStatment(statement);
     self.current_buffer = &self.main_buffer;
@@ -299,9 +299,38 @@ pub fn generate(parser: *Parser) Error![]WORD {
     }
 
     try result.appendSlice(self.main_buffer.items);
-
     // printInstructions(result.items[5..]);
-    return try result.toOwnedSlice();
+
+    const mappings = try result_allocator.alloc(hgsl.EntryPointMappings, self.entry_points.items.len);
+    for (mappings, self.entry_points.items) |*m, ep| {
+        const push_constant_mappings = try result_allocator.alloc(
+            hgsl.PushConstantMapping,
+            ep.push_constants.items.len,
+        );
+        var offset: WORD = 0;
+        for (push_constant_mappings, ep.push_constants.items) |*pcm, pc| {
+            const pc_type = self.typeFromID(pc.type_id);
+            const size = self.sizeOf(pc_type);
+            offset = util.wrut(offset, self.alignOf(pc_type, .scalar)); //???
+            pcm.* = .{
+                .name = try result_allocator.dupe(u8, pc.name),
+                .offset = offset,
+                .size = size,
+            };
+            offset = util.wrut(offset + size, self.alignOf(pc_type, .scalar));
+        }
+
+        m.* = .{
+            .name = try result_allocator.dupe(u8, ep.name),
+            .push_constant_mappings = push_constant_mappings,
+            .opaque_uniform_mappings = &.{},
+        };
+    }
+
+    return .{
+        .bytes = @ptrCast(@alignCast(try result.toOwnedSlice())),
+        .mappings = mappings,
+    };
 }
 fn versionWord(major: u8, minor: u8) WORD {
     return @as(WORD, minor) << 8 | @as(WORD, major) << 16;
