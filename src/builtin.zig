@@ -170,7 +170,7 @@ const inv_oxFF = Expression{ .value = .{
     .type = .compfloat,
     .payload = .{ .wide = util.fit(Parser.WIDE, @as(Parser.CF, 1.0 / 255.0)) },
 } };
-pub const stage_type: Type = .{ .@"enum" = .fromZig(Parser.ShaderStage) };
+pub const stage_type: Type = .{ .@"enum" = .fromZig(Parser.Stage) };
 
 pub const interpolation_type: Type = .{ .@"enum" = .fromZig(Interpolation) };
 pub const buffer_type_type: Type = .{ .@"enum" = .fromZig(tp.BufferType) };

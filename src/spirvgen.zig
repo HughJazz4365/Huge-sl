@@ -135,7 +135,7 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
             });
         }
 
-        const execution_model: WORD = switch (ep.shader_stage_info) {
+        const execution_model: WORD = switch (ep.stage_info) {
             .vertex => 0,
             .fragment => 4,
             .compute => 5,
@@ -157,7 +157,7 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
     }
 
     for (self.entry_points.items) |ep| { // execution modes
-        switch (ep.shader_stage_info) {
+        switch (ep.stage_info) {
             .fragment => try result.appendSlice(&.{
                 opWord(.execution_mode, 3),
                 ep.id,
@@ -301,7 +301,7 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
     try result.appendSlice(self.main_buffer.items);
     // printInstructions(result.items[5..]);
 
-    const mappings = try result_allocator.alloc(hgsl.EntryPointMappings, self.entry_points.items.len);
+    const mappings = try result_allocator.alloc(hgsl.EntryPointInfo, self.entry_points.items.len);
     for (mappings, self.entry_points.items) |*m, ep| {
         const push_constant_mappings = try result_allocator.alloc(
             hgsl.PushConstantMapping,
@@ -320,8 +320,13 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
             offset = util.wrut(offset + size, self.alignOf(pc_type, .scalar));
         }
 
+        const name_copy = try result_allocator.alloc(u8, ep.name.len + 1);
+        name_copy[ep.name.len] = 0;
+        @memcpy(name_copy[0..ep.name.len], ep.name);
         m.* = .{
-            .name = try result_allocator.dupe(u8, ep.name),
+            .name = name_copy[0..ep.name.len :0],
+            .stage_info = ep.stage_info,
+
             .push_constant_mappings = push_constant_mappings,
             .opaque_uniform_mappings = &.{},
         };
@@ -329,7 +334,7 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
 
     return .{
         .bytes = @ptrCast(@alignCast(try result.toOwnedSlice())),
-        .mappings = mappings,
+        .entry_point_infos = mappings,
     };
 }
 fn versionWord(major: u8, minor: u8) WORD {
@@ -610,7 +615,7 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.E
         .name = name,
 
         .id = entry_point_id,
-        .shader_stage_info = entry_point.shader_stage_info,
+        .stage_info = entry_point.shader_stage_info,
         .local_io = try self.arena.alloc(IOEntry, entry_point.io.items.len),
     });
     _ = try self.typeID(.void); //so that ids are assigned before function body
@@ -1112,7 +1117,7 @@ fn generateValue(self: *Generator, value: Parser.Value) Error!WORD {
         },
         .array => |array| blk: {
             var word_array: [4]WORD = @splat(0);
-            const slice = if (array.len <= 4) &word_array else try self.arena.alloc(WORD, array.len);
+            const slice = if (array.len <= 4) word_array[0..array.len] else try self.arena.alloc(WORD, array.len);
             for (slice, @as([*]const Parser.ValuePayload, @ptrCast(@alignCast(value.payload.ptr)))[0..array.len]) |*w, p| //
                 w.* = try self.generateValue(.{ .type = array.component.*, .payload = p });
             break :blk try self.addConstant(try self.convertTypeID(value.type), if (array.len <= 4)
@@ -1264,7 +1269,7 @@ const EntryPoint = struct {
     name: []const u8,
 
     id: WORD,
-    shader_stage_info: ExecutionModelInfo,
+    stage_info: StageInfo,
     interface_ids: []WORD = &.{},
     local_io: []IOEntry = &.{},
 
@@ -1625,7 +1630,7 @@ const FunctionControl = enum(WORD) {
     @"const" = 4,
 };
 
-const ExecutionModelInfo = Parser.ShaderStageInfo;
+const StageInfo = Parser.StageInfo;
 const Expression = Parser.Expression;
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;

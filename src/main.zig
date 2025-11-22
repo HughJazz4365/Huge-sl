@@ -12,9 +12,9 @@ pub fn main() !void {
     defer compiler.deinit();
     for ([_][]const u8{
         // "test.hgsl",
-        // "../Huge/shader.hgsl",
-        "source.hgsl",
-        "vertfrag.hgsl",
+        "../Huge/shader.hgsl",
+        // "source.hgsl",
+        // "vertfrag.hgsl",
     }) |path| {
         std.debug.print("======{s}=======\n", .{path});
         var timer = try std.time.Timer.start();

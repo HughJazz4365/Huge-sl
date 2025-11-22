@@ -89,7 +89,7 @@ pub const Type = union(enum) {
     @"enum": Enum,
 
     function: FunctionType,
-    entrypoint: Parser.ShaderStage,
+    entrypoint: Parser.Stage,
 
     pub const unknownempty: Type = .{ .unknown = &Expression.empty };
     pub const format = @import("debug.zig").formatType;

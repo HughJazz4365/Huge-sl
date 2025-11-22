@@ -86,7 +86,7 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer, settings: Settings, fi
 
     try self.parseScope(&self.global_scope.scope);
 
-    if (zigbuiltin.mode == .Debug) {
+    if (false and zigbuiltin.mode == .Debug) {
         std.debug.print("[GLOBAL IO: ", .{});
         for (self.global_scope.global_io.items) |gi| std.debug.print("{s}, ", .{gi});
         std.debug.print("]\n", .{});
@@ -877,8 +877,8 @@ fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
     const stage_enum_expr = try self.implicitCast(try self.parseExpressionSide(true), bi.stage_type);
     if (stage_enum_expr != .value) return self.errorOut(Error.IncompleteStatement);
 
-    const exec_model: ShaderStage = @enumFromInt(@as(u64, @truncate(stage_enum_expr.value.payload.wide)));
-    const exec_model_info: ShaderStageInfo = switch (exec_model) {
+    const exec_model: Stage = @enumFromInt(@as(u64, @truncate(stage_enum_expr.value.payload.wide)));
+    const exec_model_info: StageInfo = switch (exec_model) {
         .vertex => .vertex,
         .fragment => .fragment,
         .compute => .{ .compute = @splat(0) },
@@ -1103,7 +1103,7 @@ pub const Function = struct {
 };
 
 pub const EntryPoint = struct {
-    shader_stage_info: ShaderStageInfo,
+    shader_stage_info: StageInfo,
     scope: Scope,
 
     global_io_count: usize = 0,
@@ -1111,7 +1111,7 @@ pub const EntryPoint = struct {
 
     body: List(Statement),
 
-    pub fn new(self: *Parser, stage_info: ShaderStageInfo) EntryPoint {
+    pub fn new(self: *Parser, stage_info: StageInfo) EntryPoint {
         return .{
             .shader_stage_info = stage_info,
             .body = .empty,
@@ -1156,12 +1156,8 @@ pub const EntryPoint = struct {
     }
 };
 
-pub const ShaderStage = enum(u64) { vertex = 0, fragment = 1, compute = 2 };
-pub const ShaderStageInfo = union(ShaderStage) {
-    vertex,
-    fragment,
-    compute: [3]u32,
-};
+pub const Stage = root.Stage;
+pub const StageInfo = root.StageInfo;
 fn parseValue(self: *Parser, token: Token) Error!Value {
     //true, false
     return switch (token) {

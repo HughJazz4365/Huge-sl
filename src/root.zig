@@ -129,27 +129,34 @@ pub const Compiler = struct {
 };
 pub const Result = struct {
     bytes: []u8 = &.{},
-    mappings: []const EntryPointMappings = &.{},
+    entry_point_infos: []const EntryPointInfo = &.{},
     pub fn alloc(self: Result, allocator: Allocator) Error!Result {
         _ = allocator;
         return self;
     }
     pub fn deinit(self: Result, allocator: Allocator) void {
         allocator.free(self.bytes);
-        for (self.mappings) |m| {
+        for (self.entry_point_infos) |m| {
             allocator.free(m.name);
             for (m.push_constant_mappings) |pcm|
                 allocator.free(pcm.name);
 
             allocator.free(m.push_constant_mappings);
         }
-        allocator.free(self.mappings);
+        allocator.free(self.entry_point_infos);
     }
 };
-pub const EntryPointMappings = struct {
-    name: []const u8,
+pub const EntryPointInfo = struct {
+    name: [:0]const u8,
+    stage_info: StageInfo,
     push_constant_mappings: []const PushConstantMapping,
     opaque_uniform_mappings: []const OpaqueUniformMapping,
+};
+pub const Stage = enum(u64) { vertex, fragment, compute };
+pub const StageInfo = union(Stage) {
+    vertex,
+    fragment,
+    compute: [3]u32,
 };
 
 pub const PushConstantMapping = struct {
