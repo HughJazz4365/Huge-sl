@@ -136,22 +136,43 @@ pub const Result = struct {
     }
     pub fn deinit(self: Result, allocator: Allocator) void {
         allocator.free(self.bytes);
-        for (self.entry_point_infos) |m| {
-            allocator.free(m.name);
-            for (m.push_constant_mappings) |pcm|
-                allocator.free(pcm.name);
-
-            allocator.free(m.push_constant_mappings);
-        }
+        for (self.entry_point_infos) |m| m.deinit(allocator);
         allocator.free(self.entry_point_infos);
     }
 };
 pub const EntryPointInfo = struct {
     name: [:0]const u8,
     stage_info: StageInfo,
+
     push_constant_mappings: []const PushConstantMapping,
     opaque_uniform_mappings: []const OpaqueUniformMapping,
+
+    io_mappings_ptr: [*]const IOMapping = undefined,
+    input_count: u32 = 0,
+    output_count: u32 = 0,
+    pub fn inputMappings(self: EntryPointInfo) []const IOMapping {
+        return self.io_mappings_ptr[0..self.input_count];
+    }
+    pub fn outputMappings(self: EntryPointInfo) []const IOMapping {
+        return self.io_mappings_ptr[self.input_count .. self.input_count + self.output_count];
+    }
+    pub fn deinit(self: *const EntryPointInfo, allocator: Allocator) void {
+        allocator.free(self.name);
+        for (self.push_constant_mappings) |pcm| allocator.free(pcm.name);
+
+        const io_mappings = self.io_mappings_ptr[0 .. self.input_count + self.output_count];
+        for (io_mappings) |iom| allocator.free(iom.name);
+        allocator.free(io_mappings);
+
+        allocator.free(self.push_constant_mappings);
+    }
 };
+pub const IOMapping = struct {
+    name: []const u8,
+    location: u32,
+    size: u32 = 0,
+};
+
 pub const Stage = enum(u64) { vertex, fragment, compute };
 pub const StageInfo = union(Stage) {
     vertex,

@@ -319,6 +319,34 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
             };
             offset = util.wrut(offset + size, self.alignOf(pc_type, .scalar));
         }
+        var input_count: u32 = 0;
+        var output_count: u32 = 0;
+        for (&[2][]IOEntry{ self.global_io[0..ep.val_ptr.global_io_count], ep.local_io }) |slice|
+            for (slice) |io| {
+                if (io.io_type == .in) {
+                    input_count += 1;
+                } else if (io.io_type == .out) {
+                    output_count += 1;
+                }
+            };
+        //[input][output]
+        const io_mappings = try result_allocator.alloc(hgsl.IOMapping, input_count + output_count);
+        var input_index: u32 = 0;
+        var output_index: u32 = 0;
+        for (&[2][]IOEntry{ self.global_io[0..ep.val_ptr.global_io_count], ep.local_io }) |slice|
+            for (slice) |io| {
+                const name = try result.allocator.dupe(u8, for (self.global_vars.items) |gv| {
+                    if (io.id == gv.id) break gv.name;
+                } else unreachable);
+                const size = self.sizeOf(self.typeFromID(io.type_id));
+                if (io.io_type == .in) {
+                    io_mappings[input_index] = .{ .location = input_index, .name = name, .size = size };
+                    input_index += 1;
+                } else if (io.io_type == .out) {
+                    io_mappings[input_count + output_index] = .{ .location = output_index, .name = name, .size = size };
+                    output_index += 1;
+                }
+            };
 
         const name_copy = try result_allocator.alloc(u8, ep.name.len + 1);
         name_copy[ep.name.len] = 0;
@@ -329,6 +357,10 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
 
             .push_constant_mappings = push_constant_mappings,
             .opaque_uniform_mappings = &.{},
+
+            .io_mappings_ptr = io_mappings.ptr,
+            .input_count = input_count,
+            .output_count = output_count,
         };
     }
 
