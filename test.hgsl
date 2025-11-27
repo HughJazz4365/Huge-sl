@@ -1,5 +1,5 @@
 const V2 = struct{
-	member x, y : f32
+	member x, y : f32 = 2
 }
 const ret = fn(a) V2{
 	return a
@@ -9,7 +9,7 @@ const main = entrypoint(.fragment){
 	uniform ubo : @Buffer(struct{
 		member albedo : vec3
 	}, .ubo)
-
-	out test = .{ret(.{.x = 1, .y = 2}).y} * ubo.albedo
+   
+	const test = ret(.{.x = 1, .y = 2}).y * ubo.albedo
 
 }

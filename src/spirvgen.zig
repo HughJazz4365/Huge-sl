@@ -14,6 +14,7 @@ const WORD = u32;
 const Error = error{
     OutOfMemory,
     InvalidSpirvType,
+    InvalidIOType,
     GenError,
     PushConstantBlockTooBig,
 } || Writer.Error || Parser.Error;
@@ -329,23 +330,26 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
                     output_count += 1;
                 }
             };
-        //[input][output]
+        //[input][output] construct result
         const io_mappings = try result_allocator.alloc(hgsl.IOMapping, input_count + output_count);
         var input_index: u32 = 0;
         var output_index: u32 = 0;
         for (&[2][]IOEntry{ self.global_io[0..ep.val_ptr.global_io_count], ep.local_io }) |slice|
             for (slice) |io| {
-                const name = try result.allocator.dupe(u8, for (self.global_vars.items) |gv| {
+                const name = try result_allocator.dupe(u8, for (self.global_vars.items) |gv| {
                     if (io.id == gv.id) break gv.name;
                 } else unreachable);
-                const size = self.sizeOf(self.typeFromID(io.type_id));
-                if (io.io_type == .in) {
-                    io_mappings[input_index] = .{ .location = input_index, .name = name, .size = size };
-                    input_index += 1;
-                } else if (io.io_type == .out) {
-                    io_mappings[input_count + output_index] = .{ .location = output_index, .name = name, .size = size };
-                    output_index += 1;
-                }
+                const @"type" = self.typeFromID(io.type_id);
+                const size = self.sizeOf(@"type");
+
+                const index_ptr = if (io.io_type == .in) &input_index else &output_index;
+                io_mappings[if (io.io_type == .in) input_index else input_count + output_index] = .{
+                    .location = index_ptr.*,
+                    .name = name,
+                    .size = size,
+                    .type = self.toIOType(@"type"),
+                };
+                index_ptr.* += 1;
             };
 
         const name_copy = try result_allocator.alloc(u8, ep.name.len + 1);
@@ -1342,6 +1346,27 @@ const ConstantValue = union {
     quad: [4]WORD,
     ptr: [*]WORD,
 };
+fn toIOType(self: *Generator, @"type": Type) hgsl.IOType {
+    return switch (@"type") {
+        .float => |width| .{ .scalar = if (width == .word)
+            .f32
+        else if (width == .long)
+            .f64
+        else
+            unreachable },
+        .int => |int| .{ .scalar = if (int.width == .word)
+            if (int.signed) .i32 else .u32
+        else if (int.width == .long)
+            if (int.signed) .i64 else .u64
+        else
+            unreachable },
+        .vector => |vector| .{ .vector = .{
+            .len = vector.len,
+            .child = self.toIOType(self.typeFromID(vector.component_id)).scalar,
+        } },
+        else => unreachable,
+    };
+}
 
 fn convertTypeID(self: *Generator, from: Parser.Type) Error!WORD {
     return try self.typeID(try self.convertType(from));

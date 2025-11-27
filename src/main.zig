@@ -11,8 +11,8 @@ pub fn main() !void {
     });
     defer compiler.deinit();
     for ([_][]const u8{
-        // "test.hgsl",
-        "../Huge/shader.hgsl",
+        "test.hgsl",
+        // "../Huge/shader.hgsl",
         // "source.hgsl",
         // "vertfrag.hgsl",
     }) |path| {
@@ -36,6 +36,8 @@ pub fn main() !void {
             defer out_file.close();
             var out_buf: [128]u8 = undefined;
             var writer = out_file.writer(&out_buf);
+
+            std.debug.print("RESULT: {f}\n", .{compiled});
 
             _ = try writer.interface.write(compiled.bytes);
             try writer.interface.flush();

@@ -1,6 +1,7 @@
 const std = @import("std");
 const util = @import("util.zig");
 const Parser = @import("Parser.zig");
+const hgsl = @import("root.zig");
 const bi = @import("builtin.zig");
 
 pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
@@ -81,6 +82,7 @@ pub const Type = union(enum) {
     array: Array,
     matrix: Matrix,
 
+    //value.payload - []Expression
     @"struct": Parser.StructID,
     buffer: Buffer,
 
@@ -145,6 +147,18 @@ pub const Type = union(enum) {
             else => null,
         };
     }
+    pub fn shouldReferenceCopyPayload(self: Type) bool {
+        return switch (self) {
+            .@"struct" => false,
+            else => true,
+        };
+    }
+    pub fn valuePayloadPtrSize(self: Type) usize {
+        return switch (self) {
+            .@"struct" => @sizeOf([*]Expression),
+            else => self.size(),
+        };
+    }
     pub fn size(self: Type) usize {
         return switch (self) {
             .scalar => |number| @intFromEnum(number.width) >> 3,
@@ -205,8 +219,8 @@ pub const Matrix = struct {
     }
     pub const allMatrixTypes = blk: {
         var slice: []const Matrix = &.{};
-        for (VectorLen.allVectorLengths) |m|
-            for (VectorLen.allVectorLengths) |n|
+        for (allVectorLengths) |m|
+            for (allVectorLengths) |n|
                 for (@typeInfo(BitWidth).@"enum".fields) |w| {
                     const width: BitWidth = @enumFromInt(w.value);
                     if (width != .word) continue;
@@ -242,7 +256,7 @@ pub const Vector = struct {
         var slice: []const Vector = &.{};
         for (Scalar.allScalarTypes) |component| {
             if (component.width != .word) continue;
-            for (VectorLen.allVectorLengths) |len|
+            for (allVectorLengths) |len|
                 slice = slice ++ &[1]Vector{.{ .component = component, .len = len }};
         }
         break :blk slice;
@@ -259,16 +273,12 @@ pub const Vector = struct {
         } ++ "vec" ++ .{'0' + @intFromEnum(vec.len)};
     }
 };
-pub const VectorLen = enum(u32) {
-    _2 = 2,
-    _3 = 3,
-    _4 = 4,
-    pub const allVectorLengths = blk: {
-        var slice: []const VectorLen = &.{};
-        for (@typeInfo(VectorLen).@"enum".fields) |ef|
-            slice = slice ++ &[1]VectorLen{@enumFromInt(ef.value)};
-        break :blk slice;
-    };
+pub const VectorLen = hgsl.VectorLen;
+pub const allVectorLengths = blk: {
+    var slice: []const VectorLen = &.{};
+    for (@typeInfo(VectorLen).@"enum".fields) |ef|
+        slice = slice ++ &[1]VectorLen{@enumFromInt(ef.value)};
+    break :blk slice;
 };
 
 pub const Scalar = struct {

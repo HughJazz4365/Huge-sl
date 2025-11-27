@@ -211,11 +211,15 @@ fn refineIdentifier(self: *Parser, identifier: []const u8, access: bool) Error!E
         if (var_ref.value == .value and var_ref.value.value.type.valuePayloadType() == .ptr)
             .{ .value = .{
                 .type = var_ref.value.value.type,
-                .payload = .{ .ptr = blk: {
-                    const ptr = try self.arena.allocator().alloc(u8, var_ref.value.value.type.size());
-                    @memcpy(ptr, @as([*]const u8, @ptrCast(var_ref.value.value.payload.ptr)));
-                    break :blk @ptrCast(ptr);
-                } },
+                .payload = .{
+                    .ptr = if (var_ref.value.value.type.shouldReferenceCopyPayload())
+                        (try self.arena.allocator().dupe(
+                            u8,
+                            @as([*]const u8, @ptrCast(var_ref.value.value.payload.ptr))[0..var_ref.value.value.type.valuePayloadPtrSize()],
+                        )).ptr
+                    else
+                        var_ref.value.value.payload.ptr,
+                },
             } }
         else
             var_ref.value) else .{ .identifier = identifier };

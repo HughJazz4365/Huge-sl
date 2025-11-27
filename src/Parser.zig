@@ -86,7 +86,8 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer, settings: Settings, fi
 
     try self.parseScope(&self.global_scope.scope);
 
-    if (false and zigbuiltin.mode == .Debug) {
+    if (zigbuiltin.mode == .Debug) {
+        // if (false and zigbuiltin.mode == .Debug) {
         std.debug.print("[GLOBAL IO: ", .{});
         for (self.global_scope.global_io.items) |gi| std.debug.print("{s}, ", .{gi});
         std.debug.print("]\n", .{});
@@ -549,7 +550,10 @@ fn parseExpressionSide(self: *Parser, comptime access: bool) Error!Expression {
         .@"{" => {
             if (try self.typeOf(expr) == .type) {
                 self.tokenizer.skip();
-                expr = try self.parseCastOrConstructor(try self.asTypeCreate(expr));
+                expr = try refine_func(
+                    self,
+                    try self.parseCastOrConstructor(try self.asTypeCreate(expr)),
+                );
                 continue :sw try self.tokenizer.peek();
             } else return self.errorOut(Error.UnexpectedToken);
         },

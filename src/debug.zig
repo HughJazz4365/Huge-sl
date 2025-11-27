@@ -122,11 +122,13 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
             },
         },
         .@"struct" => |struct_id| {
+            // try writer.print("STRUCT", .{});
+            // if (true) return;
             const s = p.getStructFromID(struct_id);
-            const values = @as([*]const Expression, @ptrCast(@alignCast(value.payload.ptr)))[0..s.members.items.len];
+            const members_ptr = @as([*]const Expression, @ptrCast(@alignCast(value.payload.ptr)));
 
             try writer.print("|{s}|{{\n", .{s.name});
-            for (values, s.members.items) |v, m| {
+            for (members_ptr[0..s.members.items.len], s.members.items) |v, m| {
                 try writer.print("\t.{s} = {f},\n", .{ m.name, v });
             }
             try writer.print("}}", .{});

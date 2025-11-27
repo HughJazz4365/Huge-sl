@@ -6,32 +6,6 @@ pub const SpirvGen = @import("spirvgen.zig");
 pub const ErrCtx = @import("errorctx.zig");
 
 pub const Error = error{};
-pub fn compileFile(
-    allocator: Allocator,
-    path: []const u8,
-    err_writer: ?*std.Io.Writer,
-    settings: Settings,
-) ![]u32 {
-    const source = try readFile(allocator, path);
-    return try compile(allocator, source, path, err_writer, settings);
-}
-
-pub fn compile(
-    allocator: Allocator,
-    source: []const u8,
-    path: []const u8,
-    err_writer: ?*std.Io.Writer,
-    settings: Settings,
-) ![]u32 {
-    var error_ctx: ErrCtx = .{};
-    error_ctx.init(source, path, err_writer);
-
-    var tokenizer: Tokenizer = .new(source, &error_ctx);
-    var parser = Parser.parse(allocator, &tokenizer, settings, "FILE") catch |err| return error_ctx.outputUpdateIfEmpty(err);
-    defer parser.deinit();
-
-    return try SpirvGen.generate(&parser, allocator);
-}
 
 pub const Compiler = struct {
     allocator: Allocator,
@@ -44,6 +18,7 @@ pub const Compiler = struct {
     const cache_size: usize = 10;
 
     pub fn compileFile(self: *Compiler, path: []const u8) !Result {
+        if (path.len == 0) return error.EmptyPath;
         const source = try readFile(self.allocator, path);
         const hash = std.hash.Fnv1a_128.hash(source);
 
@@ -99,6 +74,7 @@ pub const Compiler = struct {
         ) catch |err| return self.err_ctx.outputUpdateIfEmpty(err);
         defer parser.deinit();
 
+        // return .{};
         return try SpirvGen.generate(&parser, self.arena.allocator());
     }
 
@@ -127,6 +103,45 @@ pub const Compiler = struct {
         misses: usize = 0,
     };
 };
+pub const IOType = union(enum) {
+    scalar: Scalar,
+    vector: struct { len: VectorLen, child: Scalar },
+    pub fn eql(a: IOType, b: IOType) bool {
+        return if (a == .scalar and b == .scalar)
+            a.scalar == b.scalar
+        else if (a == .vector and b == .vector)
+            a.vector.len == b.vector.len and a.vector.child == b.vector.child
+        else
+            return false;
+    }
+    pub fn format(self: IOType, writer: *std.Io.Writer) !void {
+        switch (self) {
+            .scalar => |scalar| try writer.print("{s}", .{@tagName(scalar)}),
+            .vector => |vector| try writer.print("{s}vec{d}", .{
+                switch (vector.child) {
+                    .f32, .f64 => "",
+                    .u32, .u64 => "u",
+                    .i32, .i64 => "i",
+                },
+                @intFromEnum(vector.len),
+            }),
+        }
+    }
+};
+pub const VectorLen = enum(u32) {
+    _2 = 2,
+    _3 = 3,
+    _4 = 4,
+};
+const Scalar = enum(u32) {
+    f32,
+    u32,
+    i32,
+    f64,
+    u64,
+    i64,
+};
+
 pub const Result = struct {
     bytes: []u8 = &.{},
     entry_point_infos: []const EntryPointInfo = &.{},
@@ -139,13 +154,21 @@ pub const Result = struct {
         for (self.entry_point_infos) |m| m.deinit(allocator);
         allocator.free(self.entry_point_infos);
     }
+    pub fn format(self: Result, writer: *std.Io.Writer) !void {
+        try writer.print("bytes.len = {}, entry points({}):\n", .{
+            self.bytes.len,
+            self.entry_point_infos.len,
+        });
+        for (self.entry_point_infos) |ep_info|
+            try writer.print("{f}\n", .{ep_info});
+    }
 };
 pub const EntryPointInfo = struct {
-    name: [:0]const u8,
-    stage_info: StageInfo,
+    name: [:0]const u8 = "",
+    stage_info: StageInfo = undefined,
 
-    push_constant_mappings: []const PushConstantMapping,
-    opaque_uniform_mappings: []const OpaqueUniformMapping,
+    push_constant_mappings: []const PushConstantMapping = &.{},
+    opaque_uniform_mappings: []const OpaqueUniformMapping = &.{},
 
     io_mappings_ptr: [*]const IOMapping = undefined,
     input_count: u32 = 0,
@@ -158,19 +181,44 @@ pub const EntryPointInfo = struct {
     }
     pub fn deinit(self: *const EntryPointInfo, allocator: Allocator) void {
         allocator.free(self.name);
-        for (self.push_constant_mappings) |pcm| allocator.free(pcm.name);
 
         const io_mappings = self.io_mappings_ptr[0 .. self.input_count + self.output_count];
         for (io_mappings) |iom| allocator.free(iom.name);
         allocator.free(io_mappings);
 
+        for (self.push_constant_mappings) |pcm| allocator.free(pcm.name);
         allocator.free(self.push_constant_mappings);
+    }
+    pub fn format(self: EntryPointInfo, writer: *std.Io.Writer) !void {
+        try writer.print("[{f}] {s}{{\n", .{ self.stage_info, self.name });
+
+        try writer.print("<==INPUT==>({}):\n", .{self.inputMappings().len});
+        for (self.inputMappings()) |im|
+            try writer.print("{f}\n", .{im});
+
+        try writer.print("<==OUTPUT==>({}):\n", .{self.outputMappings().len});
+        for (self.outputMappings()) |om|
+            try writer.print("{f}\n", .{om});
+
+        try writer.print("<==PUSH=CONSTANTS==>({}):\n", .{self.push_constant_mappings.len});
+        for (self.push_constant_mappings) |pc|
+            try writer.print("{f}\n", .{pc});
+
+        try writer.print("<==OPAQUE=UNIFORMS==>({}):\n", .{self.opaque_uniform_mappings.len});
+        for (self.opaque_uniform_mappings) |ou|
+            try writer.print("{any}\n", .{ou});
+        try writer.print("}}", .{});
     }
 };
 pub const IOMapping = struct {
     name: []const u8,
-    location: u32,
+    location: u32 = undefined,
     size: u32 = 0,
+
+    type: IOType,
+    pub fn format(self: IOMapping, writer: *std.Io.Writer) !void {
+        try writer.print("(location = {d:2}) {s}: {f}", .{ self.location, self.name, self.type });
+    }
 };
 
 pub const Stage = enum(u64) { vertex, fragment, compute };
@@ -178,12 +226,26 @@ pub const StageInfo = union(Stage) {
     vertex,
     fragment,
     compute: [3]u32,
+    pub fn format(self: StageInfo, writer: *std.Io.Writer) !void {
+        try writer.print("{s}", .{@tagName(self)});
+        switch (self) {
+            inline else => |val| if (@TypeOf(val) != void)
+                try writer.print(":{any}", .{val}),
+        }
+    }
 };
 
 pub const PushConstantMapping = struct {
     name: []const u8,
     offset: u32,
     size: u32,
+    pub fn format(self: PushConstantMapping, writer: *std.Io.Writer) !void {
+        try writer.print("({d:3}:{d:3}) {s}", .{
+            self.offset,
+            self.offset + self.size,
+            self.name,
+        });
+    }
 };
 pub const OpaqueUniformMapping = struct {
     name: []const u8,
