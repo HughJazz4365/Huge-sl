@@ -1350,7 +1350,7 @@ fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
         .member => .member,
         .@"const" => .@"const",
         .mut => .mut,
-        .uniform => .uniform,
+        .uniform => .{ .uniform = 0 },
         .push => .push,
         .shared => .shared,
         else => Error.UnexpectedToken,
@@ -1362,7 +1362,7 @@ pub const Qualifier = union(enum) {
     @"const",
     mut,
 
-    uniform,
+    uniform: u32,
     push,
 
     in: bi.Interpolation,
@@ -1371,7 +1371,7 @@ pub const Qualifier = union(enum) {
     shared,
     pub fn isIO(self: Qualifier) bool {
         return switch (self) {
-            .uniform, .in, .out => true,
+            .push, .uniform, .in, .out => true,
             else => false,
         };
     }

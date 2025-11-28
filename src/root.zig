@@ -200,13 +200,14 @@ pub const EntryPointInfo = struct {
         for (self.outputMappings()) |om|
             try writer.print("{f}\n", .{om});
 
+        try writer.print("<==OPAQUE=UNIFORMS==>({}):\n", .{self.opaque_uniform_mappings.len});
+        for (self.opaque_uniform_mappings) |ou|
+            try writer.print("{f}\n", .{ou});
+
         try writer.print("<==PUSH=CONSTANTS==>({}):\n", .{self.push_constant_mappings.len});
         for (self.push_constant_mappings) |pc|
             try writer.print("{f}\n", .{pc});
 
-        try writer.print("<==OPAQUE=UNIFORMS==>({}):\n", .{self.opaque_uniform_mappings.len});
-        for (self.opaque_uniform_mappings) |ou|
-            try writer.print("{any}\n", .{ou});
         try writer.print("}}", .{});
     }
 };
@@ -217,7 +218,7 @@ pub const IOMapping = struct {
 
     type: IOType,
     pub fn format(self: IOMapping, writer: *std.Io.Writer) !void {
-        try writer.print("(location = {d:2}) {s}: {f}", .{ self.location, self.name, self.type });
+        try writer.print("[Location = {d:2}, \"{s}\": {f}]", .{ self.location, self.name, self.type });
     }
 };
 
@@ -240,7 +241,7 @@ pub const PushConstantMapping = struct {
     offset: u32,
     size: u32,
     pub fn format(self: PushConstantMapping, writer: *std.Io.Writer) !void {
-        try writer.print("({d:3}:{d:3}) {s}", .{
+        try writer.print("[Range ({d:3}:{d:3}), \"{s}\"]", .{
             self.offset,
             self.offset + self.size,
             self.name,
@@ -251,8 +252,17 @@ pub const OpaqueUniformMapping = struct {
     name: []const u8,
     type: OpaqueType,
     binding: u32,
+    descriptor_set: u32,
+    pub fn format(self: OpaqueUniformMapping, writer: *std.Io.Writer) !void {
+        try writer.print("[Set = {d:2}, Binding = {d:2}, \"{s}\": {s}]", .{
+            self.descriptor_set,
+            self.binding,
+            self.name,
+            @tagName(self.type),
+        });
+    }
 };
-pub const OpaqueType = enum { buffer, texture };
+pub const OpaqueType = enum { ubo, ssbo, texture };
 
 pub const Settings = struct {
     target_env: TargetEnv = .vulkan1_4,

@@ -30,17 +30,29 @@ const glsl_ext_literal_words = blk: {
 };
 const magic_number: WORD = 0x07230203;
 const generator_number: WORD = 0;
-const IOEntry = struct { id: WORD, type_id: WORD, io_type: IOType = .in };
-const IOType = enum(u2) { in = 0, out = 1, uniform = 2 };
+const IOEntry = struct {
+    id: WORD,
+    type_id: WORD,
+    io_type: IOType = undefined,
+
+    descriptor_set: WORD = 0,
+};
+const IOType = enum(u2) {
+    in = 0,
+    out = 1,
+    uniform = 2,
+    push = 3,
+};
 decorated_global_io_count: usize = 0,
 global_io: []IOEntry,
+global_push_constants: List(PushConstant) = .empty,
 
 parser: *Parser,
 alignment: Alignment = .scalar,
 current_id: WORD = 2, //0 - reserved,1 - glsl ext for now
 arena: Allocator,
 
-capabilities: Capabilities = .{ .shader = true }, //flag struct
+capabilities: Capabilities = .{ .shader = true },
 decorations: List(u32) = .empty,
 entry_points: List(EntryPoint) = .empty,
 
@@ -197,39 +209,39 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
     for (self.entry_points.items) |ep| {
         var local_offsets: [3]WORD = @splat(0);
         const gc = ep.val_ptr.global_io_count;
-        if (gc <= self.decorated_global_io_count) {
-            for (self.global_io[gc..]) |g| {
-                try result.appendSlice(&.{
-                    opWord(.decorate, 4),
-                    g.id,
-                    @intFromEnum(if (g.io_type != .uniform) Decoration.location else Decoration.binding),
-                    global_offsets[@intFromEnum(g.io_type)],
-                });
-                global_offsets[@intFromEnum(g.io_type)] += 1;
-                if (g.io_type == .uniform) try self.decorations.appendSlice(self.arena, &.{
-                    opWord(.decorate, 4),
-                    g.id,
-                    @intFromEnum(Decoration.descriptor_set),
-                    0,
-                });
-            }
-            self.decorated_global_io_count = ep.val_ptr.global_io_count;
+        for (self.global_io[@min(gc, self.decorated_global_io_count)..gc]) |g| {
+            if (g.io_type == .push) continue;
+            try result.appendSlice(&.{
+                opWord(.decorate, 4),
+                g.id,
+                @intFromEnum(if (g.io_type == .uniform) Decoration.binding else Decoration.location),
+                global_offsets[@intFromEnum(g.io_type)],
+            });
+            global_offsets[@intFromEnum(g.io_type)] += 1;
+            if (g.io_type == .uniform) try self.decorations.appendSlice(self.arena, &.{
+                opWord(.decorate, 4),
+                g.id,
+                @intFromEnum(Decoration.descriptor_set),
+                g.descriptor_set,
+            });
         }
+        self.decorated_global_io_count = ep.val_ptr.global_io_count;
 
         for (ep.local_io) |l| {
+            if (l.io_type == .push) continue;
             try result.appendSlice(&.{
                 opWord(.decorate, 4),
                 l.id,
-                @intFromEnum(if (l.io_type != .uniform) Decoration.location else Decoration.binding),
+                @intFromEnum(if (l.io_type == .uniform) Decoration.binding else Decoration.location),
                 local_offsets[@intFromEnum(l.io_type)] + global_offsets[@intFromEnum(l.io_type)],
             });
+            local_offsets[@intFromEnum(l.io_type)] += 1;
             if (l.io_type == .uniform) try self.decorations.appendSlice(self.arena, &.{
                 opWord(.decorate, 4),
                 l.id,
                 @intFromEnum(Decoration.descriptor_set),
-                0,
+                l.descriptor_set,
             });
-            local_offsets[@intFromEnum(l.io_type)] += 1;
         }
     }
     try result.appendSlice(self.decorations.items);
@@ -320,36 +332,61 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
             };
             offset = util.wrut(offset + size, self.alignOf(pc_type, .scalar));
         }
+
         var input_count: u32 = 0;
         var output_count: u32 = 0;
+        var uniform_count: usize = 0;
         for (&[2][]IOEntry{ self.global_io[0..ep.val_ptr.global_io_count], ep.local_io }) |slice|
-            for (slice) |io| {
-                if (io.io_type == .in) {
-                    input_count += 1;
-                } else if (io.io_type == .out) {
-                    output_count += 1;
-                }
+            for (slice) |io| switch (io.io_type) {
+                .in => input_count += 1,
+                .out => output_count += 1,
+                .uniform => uniform_count += 1,
+                else => {},
             };
+
+        const opaque_uniform_mappings = try result_allocator.alloc(
+            hgsl.OpaqueUniformMapping,
+            uniform_count,
+        );
+        uniform_count = 0;
         //[input][output] construct result
         const io_mappings = try result_allocator.alloc(hgsl.IOMapping, input_count + output_count);
         var input_index: u32 = 0;
         var output_index: u32 = 0;
         for (&[2][]IOEntry{ self.global_io[0..ep.val_ptr.global_io_count], ep.local_io }) |slice|
-            for (slice) |io| {
-                const name = try result_allocator.dupe(u8, for (self.global_vars.items) |gv| {
-                    if (io.id == gv.id) break gv.name;
-                } else unreachable);
-                const @"type" = self.typeFromID(io.type_id);
-                const size = self.sizeOf(@"type");
+            for (slice) |io| switch (io.io_type) {
+                .uniform => {
+                    opaque_uniform_mappings[uniform_count] = .{
+                        .name = for (self.global_vars.items) |gv| (if (io.id == gv.id) break gv.name) else unreachable,
+                        .type = switch (self.typeFromID(io.type_id)) {
+                            .buffer => |buffer| if (buffer.storage_class == .storage_buffer)
+                                .ssbo
+                            else
+                                .ubo,
+                            else => .texture,
+                        },
+                        .binding = @intCast(uniform_count),
+                        .descriptor_set = io.descriptor_set,
+                    };
+                    uniform_count += 1;
+                },
+                .in, .out => {
+                    const name = try result_allocator.dupe(u8, for (self.global_vars.items) |gv| {
+                        if (io.id == gv.id) break gv.name;
+                    } else unreachable);
+                    const @"type" = self.typeFromID(io.type_id);
+                    const size = self.sizeOf(@"type");
 
-                const index_ptr = if (io.io_type == .in) &input_index else &output_index;
-                io_mappings[if (io.io_type == .in) input_index else input_count + output_index] = .{
-                    .location = index_ptr.*,
-                    .name = name,
-                    .size = size,
-                    .type = self.toIOType(@"type"),
-                };
-                index_ptr.* += 1;
+                    const index_ptr = if (io.io_type == .in) &input_index else &output_index;
+                    io_mappings[if (io.io_type == .in) input_index else input_count + output_index] = .{
+                        .location = index_ptr.*,
+                        .name = name,
+                        .size = size,
+                        .type = self.toIOType(@"type"),
+                    };
+                    index_ptr.* += 1;
+                },
+                .push => {},
             };
 
         const name_copy = try result_allocator.alloc(u8, ep.name.len + 1);
@@ -360,7 +397,7 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
             .stage_info = ep.stage_info,
 
             .push_constant_mappings = push_constant_mappings,
-            .opaque_uniform_mappings = &.{},
+            .opaque_uniform_mappings = opaque_uniform_mappings,
 
             .io_mappings_ptr = io_mappings.ptr,
             .input_count = input_count,
@@ -440,34 +477,6 @@ fn sizeOf(self: *Generator, @"type": Type) WORD {
 const Alignment = enum { scalar, base, extended };
 
 fn generateStatment(self: *Generator, statement: Parser.Statement) Error!void {
-    //non formal statment types
-    // - function/entry point decl
-    //   keep the body in separate buffer so that inner function declarations go before they used
-    //   if(entry point)
-    //      track all the references to global variables, op entry point
-    //   else
-    //      add name mapping to the returned id
-    // - const decl
-    //   get value_id and add name mapping
-    // - variable decl
-    //     global = qualifier != .mut
-    //     if(global)
-    //       if(in entrypoint) add interface id
-    //       create global var if can add initializer id, if cant track initializer and add assignment to each affected entry point
-    //     get value_id and load it into create variable
-    //     add name mapping
-    //     return variable id
-    // - comptime only var decl
-    //     skip
-    // - assignment
-    //     get value id
-    //     load store etc
-    // - noreturn function call
-    //     call idk
-    // - @discard
-    // - @barrier
-    // - ...
-
     return switch (statement) {
         .var_decl => |var_decl| try self.generateVariableDeclaration(var_decl),
         .assignment => |assignment| try self.generateAssignment(assignment),
@@ -487,6 +496,7 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
     const storage_class: StorageClass = switch (var_decl.qualifier) {
         .mut => if (self.inGlobalScope()) .private else .function,
         .push => .push_constant,
+
         .in => .input,
         .out => .output,
         .@"const" => {
@@ -502,30 +512,41 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
         .uniform => if (var_decl.type == .buffer and var_decl.type.buffer.type == .ssbo) .storage_buffer else .uniform,
         .member => unreachable,
     };
-    const type_id = try self.convertTypeID(var_decl.type);
-    const ptr_type_id = try self.typeID(.{ .pointer = .{
-        .pointed_id = type_id,
-        .storage_class = storage_class,
-    } });
-    const var_id = self.newID();
     var initializer: WORD = 0;
     var load: WORD = 0;
+    const type_id = try self.convertTypeID(var_decl.type);
+    const var_id = if (var_decl.qualifier != .push) self.newID() else 0;
     io: { //check if we should add io
         const io_type: IOType = switch (var_decl.qualifier) {
             .in => .in,
             .out => .out,
             .uniform => .uniform,
+            .push => .push,
+
             else => break :io,
         };
+        const io_entry: IOEntry = .{
+            .id = var_id,
+            .type_id = type_id,
+            .io_type = io_type,
+            .descriptor_set = if (var_decl.qualifier == .uniform) var_decl.qualifier.uniform else 0,
+        };
+
         if (self.inGlobalScope()) {
             for (self.parser.global_scope.global_io.items, 0..) |g, i| {
-                if (util.strEql(g, var_decl.name)) self.global_io[i] = .{ .id = var_id, .type_id = type_id, .io_type = io_type };
-            }
+                if (util.strEql(g, var_decl.name)) {
+                    self.global_io[i] = io_entry;
+                    break;
+                }
+            } else unreachable;
         } else {
             const entry_point = self.entry_points.items[self.entry_points.items.len - 1];
             for (entry_point.val_ptr.io.items, 0..) |l, i| {
-                if (util.strEql(l, var_decl.name)) entry_point.local_io[i] = .{ .id = var_id, .type_id = type_id, .io_type = io_type };
-            }
+                if (util.strEql(l, var_decl.name)) {
+                    entry_point.local_io[i] = io_entry;
+                    break;
+                }
+            } else unreachable;
         }
     }
 
@@ -545,6 +566,21 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             }
         },
     };
+    if (var_decl.qualifier == .push) {
+        if (self.inGlobalScope())
+            try self.global_push_constants.append(self.arena, .{
+                .name = var_decl.name,
+                .load = load,
+                .type_id = type_id,
+            })
+        else {
+            try self.addPushConstant(var_decl.name, type_id, initializer, load);
+        }
+    }
+    const ptr_type_id = try self.typeID(.{ .pointer = .{
+        .pointed_id = type_id,
+        .storage_class = storage_class,
+    } });
     switch (var_decl.qualifier) {
         .in, .out => {
             const interpolation = if (var_decl.qualifier == .in) var_decl.qualifier.in else var_decl.qualifier.out;
@@ -558,10 +594,6 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
                         .smooth => unreachable,
                     })),
                 });
-        },
-        .push => {
-            try self.addPushConstant(var_decl, initializer, load);
-            return;
         },
         else => {},
     }
@@ -585,8 +617,8 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
         });
     }
 }
-fn addPushConstant(self: *Generator, var_decl: Parser.VariableDeclaration, initializer: WORD, load: WORD) Error!void {
-    if (self.inGlobalScope()) @panic("push constant in global scope");
+fn addPushConstant(self: *Generator, name: []const u8, type_id: WORD, initializer: WORD, load: WORD) Error!void {
+    if (self.inGlobalScope()) return; //push constant in global scope
 
     const entry_point = &self.entry_points.items[self.entry_points.items.len - 1];
 
@@ -613,10 +645,10 @@ fn addPushConstant(self: *Generator, var_decl: Parser.VariableDeclaration, initi
         entry_point.push_constant_struct_id = self.newID();
 
     try entry_point.push_constants.append(self.arena, .{
-        .name = var_decl.name,
+        .name = name,
         .load = load,
         .initializer = initializer,
-        .type_id = try self.convertTypeID(var_decl.type),
+        .type_id = type_id,
     });
 }
 
@@ -654,10 +686,15 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.E
         .stage_info = entry_point.shader_stage_info,
         .local_io = try self.arena.alloc(IOEntry, entry_point.io.items.len),
     });
+
     _ = try self.typeID(.void); //so that ids are assigned before function body
     _ = try self.typeID(.{ .function = .{ .rtype_id = try self.typeID(.void) } });
 
-    for (entry_point.body.items) |statement| try self.generateStatment(statement);
+    for (self.global_push_constants.items) |pc| //add global push constants
+        try self.addPushConstant(pc.name, pc.type_id, pc.initializer, 0);
+
+    for (entry_point.body.items) |statement| //the meat
+        try self.generateStatment(statement);
 
     if (self.entry_points.items[index].push_constant_struct_id != 0)
         try interface_ids.append(self.arena, self.entry_points.items[index].push_constant_struct_id);
