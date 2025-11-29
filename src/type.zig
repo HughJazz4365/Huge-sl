@@ -82,9 +82,9 @@ pub const Type = union(enum) {
     array: Array,
     matrix: Matrix,
 
-    //value.payload - []Expression
-    @"struct": Parser.StructID,
+    @"struct": Parser.StructID, //value.payload - []Expression
     buffer: Buffer,
+    texture: Texture,
 
     image,
 
@@ -92,6 +92,10 @@ pub const Type = union(enum) {
 
     function: FunctionType,
     entrypoint: Parser.Stage,
+
+    pub const _type: Type = .{ .type = {} };
+    pub const _void: Type = .{ .void = {} };
+    pub const _bool: Type = .{ .bool = {} };
 
     pub const unknownempty: Type = .{ .unknown = &Expression.empty };
     pub const format = @import("debug.zig").formatType;
@@ -182,6 +186,21 @@ pub const Type = union(enum) {
         return .{ .value = .{ .type = .type, .payload = .{ .type = self } } };
     }
 };
+pub const Texture = struct {
+    type: TextureType = ._2d,
+    sampled_type: Scalar,
+    sampled: bool,
+};
+pub const TextureType = enum {
+    _1d,
+    _2d,
+    _3d,
+    cube,
+    _1d_array,
+    _2d_array,
+    cube_array,
+};
+
 pub const Buffer = struct { struct_id: Parser.StructID, type: BufferType };
 pub const BufferType = enum { ubo, ssbo };
 

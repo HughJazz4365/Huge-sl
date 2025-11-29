@@ -19,6 +19,8 @@ const name_map: std.StaticStringMap(Builtin) = .initComptime(.{
 
     //comptime
     .{ "Buffer", Builtin{ .function = .buffer } },
+    .{ "Texture", Builtin{ .function = .texture } },
+    .{ "TypeOf", Builtin{ .function = .type_of } },
 
     //variables
     .{ "position", Builtin{ .variable = .position } },
@@ -36,7 +38,11 @@ const BuiltinFunction = enum {
     array_type,
     transpose,
     inverse,
+
+    //comptime
     buffer,
+    texture,
+    type_of,
 
     pub fn argumentCount(self: BuiltinFunction) usize {
         return self.typeOf().function.arg_types.len;
@@ -44,16 +50,24 @@ const BuiltinFunction = enum {
     pub fn typeOf(self: BuiltinFunction) Type {
         return switch (self) {
             .buffer => .{ .function = .{
-                .rtype = &Type{ .type = {} },
-                .arg_types = &.{ Type{ .type = {} }, buffer_type_type },
+                .rtype = &.type,
+                .arg_types = &.{ .type, buffer_type_type },
+            } },
+            .texture => .{ .function = .{
+                .rtype = &.type,
+                .arg_types = &.{ .type, texture_type_type, .bool },
             } },
             .transpose, .inverse => .{ .function = .{
-                .rtype = &Type.unknownempty,
-                .arg_types = &.{Type.unknownempty},
+                .rtype = &.unknownempty,
+                .arg_types = &.{.unknownempty},
             } },
             .reflect => .{ .function = .{
-                .rtype = &Type.unknownempty,
-                .arg_types = &.{ Type.unknownempty, Type.unknownempty },
+                .rtype = &.unknownempty,
+                .arg_types = &.{ .unknownempty, .unknownempty },
+            } },
+            .type_of => .{ .function = .{
+                .rtype = &.type,
+                .arg_types = &.{.unknownempty},
             } },
 
             else => @panic("unknown builtin function type"),
@@ -84,9 +98,9 @@ pub const BuiltinVariable = enum {
         return switch (bv) {
             .position => tp.vec4_type,
             .point_size => tp.f32_type,
-            .cull_distance => Type{ .array = .{ .len = 1, .component = &tp.f32_type } },
+            .cull_distance => .{ .array = .{ .len = 1, .component = &tp.f32_type } },
             .vertex_id => tp.u32_type,
-            .interpolation => Type{ .type = {} },
+            .interpolation => .type,
         };
     }
 };
@@ -95,6 +109,13 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
     if (args.len != bf.argumentCount()) return self.errorOut(Error.NonMatchingArgumentCount);
     const initial: Expression = .{ .call = .{ .callee = callee_ptr, .args = args } };
     return switch (bf) {
+        .type_of => blk: {
+            const type_of = try self.typeOf(args[0]);
+            break :blk if (type_of.isEmpty())
+                initial
+            else
+                .{ .value = .{ .type = .type, .payload = .{ .type = type_of } } };
+        },
         //remove in favour of unpackUnorm4x8 instruction
         .col_hex => blk: {
             //not create val if we dont have to
@@ -140,6 +161,22 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
                 } },
             } } };
         },
+        .texture => blk: {
+            if (args[0] != .value or args[1] != .value or args[2] != .value) break :blk initial;
+            const @"type" = args[0].value.payload.type;
+            if (@"type" != .scalar) return self.errorOut(Error.InvalidCall);
+            const texture_type: tp.TextureType = @enumFromInt(util.extract(u64, args[1].value.payload.wide));
+
+            const is_sampled = util.extract(bool, args[2].value.payload.wide);
+
+            break :blk .{ .value = .{ .type = .type, .payload = .{
+                .type = .{ .texture = .{
+                    .sampled_type = @"type".scalar,
+                    .type = texture_type,
+                    .sampled = is_sampled,
+                } },
+            } } };
+        },
 
         else => initial,
     };
@@ -148,8 +185,9 @@ pub fn typeOfBuiltInCall(self: *Parser, bf: BuiltinFunction, args: []Expression)
     if (args.len != bf.argumentCount()) return self.errorOut(Error.NonMatchingArgumentCount);
     const @"type": Type = switch (bf) {
         .col_hex => tp.vec3_type,
-        .array_type, .buffer => Type{ .type = {} },
-        else => try self.typeOf(args[0]),
+        .array_type, .buffer, .texture => .type,
+        else => bf.typeOf().function.rtype.*,
+        // else => try self.typeOf(args[0]),
     };
     // std.debug.print("@{s} => {f}\n", .{ @tagName(bf), @"type" });
 
@@ -172,6 +210,7 @@ const inv_oxFF = Expression{ .value = .{
 } };
 pub const stage_type: Type = .{ .@"enum" = .fromZig(Parser.Stage) };
 
+pub const texture_type_type: Type = .{ .@"enum" = .fromZig(tp.TextureType) };
 pub const interpolation_type: Type = .{ .@"enum" = .fromZig(Interpolation) };
 pub const buffer_type_type: Type = .{ .@"enum" = .fromZig(tp.BufferType) };
 

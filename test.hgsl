@@ -1,15 +1,12 @@
-const V2 = struct{
-	member x, y : f32 = 2
-}
-const ret = fn(a) V2{
-	return a
+const Texture = @Texture(f32, ._2d, true)
+const doshet = fn(vec : anytype) @TypeOf(vec){
+	return vec
 }
 
 const main = entrypoint(.fragment){
-	uniform tex: @Texture(f32,._2d)
-	//TextureType
-	//_1d, _2d, _3d, cube, _1d_array, _2d_array, _3d_array, cube_array
-	const sample = tex.sample(.{0})
+	uniform tex: Texture
+
+	//const sample = tex.sample(.{0})
 	//args:
 	//1. vecX - where X is dimensions(3 for cube - direction)
 	//2. if(array) u32 - array index else *nothing*

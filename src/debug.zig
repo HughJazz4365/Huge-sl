@@ -37,8 +37,8 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
             if (v.component.type == .float) "" else v.component.type.prefix(),
             @intFromEnum(v.len),
         }),
-        .unknown => |unknown| if (unknown.isEmpty()) {
-            try writer.print("@TypeOf({f})", .{unknown.*});
+        .unknown => |unknown| if (!unknown.isEmpty()) {
+            try writer.print("{f}", .{unknown.*});
         } else try writer.print("@UnknownType", .{}),
         .function => |f| {
             try writer.print("fn(", .{});
@@ -49,6 +49,12 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
         .matrix => |matrix| try writer.print("mat{d}x{d}", .{ matrix.m, matrix.n }),
         .@"struct" => |struct_id| _ = try writer.write(p.getStructFromID(struct_id).name),
         .buffer => |buffer| try writer.print("[BufferType{}]({f})", .{ buffer.type, Parser.Type{ .@"struct" = buffer.struct_id } }),
+
+        .texture => |texture| try writer.print("[{s}TextureType]({f}, {})", .{
+            if (texture.sampled) "Sampled" else "",
+            Parser.Type{ .scalar = texture.sampled_type },
+            texture.type,
+        }),
         else => try writer.print("{s}", .{@tagName(t)}),
     }
 }
