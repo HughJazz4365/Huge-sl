@@ -52,7 +52,7 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
 
         .texture => |texture| try writer.print("[{s}TextureType]({f}, {})", .{
             if (texture.sampled) "Sampled" else "",
-            Parser.Type{ .scalar = texture.sampled_type },
+            Parser.Type{ .scalar = texture.texel_primitive },
             texture.type,
         }),
         else => try writer.print("{s}", .{@tagName(t)}),
@@ -162,9 +162,13 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
             try writer.print("}}\n", .{});
         } else try writer.print("{f}", .{value.payload.type}),
         .function => {
+            const func: *const Parser.Function = @ptrCast(@alignCast(value.payload.ptr));
+            if (func.builtin_handle) |bh| {
+                try writer.print("FN[@{s}]", .{@tagName(bh)});
+                return;
+            }
             try writer.print("{f}{{\n", .{value.type});
 
-            const func: *const Parser.Function = @ptrCast(@alignCast(value.payload.ptr));
             for (func.body.items, 0..) |statement, i|
                 if (i < 2) (try writer.print("{f}\n", .{statement})) else {
                     try writer.print("...\n", .{});

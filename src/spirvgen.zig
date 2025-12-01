@@ -286,6 +286,18 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
             break :blk s;
         },
         .matrix => |matrix| &.{ opWord(.type_matrix, 4), t.id, matrix.column_type_id, @intFromEnum(matrix.column_count) },
+        .image => |image| &.{
+            opWord(.type_image, 9),
+            t.id,
+            image.sampled_type_id,
+            @intFromEnum(image.dim),
+            image.depth,
+            @intFromBool(image.arrayed),
+            @intFromBool(image.multi_sampled),
+            @intFromBool(image.sampled),
+            0,
+        },
+        .sampled_image => |sampled_image| &.{ opWord(.type_sampled_image, 3), t.id, sampled_image.image_id },
 
         // else => unreachable,
     });
@@ -363,7 +375,9 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
                                 .ssbo
                             else
                                 .ubo,
-                            else => .texture,
+                            .sampled_image => .sampled_texture,
+                            .image => .texture,
+                            else => unreachable,
                         },
                         .binding = @intCast(uniform_count),
                         .descriptor_set = io.descriptor_set,
@@ -509,7 +523,10 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             return;
         },
         .shared => .workgroup,
-        .uniform => if (var_decl.type == .buffer and var_decl.type.buffer.type == .ssbo) .storage_buffer else .uniform,
+        .uniform => if (var_decl.type == .buffer)
+            (if (var_decl.type.buffer.type == .ssbo) .storage_buffer else .uniform)
+        else
+            .uniform_constant,
         .member => unreachable,
     };
     var initializer: WORD = 0;
@@ -766,7 +783,7 @@ fn generateCast(self: *Generator, cast: Parser.Cast) Error!WORD {
                         .type = tp.u32_type,
                         .payload = .{ .wide = x },
                     } }) } });
-                    column_ids[x] = try self.addWordsAndReturn2(&.{
+                    column_ids[x] = try self.addWordsReturnResult(&.{
                         opWord(.vector_shuffle, @truncate(5 + m)),
                         try self.convertTypeID(.{ .vector = cast.type.matrix.columnVector() }),
                         self.newID(),
@@ -775,7 +792,7 @@ fn generateCast(self: *Generator, cast: Parser.Cast) Error!WORD {
                     });
                     for (0..m) |index| try self.addWord(if (index < @intFromEnum(from_type.matrix.m)) @truncate(index) else if (index == x) 1 else 0);
                 } else {
-                    column_ids[x] = try self.addWordsAndReturn2(&.{
+                    column_ids[x] = try self.addWordsReturnResult(&.{
                         opWord(.vector_shuffle, @truncate(5 + m)),
                         try self.convertTypeID(.{ .vector = cast.type.matrix.columnVector() }),
                         self.newID(),
@@ -785,7 +802,7 @@ fn generateCast(self: *Generator, cast: Parser.Cast) Error!WORD {
                     for (0..m) |index| try self.addWord(if (index == x) 1 else 0);
                 }
             }
-            const result = try self.addWordsAndReturn2(&.{
+            const result = try self.addWordsReturnResult(&.{
                 opWord(.composite_construct, @truncate(3 + n)),
                 result_type_id,
                 self.newID(),
@@ -799,7 +816,7 @@ fn generateCast(self: *Generator, cast: Parser.Cast) Error!WORD {
 fn generateIdentifier(self: *Generator, identifier: []const u8) Error!WORD {
     const id_info = try self.getNameInfo(identifier);
     if (id_info.load.* != 0) return id_info.load.*;
-    const load = try self.addWordsAndReturn2(&.{
+    const load = try self.addWordsReturnResult(&.{
         opWord(.load, 4),
         self.typeFromID(id_info.type_id).pointer.pointed_id,
         self.newID(),
@@ -833,7 +850,7 @@ fn generateAccessChain(self: *Generator, expr: Expression) Error!WORD {
 
     const l = access_chain.items.len;
     if (target_name_info.load.* == 0 and const_mask == 0 and is_target_vector) {
-        target_name_info.load.* = try self.addWordsAndReturn2(&.{
+        target_name_info.load.* = try self.addWordsReturnResult(&.{
             opWord(.load, 4),
             self.typeFromID(target_name_info.type_id).pointer.pointed_id,
             self.newID(),
@@ -851,7 +868,7 @@ fn generateAccessChain(self: *Generator, expr: Expression) Error!WORD {
             });
             try self.addWords(access_chain.items);
             return id;
-        } else if (is_target_vector and l == 1) return try self.addWordsAndReturn2(&.{
+        } else if (is_target_vector and l == 1) return try self.addWordsReturnResult(&.{
             opWord(.vector_extract_dynamic, 5),
             access_type_id,
             self.newID(),
@@ -884,7 +901,7 @@ fn generateAccessChain(self: *Generator, expr: Expression) Error!WORD {
             ac.* = try self.generateValue(.{ .type = tp.u32_type, .payload = .{ .wide = ac.* } });
     }
     const access_ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = access_type_id, .storage_class = target_name_info.storage_class } });
-    const access_ptr = try self.addWordsAndReturn2(&.{
+    const access_ptr = try self.addWordsReturnResult(&.{
         opWord(.access_chain, @truncate(4 + l)),
         access_ptr_type_id,
         self.newID(),
@@ -892,7 +909,7 @@ fn generateAccessChain(self: *Generator, expr: Expression) Error!WORD {
     });
     try self.addWords(access_chain.items);
 
-    const load = try self.addWordsAndReturn2(&.{
+    const load = try self.addWordsReturnResult(&.{
         opWord(.load, 4),
         access_type_id,
         self.newID(),
@@ -948,7 +965,7 @@ fn getNameInfo(self: *Generator, name: []const u8) Error!IDInfo {
             if (util.strEql(name, pc.name)) {
                 const ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = pc.type_id, .storage_class = .push_constant } });
 
-                const access = if (pc.ptr != 0) pc.ptr else try self.addWordsAndReturn2(&.{
+                const access = if (pc.ptr != 0) pc.ptr else try self.addWordsReturnResult(&.{
                     opWord(.access_chain, 5),
                     try self.typeID(.{ .pointer = .{ .pointed_id = pc.type_id, .storage_class = .push_constant } }),
                     self.newID(),
@@ -991,7 +1008,7 @@ fn generatePointerLoad(self: *Generator, ptr_info: IDInfo) Error!WORD {
     if (ptr_info.load.* != 0) return ptr_info.load.*;
 
     const type_id = self.typeFromID(ptr_info.type_id).pointer.pointed_id;
-    return try self.addWordsAndReturn2(&.{ opWord(.load, 4), type_id, self.newID(), ptr_info.id });
+    return try self.addWordsReturnResult(&.{ opWord(.load, 4), type_id, self.newID(), ptr_info.id });
 }
 fn generatePointer(self: *Generator, expr: Expression) Error!IDInfo {
     return switch (expr) {
@@ -1078,7 +1095,7 @@ fn generateBuiltinVariableIDInfo(self: *Generator, bv: bi.BuiltinVariable) Error
 
             try self.current_interface_ids.append(self.arena, var_id);
 
-            const id = try self.addWordsAndReturn2(&.{
+            const id = try self.addWordsReturnResult(&.{
                 opWord(.access_chain, 5),
                 ptr_type_id,
                 self.newID(),
@@ -1088,8 +1105,8 @@ fn generateBuiltinVariableIDInfo(self: *Generator, bv: bi.BuiltinVariable) Error
             break :blk .{ .id = id, .type_id = ptr_type_id, .load = load };
         },
         .vertex_id => blk: {
-            const ptr_info = &self.builtin_pointer_infos.vertex_id;
-            if (ptr_info.id != 0) break :blk ptr_info.*;
+            const id_info = &self.builtin_pointer_infos.vertex_id;
+            if (id_info.id != 0) break :blk id_info.*;
 
             const var_id = self.newID();
             const type_id = try self.typeID(.{ .int = .{ .width = .word, .signed = true } });
@@ -1108,9 +1125,37 @@ fn generateBuiltinVariableIDInfo(self: *Generator, bv: bi.BuiltinVariable) Error
                 @intFromEnum(BuiltinDecoration.vertex_index),
             });
             try self.current_interface_ids.append(self.arena, var_id);
-            break :blk .{ .id = var_id, .type_id = try self.typeID(.{ .pointer = .{ .pointed_id = type_id, .storage_class = .input } }) };
+            id_info.* = .{ .id = var_id, .type_id = try self.typeID(.{ .pointer = .{ .pointed_id = type_id, .storage_class = .input } }) };
+            return id_info.*;
         },
-        else => @panic("idk how to gen that builtin"),
+        .frag_coord => blk: {
+            const id_info = &self.builtin_pointer_infos.frag_coord;
+            if (id_info.id != 0) break :blk id_info.*;
+
+            const var_id = self.newID();
+            const type_id = try self.typeID(.{ .vector = .{
+                .len = ._4,
+                .component_id = try self.typeID(.{ .float = .word }),
+            } });
+            try self.global_vars.append(self.arena, .{
+                .type_id = try self.typeID(.{ .pointer = .{
+                    .pointed_id = type_id,
+                    .storage_class = .input,
+                } }),
+                .id = var_id,
+                .storage_class = .input,
+            });
+            try self.decorations.appendSlice(self.arena, &.{
+                opWord(.decorate, 4),
+                var_id,
+                @intFromEnum(Decoration.builtin),
+                @intFromEnum(BuiltinDecoration.frag_coord),
+            });
+            try self.current_interface_ids.append(self.arena, var_id);
+            id_info.* = .{ .id = var_id, .type_id = try self.typeID(.{ .pointer = .{ .pointed_id = type_id, .storage_class = .input } }) };
+            break :blk id_info.*;
+        },
+        inline else => |b| @panic("idk how to gen that builtin - " ++ @tagName(b)),
     };
 }
 
@@ -1128,8 +1173,29 @@ fn generateConstructor(self: *Generator, components: []Expression, result_type_i
 }
 fn generateCall(self: *Generator, call: Parser.Call, result_type_id: WORD) Error!WORD {
     return switch (call.callee.*) {
+        .value => |value| blk: {
+            const function: *const Parser.Function = @ptrCast(@alignCast(value.payload.ptr));
+            break :blk if (function.builtin_handle) |bh|
+                switch (bh) {
+                    .sample => //generate sample instruction
+                    self.addWordsReturnResult(&.{
+                        opWord(.image_sample_implicit_lod, 5),
+                        try self.convertTypeID(tp.vec4_type),
+                        self.newID(),
+                        try self.generateExpression(call.args[0]),
+                        try self.generateSampleCoordinateID(
+                            call.args[1],
+                            if (call.args.len > 2) call.args[2] else null,
+                        ),
+                    }),
+
+                    else => unreachable,
+                }
+            else
+                @panic("generate function");
+        },
         .builtin => |builtin| switch (builtin.function) {
-            .reflect => try self.addWordsAndReturn2(&.{
+            .reflect => try self.addWordsReturnResult(&.{
                 opWord(.ext_inst, 7),
                 result_type_id,
                 self.newID(),
@@ -1138,7 +1204,7 @@ fn generateCall(self: *Generator, call: Parser.Call, result_type_id: WORD) Error
                 try self.generateExpression(call.args[0]),
                 try self.generateExpression(call.args[1]),
             }),
-            .inverse => try self.addWordsAndReturn2(&.{
+            .inverse => try self.addWordsReturnResult(&.{
                 opWord(.ext_inst, 6),
                 result_type_id,
                 self.newID(),
@@ -1146,7 +1212,7 @@ fn generateCall(self: *Generator, call: Parser.Call, result_type_id: WORD) Error
                 @intFromEnum(GlslStdExtOp.matrix_inverse),
                 try self.generateExpression(call.args[0]),
             }),
-            .transpose => try self.addWordsAndReturn2(&.{
+            .transpose => try self.addWordsReturnResult(&.{
                 opWord(.transpose, 4),
                 result_type_id,
                 self.newID(),
@@ -1157,6 +1223,13 @@ fn generateCall(self: *Generator, call: Parser.Call, result_type_id: WORD) Error
         else => @panic("idk how to gen that call"),
     };
 }
+fn generateSampleCoordinateID(self: *Generator, coord: Expression, array_layer: ?Expression) Error!WORD {
+    const array_layer_expr = if (array_layer) |al| al else return try self.generateExpression(coord);
+
+    _ = array_layer_expr;
+    @panic("arrayd sample");
+}
+
 fn generateValue(self: *Generator, value: Parser.Value) Error!WORD {
     const result = switch (value.type) {
         .bool => blk: {
@@ -1225,17 +1298,17 @@ fn generateBinOp(self: *Generator, bin_op: Parser.BinOp, result_type_id: WORD) E
     const left = try self.generateExpression(bin_op.left.*);
     const right = try self.generateExpression(bin_op.right.*);
     return switch (bin_op.op) {
-        .@"^" => try self.addWordsAndReturn2(&.{ opWord(.ext_inst, 7), result_type_id, self.newID(), glsl_std_id, @intFromEnum(GlslStdExtOp.pow), left, right }),
+        .@"^" => try self.addWordsReturnResult(&.{ opWord(.ext_inst, 7), result_type_id, self.newID(), glsl_std_id, @intFromEnum(GlslStdExtOp.pow), left, right }),
         .@"+" => blk: {
             const @"type" = self.typeFromID(result_type_id);
             const op: Op = if (@"type" == .float or (@"type" == .vector and self.typeFromID(@"type".vector.component_id) == .float)) .fadd else .iadd;
-            break :blk try self.addWordsAndReturn2(&.{ opWord(op, 5), result_type_id, self.newID(), left, right });
+            break :blk try self.addWordsReturnResult(&.{ opWord(op, 5), result_type_id, self.newID(), left, right });
         },
         .@"-" => blk: {
             //matrices??
             const @"type" = self.typeFromID(result_type_id);
             const op: Op = if (@"type" == .float or (@"type" == .vector and self.typeFromID(@"type".vector.component_id) == .float)) .fsub else .isub;
-            break :blk try self.addWordsAndReturn2(&.{ opWord(op, 5), result_type_id, self.newID(), left, right });
+            break :blk try self.addWordsReturnResult(&.{ opWord(op, 5), result_type_id, self.newID(), left, right });
         },
         .@"***", .@"**" => blk: {
             //zero value for dotClamped
@@ -1248,7 +1321,7 @@ fn generateBinOp(self: *Generator, bin_op: Parser.BinOp, result_type_id: WORD) E
                 else => unreachable,
             };
 
-            const dot = try self.addWordsAndReturn2(&.{ opWord(op, 5), result_type_id, self.newID(), left, right });
+            const dot = try self.addWordsReturnResult(&.{ opWord(op, 5), result_type_id, self.newID(), left, right });
             if (bin_op.op == .@"**") break :blk dot;
 
             const max_op: GlslStdExtOp = switch (rt) {
@@ -1260,7 +1333,7 @@ fn generateBinOp(self: *Generator, bin_op: Parser.BinOp, result_type_id: WORD) E
             const zero_const = try self.generateValue(
                 .{ .type = try self.parser.typeOf(.{ .bin_op = bin_op }), .payload = .{ .wide = 0 } },
             );
-            const clamped = try self.addWordsAndReturn2(&.{
+            const clamped = try self.addWordsReturnResult(&.{
                 opWord(.ext_inst, 7),
                 result_type_id,
                 self.newID(),
@@ -1279,7 +1352,7 @@ fn generateBinOp(self: *Generator, bin_op: Parser.BinOp, result_type_id: WORD) E
                 if (deep_type.depth() < shallow_type.depth())
                     deep, shallow, deep_type, shallow_type = .{ shallow, deep, shallow_type, deep_type };
 
-                if (deep_type == .matrix) break :blk self.addWordsAndReturn2(&.{
+                if (deep_type == .matrix) break :blk self.addWordsReturnResult(&.{
                     opWord(if (deep == left) .matrix_times_vector else .vector_times_matrix, 5),
                     try self.convertTypeID(shallow_type),
                     self.newID(),
@@ -1297,7 +1370,7 @@ fn generateBinOp(self: *Generator, bin_op: Parser.BinOp, result_type_id: WORD) E
 
             const scalar = left_type.scalarPrimitive().?;
             const op: Op = if (left_type == .matrix) .matrix_times_matrix else if (scalar.type == .float) .fmul else .imul;
-            break :blk try self.addWordsAndReturn2(&.{ opWord(op, 5), result_type_id, self.newID(), left, right });
+            break :blk try self.addWordsReturnResult(&.{ opWord(op, 5), result_type_id, self.newID(), left, right });
         },
         else => @panic("idk how to gen that bin op"),
     };
@@ -1305,7 +1378,7 @@ fn generateBinOp(self: *Generator, bin_op: Parser.BinOp, result_type_id: WORD) E
 fn generateUOp(self: *Generator, u_op: Parser.UOp, result_type_id: WORD) Error!WORD {
     const target = try self.generateExpression(u_op.target.*);
     return switch (u_op.op) {
-        .@"|" => try self.addWordsAndReturn2(&.{ opWord(.ext_inst, 6), result_type_id, self.newID(), glsl_std_id, @intFromEnum(GlslStdExtOp.normalize), target }),
+        .@"|" => try self.addWordsReturnResult(&.{ opWord(.ext_inst, 6), result_type_id, self.newID(), glsl_std_id, @intFromEnum(GlslStdExtOp.normalize), target }),
         else => @panic("idk how to gen that u op"),
     };
 }
@@ -1322,7 +1395,7 @@ fn generateConstantFromScalar(self: *Generator, scalar: anytype, type_id: WORD) 
         .{ .single = @truncate(uval) });
 }
 
-fn addWordsAndReturn2(self: *Generator, words: []const WORD) Error!WORD {
+fn addWordsReturnResult(self: *Generator, words: []const WORD) Error!WORD {
     try self.current_buffer.appendSlice(self.arena, words);
     return words[2];
 }
@@ -1399,7 +1472,7 @@ fn toIOType(self: *Generator, @"type": Type) hgsl.IOType {
             unreachable },
         .vector => |vector| .{ .vector = .{
             .len = vector.len,
-            .child = self.toIOType(self.typeFromID(vector.component_id)).scalar,
+            .component = self.toIOType(self.typeFromID(vector.component_id)).scalar,
         } },
         else => unreachable,
     };
@@ -1444,6 +1517,29 @@ fn convertType(self: *Generator, from: Parser.Type) Error!Type {
             .struct_id = try self.convertTypeID(.{ .@"struct" = buffer.struct_id }),
             .storage_class = .uniform,
         } },
+        .texture => |texture| {
+            const dim: Dim, const arrayed: bool = switch (texture.type) {
+                ._1d => .{ .@"1d", false },
+                ._2d => .{ .@"2d", false },
+                ._3d => .{ .@"3d", false },
+                .cube => .{ .cube, false },
+                ._1d_array => .{ .@"1d", true },
+                ._2d_array => .{ .@"2d", true },
+                .cube_array => .{ .cube, true },
+            };
+            const image_type: Image = .{
+                .sampled_type_id = try self.convertTypeID(.{ .scalar = texture.texel_primitive }),
+                .dim = dim,
+                .depth = 0,
+                .arrayed = arrayed,
+                .multi_sampled = false,
+                .sampled = texture.sampled,
+            };
+            return if (texture.sampled)
+                .{ .sampled_image = .{ .image_id = try self.typeID(.{ .image = image_type }) } }
+            else
+                .{ .image = image_type };
+        },
 
         else => {
             std.debug.print("TYPE: {f}, {s}\n", .{ from, @tagName(from) });
@@ -1500,6 +1596,9 @@ const Type = union(enum) {
     @"struct": []const WORD,
     buffer: Buffer, //struct id
 
+    image: Image,
+    sampled_image: SampledImage,
+
     pub fn eql(a: Type, b: Type) bool {
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
         return switch (a) {
@@ -1517,6 +1616,8 @@ const Type = union(enum) {
             .array => |array| array.component_id == b.array.component_id and array.len == b.array.len,
             .@"struct" => |st| std.mem.eql(WORD, st, b.@"struct"),
             .buffer => |buffer| buffer.struct_id == b.buffer.struct_id and buffer.storage_class == b.buffer.storage_class,
+            .image => |image| std.meta.eql(image, b.image),
+            .sampled_image => |sampled_image| sampled_image.image_id == b.sampled_image.image_id,
             // else => @panic("idk how to compare that type"),
         };
     }
@@ -1533,6 +1634,16 @@ pub fn typeWordConsumption(self: *Generator, @"type": Type) WORD {
         else => 1,
     };
 }
+const SampledImage = struct { image_id: WORD };
+const Image = struct {
+    sampled_type_id: WORD,
+    dim: Dim,
+    depth: WORD,
+    arrayed: bool,
+    multi_sampled: bool,
+    sampled: bool,
+};
+const Dim = enum(u32) { @"1d" = 0, @"2d" = 1, @"3d" = 2, cube = 3 };
 const Buffer = struct { struct_id: WORD, storage_class: StorageClass };
 const Pointer = struct { pointed_id: WORD, storage_class: StorageClass };
 const Function = struct { rtype_id: WORD, arg_type_ids: []WORD = &.{} };
@@ -1571,6 +1682,11 @@ const Op = enum(WORD) {
     type_pointer = 32,
     type_function = 33,
     type_struct = 30,
+    type_image = 25,
+    type_sampler = 26,
+    type_sampled_image = 27,
+
+    image_sample_implicit_lod = 87,
 
     capability = 17,
     entry_point = 15,
@@ -1631,6 +1747,7 @@ const BuiltinIDInfos = struct {
         type_id_storage: [3]WORD = @splat(0),
     } = .{},
     vertex_id: IDInfo = .{},
+    frag_coord: IDInfo = .{},
 };
 const BuiltinDecoration = enum(WORD) {
     position = 0,
@@ -1644,6 +1761,8 @@ const BuiltinDecoration = enum(WORD) {
     instance_index = 43,
     primitive_id = 7,
     invocation_id = 8,
+
+    frag_coord = 15,
 };
 const Decoration = enum(WORD) {
     location = 30,

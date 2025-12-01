@@ -63,10 +63,29 @@ pub fn refine(self: *Parser, expr: Expression) Error!Expression {
 }
 fn refineMemberAccess(self: *Parser, member_access: Parser.MemberAccess) Error!Expression {
     const initial: Expression = .{ .member_access = member_access };
+    const type_of_target = try self.typeOf(member_access.target.*);
+    if (type_of_target == .vector)
+        return try swizzle(self, member_access.target, type_of_target.vector, member_access.member_name);
+
     if (member_access.target.* == .value) {
         const value = member_access.target.value;
         switch (value.type) {
-            .type => @panic("TODO: member access on type"),
+            .type => return switch (value.payload.type) {
+                .texture => |texture| return if (util.strEql(member_access.member_name, tp.Texture.sample_function_name)) blk: {
+                    const function_type = try texture.createSampleFunctionType(self.arena.allocator());
+                    break :blk .{ .value = .{
+                        .type = .{ .function = function_type },
+                        .payload = .{ .ptr = try self.createVal(tp.Texture.getFunction(function_type)) },
+                    } };
+                } else return self.errorOut(Error.InvalidMemberAccess),
+                .@"struct" => |struct_id| {
+                    const s = self.getStructFromID(struct_id);
+                    const var_ref = try s.scope.getVariableReference(self, member_access.member_name);
+                    return var_ref.value;
+                },
+
+                else => @panic("TODO mem access on other types"),
+            },
             .@"struct" => |struct_id| {
                 const s = self.getStructFromID(struct_id);
                 const index = s.memberIndex(member_access.member_name) orelse return self.errorOut(Error.NoMemberWithName);
@@ -78,6 +97,34 @@ fn refineMemberAccess(self: *Parser, member_access: Parser.MemberAccess) Error!E
 
     return initial;
 }
+fn swizzle(self: *Parser, target: *Expression, vtype: tp.Vector, literal: []const u8) Error!Expression {
+    target.* = try self.turnIntoIntermediateVariableIfNeeded(target.*);
+    for (literal) |char| switch (char) {
+        'x'...'z', 'w' => {},
+        else => return Error.InvalidMemberAccess,
+    };
+    if (literal.len > 4) return Error.InvalidSwizzle;
+    var components: [4]Expression = undefined;
+    const target_type: Type = .{ .vector = .{ .len = @enumFromInt(@max(literal.len, 2)), .component = vtype.component } };
+
+    const component_type = target_type.constructorStructure().component;
+    for (literal, components[0..literal.len]) |char, *component| {
+        const index: u32 = if (char == 'w') 3 else char - 'x';
+        const indexing = try self.refine(.{ .indexing = .{
+            .target = target,
+            .index = try self.createVal(Expression{ .value = .{ .type = tp.u32_type, .payload = .{ .wide = index } } }),
+        } });
+        if (literal.len == 1) return indexing;
+        component.* = try self.implicitCast(indexing, component_type);
+    }
+    return try self.refine(.{
+        .constructor = .{
+            .type = target_type,
+            .components = try self.arena.allocator().dupe(Expression, components[0..literal.len]),
+        },
+    });
+}
+
 fn refineCall(self: *Parser, call: Parser.Call) Error!Expression {
     const initial: Expression = .{ .call = call };
 

@@ -5,13 +5,7 @@ const doshet = fn(vec : anytype) @TypeOf(vec){
 
 const main = entrypoint(.fragment){
 	uniform tex: Texture
-
-	//const sample = tex.sample(.{0})
-	//args:
-	//1. vecX - where X is dimensions(3 for cube - direction)
-	//2. if(array) u32 - array index else *nothing*
-	//rtype:
-	//@Vector(X, T) - X - dim, T argument to the @Texture
-
-
+	const res : vec3 = .{800, 600, 1}
+	const uv = @frag_coord.xy
+	out sample = tex.sample(uv)
 }

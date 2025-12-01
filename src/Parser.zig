@@ -66,6 +66,7 @@ pub const Error = error{
     InvalidAssignmentTarget,
     InvalidArrayLen,
     InvalidMemberAccess,
+    InvalidSwizzle,
     NonVoidValueIgnored,
 
     NumericError,
@@ -86,8 +87,8 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer, settings: Settings, fi
 
     try self.parseScope(&self.global_scope.scope);
 
-    if (zigbuiltin.mode == .Debug) {
-        // if (false and zigbuiltin.mode == .Debug) {
+    // if (zigbuiltin.mode == .Debug) {
+    if (false and zigbuiltin.mode == .Debug) {
         std.debug.print("[GLOBAL IO: ", .{});
         for (self.global_scope.global_io.items) |gi| std.debug.print("{s}, ", .{gi});
         std.debug.print("]\n", .{});
@@ -100,10 +101,10 @@ pub fn deinit(self: *Parser) void {
 }
 pub fn turnIntoIntermediateVariableIfNeeded(self: *Parser, expr: Expression) Error!Expression {
     return if (switch (expr) {
-        .named_value, .identifier, .builtin => true,
-        .value => |value| !value.shouldBeNamed(),
-        else => false,
-    }) expr else try self.turnIntoIntermediateVariable(expr);
+        .named_value, .identifier, .builtin => false,
+        .value => |value| value.shouldBeNamed(),
+        else => true,
+    }) try self.turnIntoIntermediateVariable(expr) else expr;
 }
 pub fn turnIntoIntermediateVariable(self: *Parser, expr: Expression) Error!Expression {
     const name = try self.createIntermediateVariableName();
@@ -148,7 +149,7 @@ pub fn create(self: *Parser, T: type) !*T {
 }
 
 pub inline fn addStatement(self: *Parser, statement: Statement) Error!void {
-    // std.debug.print("S:{f}\n", .{statement});
+    // std.debug.print("S: {f}\n", .{statement});
     try self.current_scope.addStatement(self, statement);
     try self.trackReferencesInStatement(statement, .track);
 }
@@ -420,6 +421,7 @@ fn addInitializerToVarDecl(self: *Parser, var_decl: *VariableDeclaration, initia
     var_decl.initializer = try self.implicitCast(var_decl.initializer, var_decl.type);
 }
 fn matchVariableTypeWithQualifier(self: *Parser, @"type": Type, qualifier: Qualifier) Error!void {
+    // std.debug.print("Q: {s}, T: {f}\n", .{ @tagName(qualifier), @"type" });
     if ((@"type" == .buffer and qualifier != .uniform) or //
         (@"type".isComptimeOnly() and qualifier != .@"const")) return self.errorOut(Error.VariableTypeAndQualifierDontMatch);
     if (qualifier == .push and if (@"type".scalarPrimitive()) |sp| sp.width == .short else false) return self.errorOut(Error.VariableTypeAndQualifierDontMatch);
@@ -561,7 +563,7 @@ fn parseExpressionSide(self: *Parser, ignore_curly: bool, comptime access: bool)
         .@"(" => {
             self.tokenizer.skip();
 
-            expr = try refine_func(self, .{ .call = try self.parseFunctionCall(expr) });
+            expr = try refine_func(self, .{ .call = try self.parseFunctionCall(expr, null) });
             continue :sw try self.tokenizer.peek();
         },
         .@"[" => {
@@ -576,7 +578,23 @@ fn parseExpressionSide(self: *Parser, ignore_curly: bool, comptime access: bool)
         .@"." => {
             self.tokenizer.skip();
             const next = try self.tokenizer.next();
-            if (next != .identifier) return self.errorUnexpectedToken(next);
+            if (next != .identifier and next != .builtin) return self.errorUnexpectedToken(next);
+            if (try self.tokenizer.peek() == .@"(") {
+                self.tokenizer.skip();
+                const callee: Expression = if (next == .identifier)
+                    refine_func(self, .{ .member_access = .{
+                        .target = try self.createVal((try self.typeOf(expr)).asExpr()),
+                        .member_name = next.identifier,
+                    } }) catch |err| switch (err) {
+                        Error.InvalidMemberAccess => try refine_func(self, .{ .identifier = next.identifier }),
+                        else => return err,
+                    }
+                else
+                    .{ .builtin = try bi.getBuiltin(next.builtin) };
+
+                expr = try refine_func(self, .{ .call = try self.parseFunctionCall(callee, expr) });
+                continue :sw try self.tokenizer.peek();
+            } else if (next != .identifier) return self.errorUnexpectedToken(next);
             expr = try refine_func(self, .{ .member_access = .{
                 .target = try self.createVal(expr),
                 .member_name = next.identifier,
@@ -665,7 +683,9 @@ fn parseStructDeclaration(self: *Parser) Error!StructID {
 
     if (self.current_scope.current_variable_value_index < self.current_scope.multi_variable_initialization.len) {
         const vd = self.current_scope.multi_variable_initialization[self.current_scope.current_variable_value_index];
-        s.name = if (vd.type == .@"struct") vd.name else try self.createIntermediateVariableName();
+        // std.debug.print("VDNAME: {s}, {f}\n", .{ vd.name, vd.type });
+        s.name = vd.name;
+        // s.name = if (vd.type == .@"struct") vd.name else try self.createIntermediateVariableName();
     } else s.name = try self.createIntermediateVariableName();
 
     try self.parseScope(&s.scope);
@@ -673,11 +693,11 @@ fn parseStructDeclaration(self: *Parser) Error!StructID {
     return id;
 }
 
-fn parseFunctionCall(self: *Parser, callee: Expression) Error!Call {
+fn parseFunctionCall(self: *Parser, callee: Expression, prepend: ?Expression) Error!Call {
     const @"type" = try self.typeOf(callee);
 
     const callee_ptr = try self.createVal(callee);
-    const args = try self.parseExpressionSequence(.@")");
+    const args = try self.parseExpressionSequence(prepend, .@")");
 
     if (@"type" == .unknown) return .{ .callee = callee_ptr, .args = args };
     if (@"type" != .function) return self.errorOut(Error.InvalidCall);
@@ -697,7 +717,7 @@ fn parseCastOrConstructor(self: *Parser, @"type": Type) Error!Expression {
 
     if (is_struct) return try self.parseStructConstructor(@"type");
 
-    const components = try self.parseExpressionSequence(.@"}");
+    const components = try self.parseExpressionSequence(null, .@"}");
 
     if (components.len == 0)
         return if (@"type" == .@"struct" or @"type" == .unknown)
@@ -754,7 +774,7 @@ fn parseStructConstructor(self: *Parser, @"type": Type) Error!Expression {
         .members = try list.toOwnedSlice(self.arena.allocator()),
     } };
 }
-fn parseExpressionSequence(self: *Parser, comptime until: Token) Error![]Expression {
+fn parseExpressionSequence(self: *Parser, prepend: ?Expression, comptime until: Token) Error![]Expression {
     const should_stop = struct {
         pub fn f(parser: *Parser, token: Token) Error!bool {
             // return std.meta.eql(token, until) or token == .@",";
@@ -762,6 +782,7 @@ fn parseExpressionSequence(self: *Parser, comptime until: Token) Error![]Express
         }
     }.f;
     var list: List(Expression) = .empty;
+    if (prepend) |p| try list.append(self.arena.allocator(), p);
 
     try self.skipEndl();
     var token = try self.tokenizer.peek();
@@ -994,7 +1015,7 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
     } else if (!self.inGlobalScope()) return self.errorOut(Error.UnclosedScope);
 
     //remove useless statements
-    if (true) return;
+    // if (true) return;
 
     const body = scope.body();
     var i: usize = 0;
@@ -1081,6 +1102,13 @@ pub const Struct = struct {
 
     fn getVariableReferenceFn(scope: *Scope, parser: *Parser, name: []const u8) Error!VariableReference {
         const s: *Struct = @fieldParentPtr("scope", scope);
+        if (util.strEql(name, s.name)) {
+            return .{
+                .is_mutable = false,
+                .type = .type,
+                .value = (Type{ .@"struct" = s.id }).asExpr(),
+            };
+        }
         return for (s.body.items) |*statement| {
             if (statement.* == .var_decl and util.strEql(statement.var_decl.name, name))
                 break statement.var_decl.variableReference();
@@ -1109,14 +1137,15 @@ pub const Struct = struct {
 };
 
 pub const Function = struct {
-    arg_names: [][]const u8,
+    arg_names: []const []const u8,
     type: tp.FunctionType,
 
     //not dependant on nor mutates any global variables
+    builtin_handle: ?bi.BuiltinFunction = null,
     is_pure: bool = true,
 
     body: List(Statement) = .empty,
-    scope: Scope,
+    scope: Scope = undefined,
 
     pub fn new(self: *Parser, ftype: tp.FunctionType, arg_names: [][]const u8) Function {
         return .{
@@ -1286,7 +1315,7 @@ pub fn asTypeCreate(self: *Parser, expr: Expression) Error!Type {
     if (as_type == .unknown) as_type.unknown = try self.createVal(expr);
     return as_type;
 }
-pub fn asType(self: *Parser, expr: *Expression) Error!Type {
+pub fn asType(self: *Parser, expr: *const Expression) Error!Type {
     const unknown: Type = .{ .unknown = expr };
     return switch (expr.*) {
         .named_value => |named_value| if (named_value.value.type == .type) named_value.value.payload.type else unknown,
@@ -1460,7 +1489,7 @@ pub const Value = struct {
     pub const format = debug.formatValue;
     pub fn shouldBeNamed(self: Value) bool {
         return switch (self.type) {
-            .function => true,
+            .function => @as(*const Parser.Function, @ptrCast(@alignCast(self.payload.ptr))).builtin_handle == null,
             // .type => self.payload.type == .@"struct" or self.payload.type == .@"enum",
             else => false,
         };

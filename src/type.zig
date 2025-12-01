@@ -16,6 +16,11 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
             .@"struct" => |s| try self.getStructFromID(s).getMemberType(member_access.member_name),
             .buffer => |buffer| try self.getStructFromID(buffer.struct_id).getMemberType(member_access.member_name),
             .type => @panic("member access type on 'type'"),
+            .texture => |texture| if (util.strEql(member_access.member_name, Texture.sample_function_name))
+                .{ .function = texture.createSampleFunctionType(null) catch unreachable }
+            else
+                return Error.InvalidMemberAccess,
+
             else => return self.errorOut(Error.InvalidMemberAccess),
         },
         .builtin => |builtin| try bi.typeOfBuiltin(self, builtin),
@@ -99,6 +104,10 @@ pub const Type = union(enum) {
 
     pub const unknownempty: Type = .{ .unknown = &Expression.empty };
     pub const format = @import("debug.zig").formatType;
+
+    pub fn refine(self: Type, parser: *Parser) Error!Type {
+        return if (self == .unknown) try parser.asType(self.unknown) else self;
+    }
 
     pub fn valuePayloadType(self: Type) enum { ptr, wide, type } {
         return switch (self) {
@@ -188,8 +197,47 @@ pub const Type = union(enum) {
 };
 pub const Texture = struct {
     type: TextureType = ._2d,
-    sampled_type: Scalar,
+    texel_primitive: Scalar,
     sampled: bool,
+    pub const arg_names: []const []const u8 = &.{
+        "sampler",
+        "coord",
+        "array_index",
+    };
+
+    pub const sample_function_name: []const u8 = "sample";
+    pub fn getFunction(function_type: FunctionType) Parser.Function {
+        return .{
+            .arg_names = arg_names[0..function_type.arg_types.len],
+            .type = function_type,
+            .builtin_handle = .sample,
+        };
+    }
+
+    pub fn createSampleFunctionType(self: Texture, allocator: ?std.mem.Allocator) error{OutOfMemory}!FunctionType {
+        const array_index_type: Type = .{ .scalar = .{ .type = .uint, .width = .word } };
+        const rtype: Type = .{ .vector = .{ .len = ._4, .component = self.texel_primitive } };
+        const arg_types = ([3]Type{
+            .{ .texture = self },
+            switch (self.type) {
+                .cube, .cube_array, ._3d => .{ .vector = .{ .len = ._3, .component = .{ .type = .float, .width = .word } } },
+                ._2d, ._2d_array => .{ .vector = .{ .len = ._2, .component = .{ .type = .float, .width = .word } } },
+                ._1d, ._1d_array => .{ .scalar = .{ .type = .float, .width = .word } },
+            },
+            array_index_type,
+        })[0..switch (self.type) {
+            .cube_array, ._1d_array, ._2d_array => 3,
+            else => 2,
+        }];
+        return .{
+            .rtype = if (allocator) |a| blk: {
+                const alloc = try a.create(Type);
+                alloc.* = rtype;
+                break :blk alloc;
+            } else &rtype,
+            .arg_types = if (allocator) |a| try a.dupe(Type, arg_types) else arg_types,
+        };
+    }
 };
 pub const TextureType = enum {
     _1d,

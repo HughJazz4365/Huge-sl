@@ -11,8 +11,8 @@ pub fn main() !void {
     });
     defer compiler.deinit();
     for ([_][]const u8{
-        "test.hgsl",
-        // "../Huge/shader.hgsl",
+        // "test.hgsl",
+        "../Huge/shader.hgsl",
         // "source.hgsl",
         // "vertfrag.hgsl",
     }) |path| {

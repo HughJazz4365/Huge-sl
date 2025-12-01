@@ -24,6 +24,7 @@ const name_map: std.StaticStringMap(Builtin) = .initComptime(.{
 
     //variables
     .{ "position", Builtin{ .variable = .position } },
+    .{ "frag_coord", Builtin{ .variable = .frag_coord } },
     .{ "vertex_id", Builtin{ .variable = .vertex_id } },
     .{ "Interpolation", Builtin{ .variable = .interpolation } },
 });
@@ -32,10 +33,9 @@ pub const Builtin = union(enum) {
     function: BuiltinFunction,
     variable: BuiltinVariable,
 };
-const BuiltinFunction = enum {
+pub const BuiltinFunction = enum {
     col_hex,
     reflect,
-    array_type,
     transpose,
     inverse,
 
@@ -43,6 +43,10 @@ const BuiltinFunction = enum {
     buffer,
     texture,
     type_of,
+
+    //internal
+    array_type,
+    sample,
 
     pub fn argumentCount(self: BuiltinFunction) usize {
         return self.typeOf().function.arg_types.len;
@@ -76,6 +80,8 @@ const BuiltinFunction = enum {
 };
 pub const BuiltinVariable = enum {
     position,
+    frag_coord,
+
     point_size,
     cull_distance,
     vertex_id,
@@ -97,6 +103,7 @@ pub const BuiltinVariable = enum {
     pub fn typeOf(bv: BuiltinVariable) Type {
         return switch (bv) {
             .position => tp.vec4_type,
+            .frag_coord => tp.vec3_type,
             .point_size => tp.f32_type,
             .cull_distance => .{ .array = .{ .len = 1, .component = &tp.f32_type } },
             .vertex_id => tp.u32_type,
@@ -114,7 +121,7 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
             break :blk if (type_of.isEmpty())
                 initial
             else
-                .{ .value = .{ .type = .type, .payload = .{ .type = type_of } } };
+                type_of.asExpr();
         },
         //remove in favour of unpackUnorm4x8 instruction
         .col_hex => blk: {
@@ -171,7 +178,7 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
 
             break :blk .{ .value = .{ .type = .type, .payload = .{
                 .type = .{ .texture = .{
-                    .sampled_type = @"type".scalar,
+                    .texel_primitive = @"type".scalar,
                     .type = texture_type,
                     .sampled = is_sampled,
                 } },
@@ -186,8 +193,8 @@ pub fn typeOfBuiltInCall(self: *Parser, bf: BuiltinFunction, args: []Expression)
     const @"type": Type = switch (bf) {
         .col_hex => tp.vec3_type,
         .array_type, .buffer, .texture => .type,
-        else => bf.typeOf().function.rtype.*,
-        // else => try self.typeOf(args[0]),
+        // else => bf.typeOf().function.rtype.*,
+        else => try self.typeOf(args[0]),
     };
     // std.debug.print("@{s} => {f}\n", .{ @tagName(bf), @"type" });
 

@@ -74,8 +74,8 @@ pub const Compiler = struct {
         ) catch |err| return self.err_ctx.outputUpdateIfEmpty(err);
         defer parser.deinit();
 
-        return .{};
-        // return try SpirvGen.generate(&parser, self.arena.allocator());
+        // return .{};
+        return try SpirvGen.generate(&parser, self.arena.allocator());
     }
 
     pub fn new(allocator: ?Allocator, err_writer: ?*std.Io.Writer, settings: Settings) Compiler {
@@ -105,12 +105,12 @@ pub const Compiler = struct {
 };
 pub const IOType = union(enum) {
     scalar: Scalar,
-    vector: struct { len: VectorLen, child: Scalar },
+    vector: struct { len: VectorLen, component: Scalar },
     pub fn eql(a: IOType, b: IOType) bool {
         return if (a == .scalar and b == .scalar)
             a.scalar == b.scalar
         else if (a == .vector and b == .vector)
-            a.vector.len == b.vector.len and a.vector.child == b.vector.child
+            a.vector.len == b.vector.len and a.vector.component == b.vector.component
         else
             return false;
     }
@@ -118,7 +118,7 @@ pub const IOType = union(enum) {
         switch (self) {
             .scalar => |scalar| try writer.print("{s}", .{@tagName(scalar)}),
             .vector => |vector| try writer.print("{s}vec{d}", .{
-                switch (vector.child) {
+                switch (vector.component) {
                     .f32, .f64 => "",
                     .u32, .u64 => "u",
                     .i32, .i64 => "i",
@@ -250,7 +250,7 @@ pub const PushConstantMapping = struct {
 };
 pub const OpaqueUniformMapping = struct {
     name: []const u8,
-    type: OpaqueType,
+    type: OpaqueType = undefined,
     binding: u32,
     descriptor_set: u32,
     pub fn format(self: OpaqueUniformMapping, writer: *std.Io.Writer) !void {
@@ -262,7 +262,12 @@ pub const OpaqueUniformMapping = struct {
         });
     }
 };
-pub const OpaqueType = enum { ubo, ssbo, texture };
+pub const OpaqueType = enum {
+    ubo,
+    ssbo,
+    sampled_texture,
+    texture,
+};
 
 pub const Settings = struct {
     target_env: TargetEnv = .vulkan1_4,
