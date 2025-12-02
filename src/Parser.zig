@@ -163,11 +163,8 @@ pub fn isStatementComplete(self: *Parser, statement: Statement) Error!bool {
 }
 
 pub fn parseStatement(self: *Parser) Error!usize {
-    var token = try self.tokenizer.peek();
-    if (token == .endl) {
-        self.tokenizer.skip();
-        token = try self.tokenizer.peek();
-    }
+    try self.skipEndl();
+    const token = try self.tokenizer.peek();
     if (self.defaultShouldStop(token) catch unreachable) return 0;
 
     return switch (token) {
@@ -370,7 +367,7 @@ fn parseVariableDeclarations(self: *Parser) Error!usize {
             }
         },
         else => {
-            if (try self.defaultShouldStop(token) and list.items.len > 1) {
+            if (try self.defaultShouldStop(token)) {
                 for (list.items[1..]) |*vd| try self.addInitializerToVarDecl(vd, .empty);
                 break :sw;
             }

@@ -414,7 +414,7 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
         else
             constructor.components[index],
         .value => |value| blk: {
-            if (index >= target_cs.len) return self.errorOut(Error.OutOfBoundsAccess);
+            if (index >= target_cs.len and target_type != .runtime_array) return self.errorOut(Error.OutOfBoundsAccess);
             switch (value.type) {
                 .void => {
                     indexing.index.* = .{ .value = .{ .type = tp.u32_type, .payload = .{ .wide = util.fit(WIDE, index) } } };

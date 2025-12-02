@@ -1,9 +1,9 @@
-//endl after descriptor(0, 0)
 descriptor(0, 0)
-bindless_samplers_2d: []@Texture(f32, ._2d, true), 
-bindless_samplers_cube : []@Texture(f32, .cube, true) 
+bindless_samplers_2d: []@Texture(f32, ._2d, true),
+bindless_samplers_cube : []@Texture(f32, .cube, true)
 
 const main = entrypoint(.fragment){
 	push texture_id : u32 = 0
-	out out_color = bindless_samplers_2d[texture_id].sample(.{0})
+	out out_color =
+		bindless_samplers_2d[texture_id].sample(.{0})
 }

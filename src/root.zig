@@ -252,10 +252,10 @@ pub const Binding = struct {
     name: []const u8,
     type: BindingType = undefined,
     binding: u32,
-    descriptor_set: u32,
+    set: u32,
     pub fn format(self: Binding, writer: *std.Io.Writer) !void {
         try writer.print("[Set = {d:2}, Binding = {d:2}, \"{s}\": {f}]", .{
-            self.descriptor_set,
+            self.set,
             self.binding,
             self.name,
             self.type,

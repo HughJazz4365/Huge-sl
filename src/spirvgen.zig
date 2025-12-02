@@ -20,14 +20,7 @@ const Error = error{
 } || Writer.Error || Parser.Error;
 
 const glsl_std_id: WORD = 1;
-const glsl_ext_literal_words = blk: {
-    const str = "GLSL.std.450";
-    const num_words = (str.len + 4) / 4;
-    var words: [num_words]WORD = @splat(0);
-    for (str, 0..) |c, i| words[i / 4] |= @as(WORD, c) << ((i & 3) * 8);
-
-    break :blk words;
-};
+const glsl_ext_literal_words = stringLiteral("GLSL.std.450");
 const magic_number: WORD = 0x07230203;
 const generator_number: WORD = 0;
 const IOEntry = struct {
@@ -35,7 +28,8 @@ const IOEntry = struct {
     type_id: WORD,
     io_type: IOType = undefined,
 
-    descriptor_set: WORD = 0,
+    set: WORD = 0,
+    binding: WORD = std.math.maxInt(WORD),
 };
 const IOType = enum(u2) {
     in = 0,
@@ -43,6 +37,7 @@ const IOType = enum(u2) {
     descriptor = 2,
     push = 3,
 };
+extension_config: ExtensionConfig = .{},
 decorated_global_io_count: usize = 0,
 global_io: []IOEntry,
 global_push_constants: List(PushConstant) = .empty,
@@ -109,6 +104,13 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
     inline for (@typeInfo(Capability).@"enum".fields) |ef| // capabilities
         if (@field(self.capabilities, ef.name))
             try result.appendSlice(&.{ opWord(.capability, 2), ef.value });
+
+    inline for (@typeInfo(Extension).@"enum".fields) |ef| // extensions
+        if (@field(self.extension_config, ef.name)) {
+            const literal = stringLiteral(@as(Extension, @enumFromInt(ef.value)).name());
+            try result.append(opWord(.extension, @truncate(literal.len + 1)));
+            try result.appendSlice(&literal);
+        };
 
     try result.appendSlice(&.{ opWord(.ext_inst_import, 2 + glsl_ext_literal_words.len), glsl_std_id });
     try result.appendSlice(&glsl_ext_literal_words); // exstension instruction imports
@@ -204,45 +206,91 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
         try self.decorateStructLayout(id, fields, false, .base);
     }
 
-    //decorations
-    var global_offsets: [3]WORD = @splat(0);
     for (self.entry_points.items) |ep| {
-        var local_offsets: [3]WORD = @splat(0);
+        for (&[2][]IOEntry{ self.global_io[0..ep.val_ptr.global_io_count], ep.local_io }) |slice|
+            for (slice) |*io| if (io.io_type == .descriptor) {
+                const binding_type = self.toBindingType(self.typeFromID(io.type_id));
+                if (~io.binding == 0) {
+                    var current_binding: u32 = 0;
+                    const consumption: u32 = if (binding_type == .array) binding_type.array.len else 1;
+                    w: while (true) {
+                        const upper = current_binding + consumption - 1;
+                        outer: for (&[2][]IOEntry{ self.global_io[0..ep.val_ptr.global_io_count], ep.local_io }) |s|
+                            for (s) |*b| {
+                                if (b.io_type != .descriptor or ~b.binding == 0 or b.set != io.set) continue;
+
+                                const other_binding_type = self.toBindingType(self.typeFromID(io.type_id));
+                                const other_consumption: u32 = if (other_binding_type == .array) other_binding_type.array.len else 1;
+                                const other_upper = b.binding + other_consumption - 1;
+                                if (!(current_binding > other_upper or b.binding > upper)) {
+                                    current_binding = @max(current_binding, other_upper + 1);
+                                    break :outer;
+                                }
+                            } else break :w;
+                    }
+                    io.binding = current_binding;
+                }
+            };
+    }
+    //decorations
+    var global_offsets: [2]WORD = @splat(0);
+    for (self.entry_points.items) |ep| {
+        var local_offsets: [2]WORD = @splat(0);
         const gc = ep.val_ptr.global_io_count;
-        for (self.global_io[@min(gc, self.decorated_global_io_count)..gc]) |g| {
-            if (g.io_type == .push) continue;
-            try result.appendSlice(&.{
-                opWord(.decorate, 4),
-                g.id,
-                @intFromEnum(if (g.io_type == .descriptor) Decoration.binding else Decoration.location),
-                global_offsets[@intFromEnum(g.io_type)],
-            });
-            global_offsets[@intFromEnum(g.io_type)] += 1;
-            if (g.io_type == .descriptor) try self.decorations.appendSlice(self.arena, &.{
-                opWord(.decorate, 4),
-                g.id,
-                @intFromEnum(Decoration.descriptor_set),
-                g.descriptor_set,
-            });
-        }
+        for (self.global_io[@min(gc, self.decorated_global_io_count)..gc]) |g| switch (g.io_type) {
+            .push => {},
+            .in, .out => {
+                try result.appendSlice(&.{
+                    opWord(.decorate, 4),
+                    g.id,
+                    @intFromEnum(Decoration.location),
+                    global_offsets[@intFromEnum(g.io_type)],
+                });
+                global_offsets[@intFromEnum(g.io_type)] += 1;
+            },
+            .descriptor => {
+                try result.appendSlice(&.{
+                    //binding
+                    opWord(.decorate, 4),
+                    g.id,
+                    @intFromEnum(Decoration.binding),
+                    g.binding,
+                    //descriptor set
+                    opWord(.decorate, 4),
+                    g.id,
+                    @intFromEnum(Decoration.descriptor_set),
+                    g.set,
+                });
+            },
+        };
         self.decorated_global_io_count = ep.val_ptr.global_io_count;
 
-        for (ep.local_io) |l| {
-            if (l.io_type == .push) continue;
-            try result.appendSlice(&.{
-                opWord(.decorate, 4),
-                l.id,
-                @intFromEnum(if (l.io_type == .descriptor) Decoration.binding else Decoration.location),
-                local_offsets[@intFromEnum(l.io_type)] + global_offsets[@intFromEnum(l.io_type)],
-            });
-            local_offsets[@intFromEnum(l.io_type)] += 1;
-            if (l.io_type == .descriptor) try self.decorations.appendSlice(self.arena, &.{
-                opWord(.decorate, 4),
-                l.id,
-                @intFromEnum(Decoration.descriptor_set),
-                l.descriptor_set,
-            });
-        }
+        for (ep.local_io) |l| switch (l.io_type) {
+            .push => {},
+            .in, .out => {
+                try result.appendSlice(&.{
+                    opWord(.decorate, 4),
+                    l.id,
+                    @intFromEnum(Decoration.location),
+                    local_offsets[@intFromEnum(l.io_type)] + global_offsets[@intFromEnum(l.io_type)],
+                });
+                local_offsets[@intFromEnum(l.io_type)] += 1;
+            },
+            .descriptor => {
+                try result.appendSlice(&.{
+                    //binding
+                    opWord(.decorate, 4),
+                    l.id,
+                    @intFromEnum(Decoration.binding),
+                    l.binding,
+                    //descriptor set
+                    opWord(.decorate, 4),
+                    l.id,
+                    @intFromEnum(Decoration.descriptor_set),
+                    l.set,
+                });
+            },
+        };
     }
     try result.appendSlice(self.decorations.items);
 
@@ -361,13 +409,10 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
                 else => {},
             };
 
-        const bindings = try result_allocator.alloc(
-            hgsl.Binding,
-            descriptor_count,
-        );
-        descriptor_count = 0;
         //[input][output] construct result
         const io_mappings = try result_allocator.alloc(hgsl.IOMapping, input_count + output_count);
+        const bindings = try result_allocator.alloc(hgsl.Binding, descriptor_count);
+        descriptor_count = 0;
         var input_index: u32 = 0;
         var output_index: u32 = 0;
         for (&[2][]IOEntry{ self.global_io[0..ep.val_ptr.global_io_count], ep.local_io }) |slice|
@@ -376,8 +421,8 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
                     bindings[descriptor_count] = .{
                         .name = for (self.global_vars.items) |gv| (if (io.id == gv.id) break gv.name) else unreachable,
                         .type = self.toBindingType(self.typeFromID(io.type_id)),
-                        .binding = @intCast(descriptor_count),
-                        .descriptor_set = io.descriptor_set,
+                        .binding = io.binding,
+                        .set = io.set,
                     };
                     descriptor_count += 1;
                 },
@@ -543,7 +588,11 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             .id = var_id,
             .type_id = type_id,
             .io_type = io_type,
-            .descriptor_set = if (var_decl.qualifier == .descriptor) var_decl.qualifier.descriptor.set else 0,
+            .set = if (var_decl.qualifier == .descriptor) var_decl.qualifier.descriptor.set else 0,
+            .binding = if (var_decl.qualifier == .descriptor)
+                (if (var_decl.qualifier.descriptor.binding) |b| b else std.math.maxInt(u32))
+            else
+                std.math.maxInt(u32),
         };
 
         if (self.inGlobalScope()) {
@@ -1454,14 +1503,14 @@ const ConstantValue = union {
     ptr: [*]WORD,
 };
 fn toBindingType(self: *Generator, @"type": Type) hgsl.BindingType {
-    const dt = self.descriptorType(@"type");
+    const dt = self.toDescriptorType(@"type");
     return switch (@"type") {
         .runtime_array => .{ .runtime_array = dt },
         .array => |array| .{ .array = .{ .len = array.len, .descriptor_type = dt } },
         else => .{ .descriptor = dt },
     };
 }
-fn descriptorType(self: *Generator, @"type": Type) hgsl.DescriptorType {
+fn toDescriptorType(self: *Generator, @"type": Type) hgsl.DescriptorType {
     return sw: switch (@"type") {
         .runtime_array => |runtime_array| //
         continue :sw self.typeFromID(runtime_array),
@@ -1523,7 +1572,11 @@ fn convertType(self: *Generator, from: Parser.Type) Error!Type {
             .len = array.len,
             .component_id = try self.convertTypeID(array.component.*),
         } },
-        .runtime_array => |runtime_array| .{ .runtime_array = try self.convertTypeID(runtime_array.*) },
+        .runtime_array => |runtime_array| blk: {
+            if (runtime_array.isDescriptor())
+                self.extension_config.descriptor_indexing = true;
+            break :blk .{ .runtime_array = try self.convertTypeID(runtime_array.*) };
+        },
         .matrix => |matrix| .{ .matrix = .{
             .column_count = matrix.n,
             .column_type_id = try self.typeID(.{ .vector = .{ .len = matrix.m, .component_id = try self.typeID(.{ .float = matrix.width }) } }),
@@ -1536,7 +1589,7 @@ fn convertType(self: *Generator, from: Parser.Type) Error!Type {
         },
         .buffer => |buffer| .{ .buffer = .{
             .struct_id = try self.convertTypeID(.{ .@"struct" = buffer.struct_id }),
-            .storage_class = .uniform,
+            .storage_class = if (buffer.type == .ubo) .uniform else .storage_buffer,
         } },
         .texture => |texture| {
             const dim: Dim, const arrayed: bool = switch (texture.type) {
@@ -1718,6 +1771,7 @@ const Op = enum(WORD) {
     memory_model = 14,
     decorate = 71,
     member_decorate = 72,
+    extension = 10,
 
     function = 54,
     label = 248,
@@ -1761,6 +1815,23 @@ const GlslStdExtOp = enum(WORD) {
     umax = 41,
     smax = 42,
 };
+const Extension = enum {
+    descriptor_indexing,
+    pub fn name(comptime self: Extension) []const u8 {
+        return switch (self) {
+            .descriptor_indexing => "SPV_EXT_descriptor_indexing",
+            // else => "",
+        };
+    }
+};
+pub fn stringLiteral(comptime str: []const u8) [(str.len + 4) / 4]WORD {
+    const num_words = (str.len + 4) / 4;
+    var words: [num_words]WORD = @splat(0);
+    for (str, 0..) |c, i| words[i / 4] |= @as(WORD, c) << @intCast((i & 3) * 8);
+
+    return words;
+}
+const ExtensionConfig = util.FlagStructFromEnum(Extension, false);
 const BuiltinIDInfos = struct {
     per_vertex: struct {
         ptr: IDInfo = .{},
