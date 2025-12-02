@@ -40,7 +40,7 @@ const IOEntry = struct {
 const IOType = enum(u2) {
     in = 0,
     out = 1,
-    uniform = 2,
+    descriptor = 2,
     push = 3,
 };
 decorated_global_io_count: usize = 0,
@@ -214,11 +214,11 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
             try result.appendSlice(&.{
                 opWord(.decorate, 4),
                 g.id,
-                @intFromEnum(if (g.io_type == .uniform) Decoration.binding else Decoration.location),
+                @intFromEnum(if (g.io_type == .descriptor) Decoration.binding else Decoration.location),
                 global_offsets[@intFromEnum(g.io_type)],
             });
             global_offsets[@intFromEnum(g.io_type)] += 1;
-            if (g.io_type == .uniform) try self.decorations.appendSlice(self.arena, &.{
+            if (g.io_type == .descriptor) try self.decorations.appendSlice(self.arena, &.{
                 opWord(.decorate, 4),
                 g.id,
                 @intFromEnum(Decoration.descriptor_set),
@@ -232,11 +232,11 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
             try result.appendSlice(&.{
                 opWord(.decorate, 4),
                 l.id,
-                @intFromEnum(if (l.io_type == .uniform) Decoration.binding else Decoration.location),
+                @intFromEnum(if (l.io_type == .descriptor) Decoration.binding else Decoration.location),
                 local_offsets[@intFromEnum(l.io_type)] + global_offsets[@intFromEnum(l.io_type)],
             });
             local_offsets[@intFromEnum(l.io_type)] += 1;
-            if (l.io_type == .uniform) try self.decorations.appendSlice(self.arena, &.{
+            if (l.io_type == .descriptor) try self.decorations.appendSlice(self.arena, &.{
                 opWord(.decorate, 4),
                 l.id,
                 @intFromEnum(Decoration.descriptor_set),
@@ -266,6 +266,11 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
                 });
                 break l.id;
             }) else unreachable,
+        },
+        .runtime_array => |runtime_array| &.{
+            opWord(.type_runtime_array, 3),
+            t.id,
+            runtime_array,
         },
         .pointer => |pointer| &.{ opWord(.type_pointer, 4), t.id, @intFromEnum(pointer.storage_class), pointer.pointed_id },
         .function => |function| blk: {
@@ -347,42 +352,34 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
 
         var input_count: u32 = 0;
         var output_count: u32 = 0;
-        var uniform_count: usize = 0;
+        var descriptor_count: usize = 0;
         for (&[2][]IOEntry{ self.global_io[0..ep.val_ptr.global_io_count], ep.local_io }) |slice|
             for (slice) |io| switch (io.io_type) {
                 .in => input_count += 1,
                 .out => output_count += 1,
-                .uniform => uniform_count += 1,
+                .descriptor => descriptor_count += 1,
                 else => {},
             };
 
-        const opaque_uniform_mappings = try result_allocator.alloc(
-            hgsl.OpaqueUniformMapping,
-            uniform_count,
+        const bindings = try result_allocator.alloc(
+            hgsl.Binding,
+            descriptor_count,
         );
-        uniform_count = 0;
+        descriptor_count = 0;
         //[input][output] construct result
         const io_mappings = try result_allocator.alloc(hgsl.IOMapping, input_count + output_count);
         var input_index: u32 = 0;
         var output_index: u32 = 0;
         for (&[2][]IOEntry{ self.global_io[0..ep.val_ptr.global_io_count], ep.local_io }) |slice|
             for (slice) |io| switch (io.io_type) {
-                .uniform => {
-                    opaque_uniform_mappings[uniform_count] = .{
+                .descriptor => {
+                    bindings[descriptor_count] = .{
                         .name = for (self.global_vars.items) |gv| (if (io.id == gv.id) break gv.name) else unreachable,
-                        .type = switch (self.typeFromID(io.type_id)) {
-                            .buffer => |buffer| if (buffer.storage_class == .storage_buffer)
-                                .ssbo
-                            else
-                                .ubo,
-                            .sampled_image => .sampled_texture,
-                            .image => .texture,
-                            else => unreachable,
-                        },
-                        .binding = @intCast(uniform_count),
+                        .type = self.toBindingType(self.typeFromID(io.type_id)),
+                        .binding = @intCast(descriptor_count),
                         .descriptor_set = io.descriptor_set,
                     };
-                    uniform_count += 1;
+                    descriptor_count += 1;
                 },
                 .in, .out => {
                     const name = try result_allocator.dupe(u8, for (self.global_vars.items) |gv| {
@@ -411,7 +408,7 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
             .stage_info = ep.stage_info,
 
             .push_constant_mappings = push_constant_mappings,
-            .opaque_uniform_mappings = opaque_uniform_mappings,
+            .bindings = bindings,
 
             .io_mappings_ptr = io_mappings.ptr,
             .input_count = input_count,
@@ -523,7 +520,7 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             return;
         },
         .shared => .workgroup,
-        .uniform => if (var_decl.type == .buffer)
+        .descriptor => if (var_decl.type == .buffer)
             (if (var_decl.type.buffer.type == .ssbo) .storage_buffer else .uniform)
         else
             .uniform_constant,
@@ -537,7 +534,7 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
         const io_type: IOType = switch (var_decl.qualifier) {
             .in => .in,
             .out => .out,
-            .uniform => .uniform,
+            .descriptor => .descriptor,
             .push => .push,
 
             else => break :io,
@@ -546,7 +543,7 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             .id = var_id,
             .type_id = type_id,
             .io_type = io_type,
-            .descriptor_set = if (var_decl.qualifier == .uniform) var_decl.qualifier.uniform else 0,
+            .descriptor_set = if (var_decl.qualifier == .descriptor) var_decl.qualifier.descriptor.set else 0,
         };
 
         if (self.inGlobalScope()) {
@@ -1456,6 +1453,29 @@ const ConstantValue = union {
     quad: [4]WORD,
     ptr: [*]WORD,
 };
+fn toBindingType(self: *Generator, @"type": Type) hgsl.BindingType {
+    const dt = self.descriptorType(@"type");
+    return switch (@"type") {
+        .runtime_array => .{ .runtime_array = dt },
+        .array => |array| .{ .array = .{ .len = array.len, .descriptor_type = dt } },
+        else => .{ .descriptor = dt },
+    };
+}
+fn descriptorType(self: *Generator, @"type": Type) hgsl.DescriptorType {
+    return sw: switch (@"type") {
+        .runtime_array => |runtime_array| //
+        continue :sw self.typeFromID(runtime_array),
+        .array => |array| //
+        continue :sw self.typeFromID(array.component_id),
+        .buffer => |buffer| if (buffer.storage_class == .storage_buffer)
+            .ssbo
+        else
+            .ubo,
+        .image => .texture,
+        .sampled_image => .sampled_texture,
+        else => unreachable,
+    };
+}
 fn toIOType(self: *Generator, @"type": Type) hgsl.IOType {
     return switch (@"type") {
         .float => |width| .{ .scalar = if (width == .word)
@@ -1503,6 +1523,7 @@ fn convertType(self: *Generator, from: Parser.Type) Error!Type {
             .len = array.len,
             .component_id = try self.convertTypeID(array.component.*),
         } },
+        .runtime_array => |runtime_array| .{ .runtime_array = try self.convertTypeID(runtime_array.*) },
         .matrix => |matrix| .{ .matrix = .{
             .column_count = matrix.n,
             .column_type_id = try self.typeID(.{ .vector = .{ .len = matrix.m, .component_id = try self.typeID(.{ .float = matrix.width }) } }),
@@ -1589,6 +1610,7 @@ const Type = union(enum) {
     matrix: Matrix,
 
     array: Array,
+    runtime_array: WORD,
 
     function: Function,
     pointer: Pointer,
@@ -1614,6 +1636,7 @@ const Type = union(enum) {
                     false,
             .pointer => |pointer| pointer.pointed_id == b.pointer.pointed_id and pointer.storage_class == b.pointer.storage_class,
             .array => |array| array.component_id == b.array.component_id and array.len == b.array.len,
+            .runtime_array => |runtime_array| runtime_array == b.runtime_array,
             .@"struct" => |st| std.mem.eql(WORD, st, b.@"struct"),
             .buffer => |buffer| buffer.struct_id == b.buffer.struct_id and buffer.storage_class == b.buffer.storage_class,
             .image => |image| std.meta.eql(image, b.image),
@@ -1679,6 +1702,7 @@ const Op = enum(WORD) {
     type_vector = 23,
     type_matrix = 24,
     type_array = 28,
+    type_runtime_array = 29,
     type_pointer = 32,
     type_function = 33,
     type_struct = 30,
@@ -1769,7 +1793,7 @@ const Decoration = enum(WORD) {
     binding = 33,
     descriptor_set = 34,
 
-    uniform = 26,
+    descriptor = 26,
     component = 31,
     index = 32,
 

@@ -30,7 +30,7 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
 
             if (left_type == .unknown or right_type == .unknown) return .unknownempty;
             break :blk switch (bin_op.op) {
-                .@"+", .@"-", .@"^", .@"|", .@"&", .@">>" => left_type,
+                .@"+", .@"-", .@"^", .@"|", .@"&", .@">>", .@"/" => left_type,
                 .@"*" => clk: {
                     if (left_type == .matrix and right_type == .matrix)
                         break :clk .{ .matrix = .{ .m = left_type.matrix.m, .n = right_type.matrix.n, .width = left_type.matrix.width } }
@@ -85,6 +85,7 @@ pub const Type = union(enum) {
     scalar: Scalar,
     vector: Vector,
     array: Array,
+    runtime_array: *const Type,
     matrix: Matrix,
 
     @"struct": Parser.StructID, //value.payload - []Expression
@@ -107,6 +108,16 @@ pub const Type = union(enum) {
 
     pub fn refine(self: Type, parser: *Parser) Error!Type {
         return if (self == .unknown) try parser.asType(self.unknown) else self;
+    }
+    pub fn isBindable(self: Type) bool {
+        return switch (self) {
+            .array => |array| array.component.isDescriptor(),
+            .runtime_array => |runtime_array| runtime_array.isDescriptor(),
+            else => self.isDescriptor(),
+        };
+    }
+    pub fn isDescriptor(self: Type) bool {
+        return self == .buffer or self == .texture;
     }
 
     pub fn valuePayloadType(self: Type) enum { ptr, wide, type } {
@@ -186,6 +197,7 @@ pub const Type = union(enum) {
         return switch (self) {
             .vector => |vector| .{ .component = .{ .scalar = vector.component }, .len = @intFromEnum(vector.len) },
             .array => |array| .{ .component = array.component.*, .len = array.len },
+            .runtime_array => |runtime_array| .{ .component = runtime_array.*, .len = 0 },
             .matrix => |matrix| .{ .component = .{ .vector = matrix.columnVector() }, .len = @intFromEnum(matrix.n) },
             .unknown => .{ .component = .unknownempty, .len = 1 },
             else => .{ .component = self },

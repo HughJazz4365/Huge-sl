@@ -374,7 +374,7 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
     if (target_type == .unknown) return initial;
 
     const target_cs = target_type.constructorStructure();
-    if (target_cs.len == 1) return self.errorOut(Error.InvalidIndexingTarget);
+    if (target_cs.len == 1 and target_type != .runtime_array) return self.errorOut(Error.InvalidIndexingTarget);
 
     const index: u32 = sw: switch (index_type) {
         .compint => {

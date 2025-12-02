@@ -87,8 +87,8 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer, settings: Settings, fi
 
     try self.parseScope(&self.global_scope.scope);
 
-    // if (zigbuiltin.mode == .Debug) {
-    if (false and zigbuiltin.mode == .Debug) {
+    if (zigbuiltin.mode == .Debug) {
+        // if (false and zigbuiltin.mode == .Debug) {
         std.debug.print("[GLOBAL IO: ", .{});
         for (self.global_scope.global_io.items) |gi| std.debug.print("{s}, ", .{gi});
         std.debug.print("]\n", .{});
@@ -172,7 +172,7 @@ pub fn parseStatement(self: *Parser) Error!usize {
 
     return switch (token) {
         .eof => 0,
-        .@"const", .mut, .uniform, .push, .shared, .out, .in, .member => self.parseVarDecls(),
+        .@"const", .mut, .descriptor, .push, .shared, .out, .in, .member => self.parseVariableDeclarations(),
         .@"return" => blk: {
             self.tokenizer.skip();
             const peek = try self.tokenizer.peek();
@@ -248,7 +248,7 @@ fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
         .value = try self.implicitCast(value, try self.typeOf(target)),
     } };
 }
-fn parseVarDecls(self: *Parser) Error!usize {
+fn parseVariableDeclarations(self: *Parser) Error!usize {
     // const body_index = self.current_scope.body().*.len;
 
     var list: List(VariableDeclaration) = .empty;
@@ -262,6 +262,7 @@ fn parseVarDecls(self: *Parser) Error!usize {
     var token = try self.tokenizer.next();
 
     var qualifier: Qualifier = try self.parseQualifier(token);
+    try self.skipEndl();
 
     token = try self.tokenizer.next();
 
@@ -277,10 +278,11 @@ fn parseVarDecls(self: *Parser) Error!usize {
             continue :sw token;
         },
 
-        .in, .out, .@"const", .mut, .uniform, .push, .shared => {
+        .in, .out, .@"const", .mut, .descriptor, .push, .shared => {
             if (last == .type) self.tokenizer.skip();
 
             qualifier = try self.parseQualifier(token);
+            try self.skipEndl();
             if (last != .comma) return self.errorUnexpectedToken(token);
             last = .qual;
             token = try self.tokenizer.next();
@@ -368,7 +370,7 @@ fn parseVarDecls(self: *Parser) Error!usize {
             }
         },
         else => {
-            if (try self.defaultShouldStop(token)) {
+            if (try self.defaultShouldStop(token) and list.items.len > 1) {
                 for (list.items[1..]) |*vd| try self.addInitializerToVarDecl(vd, .empty);
                 break :sw;
             }
@@ -422,7 +424,7 @@ fn addInitializerToVarDecl(self: *Parser, var_decl: *VariableDeclaration, initia
 }
 fn matchVariableTypeWithQualifier(self: *Parser, @"type": Type, qualifier: Qualifier) Error!void {
     // std.debug.print("Q: {s}, T: {f}\n", .{ @tagName(qualifier), @"type" });
-    if ((@"type" == .buffer and qualifier != .uniform) or //
+    if ((@"type".isBindable() != (qualifier == .descriptor)) or //
         (@"type".isComptimeOnly() and qualifier != .@"const")) return self.errorOut(Error.VariableTypeAndQualifierDontMatch);
     if (qualifier == .push and if (@"type".scalarPrimitive()) |sp| sp.width == .short else false) return self.errorOut(Error.VariableTypeAndQualifierDontMatch);
 }
@@ -624,6 +626,11 @@ fn parseExpressionSidePrimary(self: *Parser, comptime access: bool) Error!Expres
         .builtin => |builtin| .{ .builtin = bi.getBuiltin(builtin) catch |err| return self.errorOut(err) },
         .@"[" => blk: {
             //if array len is not a value return @Array(len, T)
+            if (try self.tokenizer.peek() == .@"]") {
+                self.tokenizer.skip();
+                const component_type_expr = try self.refine(try self.parseExpressionSide(false, true));
+                break :blk (Type{ .runtime_array = try self.createVal(try self.asTypeCreate(component_type_expr)) }).asExpr();
+            }
             const array_len_expr = try self.parseExpression(squareBracketShouldStop, true);
             if (array_len_expr != .value) @panic("return @Array(len, T) since len is not comptime");
 
@@ -649,10 +656,10 @@ fn parseExpressionSidePrimary(self: *Parser, comptime access: bool) Error!Expres
             if (len < 2) return self.errorOut(Error.InvalidArrayLen);
 
             const component_type_expr = try self.refine(try self.parseExpressionSide(false, true));
-            break :blk .{ .value = .{ .type = .type, .payload = .{ .type = .{ .array = .{
+            break :blk (Type{ .array = .{
                 .len = len,
                 .component = try self.createVal(try self.asTypeCreate(component_type_expr)),
-            } } } } };
+            } }).asExpr();
         },
         .@"(" => try self.parseExpression(bracketShouldStop, true),
         .@"." => switch (try self.tokenizer.next()) {
@@ -1431,32 +1438,61 @@ pub const VariableReference = struct {
 fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
     return switch (token) {
         .in, .out => blk: {
-            var interpolation: bi.Interpolation = .smooth;
-            if (try self.tokenizer.peek() == .@"(") {
-                const expr = try self.implicitCast(try self.parseExpressionSide(false, true), bi.interpolation_type);
-                if (expr != .value) return self.errorOut(Error.IncompleteStatement);
-
-                interpolation = @enumFromInt(util.extract(u64, expr.value.payload.wide));
+            const smooth: Qualifier = if (token == .in) .{ .in = .smooth } else .{ .out = .smooth };
+            if (try self.tokenizer.peek() != .@"(") break :blk smooth;
+            self.tokenizer.skip();
+            if (try self.tokenizer.peek() == .@")") {
+                self.tokenizer.skip();
+                break :blk smooth;
             }
+            var interpolation: bi.Interpolation = .smooth;
+            const expr = try self.implicitCast(try self.parseExpressionSide(false, true), bi.interpolation_type);
+            if (expr != .value) return self.errorOut(Error.IncompleteStatement);
+
+            interpolation = @enumFromInt(util.extract(u64, expr.value.payload.wide));
             break :blk if (token == .in) .{ .in = interpolation } else .{ .out = interpolation };
             // .{ .in = .smooth },
         },
         .member => .member,
         .@"const" => .@"const",
         .mut => .mut,
-        .uniform => .{ .uniform = 0 },
+        .descriptor => blk: {
+            if (try self.tokenizer.peek() != .@"(") break :blk .{ .descriptor = .{} };
+            self.tokenizer.skip();
+            if (try self.tokenizer.peek() == .@")") {
+                self.tokenizer.skip();
+                break :blk .{ .descriptor = .{} };
+            }
+            const set_expr = try self.implicitCast(try self.parseExpression(argShouldStop, false), tp.u32_type);
+            if (set_expr != .value) return self.errorOut(Error.IncompleteStatement);
+            const set: u32 = util.extract(u32, set_expr.value.payload.wide);
+
+            if (try self.tokenizer.next() == .@")") break :blk .{ .descriptor = .{ .set = set } };
+
+            const binding_expr = try self.implicitCast(try self.parseExpression(argShouldStop, true), tp.u32_type);
+            if (set_expr != .value) return self.errorOut(Error.IncompleteStatement);
+            break :blk .{ .descriptor = .{
+                .set = set,
+                .binding = util.extract(u32, binding_expr.value.payload.wide),
+            } };
+        },
         .push => .push,
         .shared => .shared,
         else => Error.UnexpectedToken,
     };
 }
 
+pub const DescriptorBinding = struct {
+    set: u32 = 0,
+    binding: ?u32 = null,
+};
+
 pub const Qualifier = union(enum) {
     member,
     @"const",
     mut,
 
-    uniform: u32,
+    descriptor: DescriptorBinding,
     push,
 
     in: bi.Interpolation,
@@ -1465,20 +1501,20 @@ pub const Qualifier = union(enum) {
     shared,
     pub fn isIO(self: Qualifier) bool {
         return switch (self) {
-            .push, .uniform, .in, .out => true,
+            .push, .descriptor, .in, .out => true,
             else => false,
         };
     }
     pub fn canHaveInitializer(self: Qualifier) bool {
         return switch (self) {
-            .in, .push, .uniform, .member => false,
+            .in, .push, .descriptor, .member => false,
             else => true,
         };
     }
     pub fn isMutable(self: Qualifier) bool {
         return switch (self) {
             .mut, .shared, .out, .member => true,
-            .@"const", .in, .uniform, .push => false,
+            .@"const", .in, .descriptor, .push => false,
         };
     }
 };

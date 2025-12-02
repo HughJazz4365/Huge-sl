@@ -168,7 +168,7 @@ pub const EntryPointInfo = struct {
     stage_info: StageInfo = undefined,
 
     push_constant_mappings: []const PushConstantMapping = &.{},
-    opaque_uniform_mappings: []const OpaqueUniformMapping = &.{},
+    bindings: []const Binding = &.{},
 
     io_mappings_ptr: [*]const IOMapping = undefined,
     input_count: u32 = 0,
@@ -200,8 +200,8 @@ pub const EntryPointInfo = struct {
         for (self.outputMappings()) |om|
             try writer.print("{f}\n", .{om});
 
-        try writer.print("<==OPAQUE=UNIFORMS==>({}):\n", .{self.opaque_uniform_mappings.len});
-        for (self.opaque_uniform_mappings) |ou|
+        try writer.print("<==BINDINGS==>({}):\n", .{self.bindings.len});
+        for (self.bindings) |ou|
             try writer.print("{f}\n", .{ou});
 
         try writer.print("<==PUSH=CONSTANTS==>({}):\n", .{self.push_constant_mappings.len});
@@ -248,21 +248,34 @@ pub const PushConstantMapping = struct {
         });
     }
 };
-pub const OpaqueUniformMapping = struct {
+pub const Binding = struct {
     name: []const u8,
-    type: OpaqueType = undefined,
+    type: BindingType = undefined,
     binding: u32,
     descriptor_set: u32,
-    pub fn format(self: OpaqueUniformMapping, writer: *std.Io.Writer) !void {
-        try writer.print("[Set = {d:2}, Binding = {d:2}, \"{s}\": {s}]", .{
+    pub fn format(self: Binding, writer: *std.Io.Writer) !void {
+        try writer.print("[Set = {d:2}, Binding = {d:2}, \"{s}\": {f}]", .{
             self.descriptor_set,
             self.binding,
             self.name,
-            @tagName(self.type),
+            self.type,
         });
     }
 };
-pub const OpaqueType = enum {
+pub const BindingType = union(enum) {
+    runtime_array: DescriptorType,
+    array: DescriptorArray,
+    descriptor: DescriptorType,
+    pub fn format(self: BindingType, writer: *std.Io.Writer) !void {
+        switch (self) {
+            .descriptor => |descriptor| try writer.print("{s}", .{@tagName(descriptor)}),
+            .runtime_array => |descriptor| try writer.print("[]{s}", .{@tagName(descriptor)}),
+            .array => |array| try writer.print("[{d}]{s}", .{ array.len, @tagName(array.descriptor_type) }),
+        }
+    }
+};
+pub const DescriptorArray = struct { len: u32, descriptor_type: DescriptorType };
+pub const DescriptorType = enum {
     ubo,
     ssbo,
     sampled_texture,

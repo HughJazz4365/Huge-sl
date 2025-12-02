@@ -12,6 +12,7 @@ pub fn formatStatement(statement: Statement, writer: *std.Io.Writer) !void {
             try writer.print("[RC:{d}]{s}", .{ var_decl.reference_count, @tagName(var_decl.qualifier) });
             switch (var_decl.qualifier) {
                 .in, .out => try writer.print("({})", .{if (var_decl.qualifier == .in) var_decl.qualifier.in else var_decl.qualifier.out}),
+                .descriptor => |descriptor| try writer.print("({}, {any})", .{ descriptor.set, descriptor.binding }),
                 else => {},
             }
             try writer.print(" {s} : {f} = {f}", .{ var_decl.name, var_decl.type, var_decl.initializer });
@@ -46,6 +47,7 @@ pub fn formatType(t: tp.Type, writer: *std.Io.Writer) !void {
             try writer.print("){f}", .{f.rtype.*});
         },
         .array => |array| try writer.print("[{d}]{f}", .{ array.len, array.component }),
+        .runtime_array => |runtime_array| try writer.print("[]{f}", .{runtime_array.*}),
         .matrix => |matrix| try writer.print("mat{d}x{d}", .{ matrix.m, matrix.n }),
         .@"struct" => |struct_id| _ = try writer.write(p.getStructFromID(struct_id).name),
         .buffer => |buffer| try writer.print("[BufferType{}]({f})", .{ buffer.type, Parser.Type{ .@"struct" = buffer.struct_id } }),
@@ -192,11 +194,11 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
 }
 pub fn formatToken(token: Token, writer: *std.Io.Writer) !void {
     switch (token) {
-        .identifier => |id| try writer.print("[id]: {s}", .{id}),
-        .type_literal => |tl| try writer.print("[type_literal]: {f}", .{tl}),
-        .builtin => |b| try writer.print("[builtin]: @{s}", .{b}),
+        .identifier => |id| try writer.print("'id': {s}", .{id}),
+        .type_literal => |tl| try writer.print("'type_literal': {f}", .{tl}),
+        .builtin => |b| try writer.print("'builtin': @{s}", .{b}),
 
-        inline else => |value, tag| try writer.print("[{s}]: {any}", .{ @tagName(tag), value }),
+        inline else => |value, tag| try writer.print("'{s}': {any}", .{ @tagName(tag), value }),
     }
 }
 const Expression = Parser.Expression;

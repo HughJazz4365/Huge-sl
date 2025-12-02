@@ -315,7 +315,7 @@ pub const Token = union(enum) {
     mut,
     in,
     out,
-    uniform,
+    descriptor,
     push,
     shared,
 
