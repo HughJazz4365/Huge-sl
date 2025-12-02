@@ -37,6 +37,7 @@ const IOType = enum(u2) {
     descriptor = 2,
     push = 3,
 };
+spirv_version: SpirvVersion = undefined,
 extension_config: ExtensionConfig = .{},
 decorated_global_io_count: usize = 0,
 global_io: []IOEntry,
@@ -82,11 +83,12 @@ pub fn printInstructions(slice: []WORD) void {
     }
 }
 
-pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result {
+pub fn generate(parser: *Parser, result_allocator: Allocator, spirv_version: SpirvVersion) Error!hgsl.Result {
     var self: Generator = .{
         .parser = parser,
         .arena = parser.arena.allocator(),
         .global_io = try parser.arena.allocator().alloc(IOEntry, parser.global_scope.global_io.items.len),
+        .spirv_version = spirv_version,
     };
 
     var result: std.array_list.Managed(WORD) = .init(result_allocator);
@@ -96,7 +98,7 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
 
     try result.appendSlice(&.{ //spirv boilerplate
         magic_number,
-        versionWord(1, 6),
+        versionWord(self.spirv_version.major, self.spirv_version.minor),
         generator_number,
         self.current_id,
         0, //reserved
@@ -1573,8 +1575,12 @@ fn convertType(self: *Generator, from: Parser.Type) Error!Type {
             .component_id = try self.convertTypeID(array.component.*),
         } },
         .runtime_array => |runtime_array| blk: {
-            if (runtime_array.isDescriptor())
-                self.extension_config.descriptor_indexing = true;
+            if (runtime_array.isDescriptor()) {
+                self.capabilities.runtime_descriptor_array = true;
+                if (self.spirv_version.@"<"(.{ .major = 1, .minor = 5 }))
+                    self.extension_config.descriptor_indexing = true;
+            }
+
             break :blk .{ .runtime_array = try self.convertTypeID(runtime_array.*) };
         },
         .matrix => |matrix| .{ .matrix = .{
@@ -1923,6 +1929,7 @@ const Capability = enum(WORD) {
     geometry_point_size = 24,
 
     storage_image_multisample = 27,
+    runtime_descriptor_array = 5302,
     //there is too much of them
 };
 
@@ -1936,6 +1943,13 @@ const FunctionControl = enum(WORD) {
     dontinline = 2,
     pure = 3,
     @"const" = 4,
+};
+const SpirvVersion = struct {
+    major: u8,
+    minor: u8,
+    pub fn @"<"(self: SpirvVersion, other: SpirvVersion) bool {
+        return self.major < other.major and self.minor < other.minor;
+    }
 };
 
 const StageInfo = Parser.StageInfo;

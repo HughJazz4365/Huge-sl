@@ -75,7 +75,10 @@ pub const Compiler = struct {
         defer parser.deinit();
 
         // return .{};
-        return try SpirvGen.generate(&parser, self.arena.allocator());
+        return try SpirvGen.generate(&parser, self.arena.allocator(), .{
+            .major = 1,
+            .minor = 6,
+        });
     }
 
     pub fn new(allocator: ?Allocator, err_writer: ?*std.Io.Writer, settings: Settings) Compiler {
