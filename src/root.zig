@@ -5,23 +5,19 @@ pub const Parser = @import("Parser.zig");
 pub const SpirvGen = @import("spirvgen.zig");
 pub const ErrCtx = @import("errorctx.zig");
 
-pub const Error = error{};
+// pub const Error = error{};
 
 pub const Compiler = struct {
-    io: std.Io,
-
-    allocator: Allocator,
-    arena: std.heap.ArenaAllocator,
-
+    result_arena: std.heap.ArenaAllocator,
     err_ctx: ErrCtx = .{},
     settings: Settings,
 
     cache: [cache_size]CachedShader = @splat(.{}),
     const cache_size: usize = 10;
 
-    pub fn compileFile(self: *Compiler, path: []const u8) !Result {
+    pub fn compileFile(self: *Compiler, io: std.Io, allocator: Allocator, path: []const u8) anyerror!Result {
         if (path.len == 0) return error.EmptyPath;
-        const source = try readFile(self.io, self.allocator, path);
+        const source = try readFile(io, allocator, path);
         const hash = std.hash.Fnv1a_128.hash(source);
 
         var last_replacable: usize = cache_size;
@@ -49,10 +45,10 @@ pub const Compiler = struct {
         }
         if (hit) return self.cache[index].result;
 
-        const result = try self.compileRaw(source, path);
+        const result = try self.compileRaw(allocator, source, path);
         if (index < cache_size) {
             if (last_replacable == index)
-                self.cache[index].result.deinit(self.allocator);
+                self.cache[index].result.deinit(self.result_arena.allocator());
             self.cache[index] = .{
                 .hash = hash,
                 .result = result,
@@ -64,12 +60,12 @@ pub const Compiler = struct {
         return result;
     }
 
-    fn compileRaw(self: *Compiler, source: []const u8, path: []const u8) !Result {
+    fn compileRaw(self: *Compiler, allocator: Allocator, source: []const u8, path: []const u8) !Result {
         self.err_ctx.reinit(source, path);
         var tokenizer: Tokenizer = .new(source, &self.err_ctx);
         const file_name = path;
         var parser = Parser.parse(
-            self.allocator,
+            allocator,
             &tokenizer,
             self.settings,
             file_name,
@@ -77,30 +73,31 @@ pub const Compiler = struct {
         defer parser.deinit();
 
         // return .{};
-        return try SpirvGen.generate(&parser, self.arena.allocator(), .{
+        return try SpirvGen.generate(&parser, self.result_arena.allocator(), .{
             .major = 1,
             .minor = 6,
         });
     }
 
-    pub fn new(io: std.Io, allocator: ?Allocator, err_writer: ?*std.Io.Writer, settings: Settings) Compiler {
-        const a = if (allocator) |a| a else std.heap.page_allocator;
+    /// result allocator only allocates results of the code generation
+    /// but not the intermediate resources for other compilation stages
+    pub fn new(
+        result_allocator: Allocator,
+        err_writer: ?*std.Io.Writer,
+        settings: Settings,
+    ) Compiler {
         return .{
-            .io = io,
-
-            .allocator = a,
-            .arena = .init(a),
-
+            .result_arena = .init(result_allocator),
             .err_ctx = .{ .out_writer = err_writer },
             .settings = settings,
         };
     }
     pub fn deinit(self: *Compiler) void {
-        for (&self.cache) |c| {
-            if (c.hits == 0) break;
-            c.result.deinit(self.arena.allocator());
-        }
-        self.arena.deinit();
+        // for (&self.cache) |c| {
+        //     if (c.hits == 0) break;
+        //     c.result.deinit(self.result_arena.allocator());
+        // }
+        self.result_arena.deinit();
     }
     const CachedShader = struct {
         path: []const u8 = "\x00",
@@ -152,10 +149,6 @@ const Scalar = enum(u32) {
 pub const Result = struct {
     bytes: []u8 = &.{},
     entry_point_infos: []const EntryPointInfo = &.{},
-    pub fn alloc(self: Result, allocator: Allocator) Error!Result {
-        _ = allocator;
-        return self;
-    }
     pub fn deinit(self: Result, allocator: Allocator) void {
         allocator.free(self.bytes);
         for (self.entry_point_infos) |m| m.deinit(allocator);
