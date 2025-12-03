@@ -330,7 +330,7 @@ fn isScalarOrEachVectorComponentsEqualToNumber(value: Value, comptime number: co
                     inline else => |width| blk: {
                         const T = (Type{ .vector = .{ .len = len, .component = .{ .type = st, .width = width } } }).ToZig();
                         const ptr: *T = @ptrCast(@alignCast(@constCast(value.payload.ptr)));
-                        break :blk for (0..@intFromEnum(len)) |i| {
+                        break :blk inline for (0..@intFromEnum(len)) |i| {
                             if (ptr[i] != number) break false;
                         } else true;
                     },
@@ -391,7 +391,7 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
                 inline else => |st| {
                     if (st != .uint) return self.errorOut(Error.InvalidIndex) else //
                     if (indexing.index.* != .value) return initial else {
-                        const T = @Type(.{ .int = .{ .signedness = .unsigned, .bits = @intFromEnum(width) } });
+                        const T = @Int(.unsigned, @intFromEnum(width));
                         const i = util.extract(T, indexing.index.value.payload.wide);
                         if (T == u64 and i >= std.math.maxInt(u32)) return self.errorOut(Error.InvalidIndex);
                         break :sw @intCast(i);
@@ -528,7 +528,7 @@ fn constructValue(self: *Parser, constructor: Parser.Constructor) Error!Expressi
                         const T = comptype.ToZig();
                         const C = @typeInfo(T).vector.child;
                         var vector_value: T = undefined;
-                        for (0..@intFromEnum(len)) |i| {
+                        inline for (0..@intFromEnum(len)) |i| {
                             const component = constructor.components[i];
                             if (component != .value) return initial;
                             const elem = util.extract(C, component.value.payload.wide);
@@ -956,7 +956,7 @@ const powValues = createEvalNumericBinOpSameTypeFunction(void, struct {
         const res: T = if (tinfo == .int or tinfo == .float)
             util.pow(T, l, right)
         else if (tinfo == .vector) blk: {
-            for (0..tinfo.vector.len) |i| l[i] = util.pow(tinfo.vector.child, l[i], right[i]);
+            inline for (0..tinfo.vector.len) |i| l[i] = util.pow(tinfo.vector.child, l[i], right[i]);
             break :blk l;
         } else unreachable;
         if (tinfo == .vector) {

@@ -1,7 +1,12 @@
+const S = struct{member f: f32}
 descriptor(0, 0)
-bindless_samplers_2d: []@Texture(f32, ._2d, true)
+bindless_samplers_2d: []@Texture(f32, ._2d, true),
+bindless_buffers: []@Buffer(S, .ssbo)
 
 const main = entrypoint(.fragment){
 	push texture_id : u32 = 0
+	const float = bindless_buffers[texture_id].f
+
 	out out_color = bindless_samplers_2d[texture_id].sample(.{0})
+	out_color += .{float}
 }

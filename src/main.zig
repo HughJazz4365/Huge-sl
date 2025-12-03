@@ -3,10 +3,16 @@ const hgsl = @import("hgsl");
 const builtin = @import("builtin");
 
 pub fn main() !void {
+    // const v: @Vector(3, f16) = .{ 1, 2, 3 };
+    // std.debug.print("VELEM: {d}\n", .{(&v)[0]});
+    // if (true) return;
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.ioBasic();
+
     var buf: [128]u8 = undefined;
     var out_writer = std.fs.File.stdout().writer(&buf);
 
-    var compiler: hgsl.Compiler = .new(null, &out_writer.interface, .{
+    var compiler: hgsl.Compiler = .new(io, null, &out_writer.interface, .{
         .optimize = if (builtin.mode == .Debug) .none else .speed,
     });
     defer compiler.deinit();
@@ -37,7 +43,8 @@ pub fn main() !void {
             var out_buf: [128]u8 = undefined;
             var writer = out_file.writer(&out_buf);
 
-            std.debug.print("RESULT: {f}\n", .{compiled});
+            if (builtin.mode == .Debug)
+                std.debug.print("RESULT: {f}\n", .{compiled});
 
             _ = try writer.interface.write(compiled.bytes);
             try writer.interface.flush();

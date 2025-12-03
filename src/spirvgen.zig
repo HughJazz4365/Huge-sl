@@ -551,6 +551,8 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
         return try self.generateEntryPoint(var_decl.name, @as(*Parser.EntryPoint, @ptrCast(@alignCast(@constCast(var_decl.initializer.value.payload.ptr)))));
     if (var_decl.type.isComptimeOnly()) return;
 
+    const @"type" = try self.convertType(var_decl.type);
+    const type_id = try self.typeID(@"type");
     const storage_class: StorageClass = switch (var_decl.qualifier) {
         .mut => if (self.inGlobalScope()) .private else .function,
         .push => .push_constant,
@@ -567,15 +569,15 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             return;
         },
         .shared => .workgroup,
-        .descriptor => if (var_decl.type == .buffer)
-            (if (var_decl.type.buffer.type == .ssbo) .storage_buffer else .uniform)
-        else
-            .uniform_constant,
+        .descriptor => switch (self.toDescriptorType(@"type")) {
+            .ubo => .uniform,
+            .ssbo => .storage_buffer,
+            else => .uniform_constant,
+        },
         .member => unreachable,
     };
     var initializer: WORD = 0;
     var load: WORD = 0;
-    const type_id = try self.convertTypeID(var_decl.type);
     const var_id = if (var_decl.qualifier != .push) self.newID() else 0;
     io: { //check if we should add io
         const io_type: IOType = switch (var_decl.qualifier) {
@@ -816,7 +818,7 @@ fn generateCast(self: *Generator, cast: Parser.Cast) Error!WORD {
             const m: WORD = @intFromEnum(cast.type.matrix.m);
             const v01 = if (m > @intFromEnum(from_type.matrix.m) or n > @intFromEnum(from_type.matrix.n)) switch (cast.type.matrix.width) {
                 inline else => |width| blk: {
-                    const V = @Vector(2, @Type(.{ .float = .{ .bits = @intFromEnum(width) } }));
+                    const V = @Vector(2, std.meta.Float(@intFromEnum(width)));
                     const vec: V = .{ 0, 1 };
                     break :blk try self.generateValue(.{
                         .type = .{ .vector = .{ .len = ._2, .component = .{ .type = .float, .width = width } } },
@@ -1301,7 +1303,7 @@ fn generateValue(self: *Generator, value: Parser.Value) Error!WORD {
                 var dword: u64 = 0;
                 switch (vector.component.width) {
                     inline else => |width| dword = (@as(
-                        [*]const @Type(.{ .int = .{ .bits = @intFromEnum(width), .signedness = .unsigned } }),
+                        [*]const @Int(.unsigned, @intFromEnum(width)),
                         @ptrCast(@alignCast(value.payload.ptr)),
                     ))[i],
                 }
@@ -1435,7 +1437,7 @@ fn addInterfaceID(self: *Generator, id: WORD) Error!void {
         try self.current_interface_ids.append(self.arena, id);
 }
 fn generateConstantFromScalar(self: *Generator, scalar: anytype, type_id: WORD) Error!WORD {
-    const U = @Type(.{ .int = .{ .bits = @sizeOf(@TypeOf(scalar)) * 8, .signedness = .unsigned } });
+    const U = @Int(.unsigned, @sizeOf(@TypeOf(scalar)) * 8);
     const uval: U = @bitCast(scalar);
     return try self.addConstant(type_id, if (@sizeOf(@TypeOf(uval)) > 4)
         .{ .many = .{ @truncate(uval), @truncate(uval >> 32), 0, 0 } }

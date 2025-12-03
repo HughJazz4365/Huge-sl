@@ -366,12 +366,10 @@ pub const Scalar = struct {
 
     pub fn ToZig(comptime num: Scalar) type {
         const width = @intFromEnum(num.width);
-        return @Type(
-            if (num.type == .float)
-                .{ .float = .{ .bits = width } }
-            else
-                .{ .int = .{ .bits = width, .signedness = if (num.type == .int) .signed else .unsigned } },
-        );
+        return if (num.type == .float)
+            std.meta.Float(width)
+        else
+            @Int(if (num.type == .int) .signed else .unsigned, width);
     }
     pub const allScalarTypes = blk: {
         var slice: []const Scalar = &.{};

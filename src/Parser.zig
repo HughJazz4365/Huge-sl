@@ -219,16 +219,19 @@ fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
     }
 
     const target = try self.parseExpressionSide(false, false);
-    var peek = try self.tokenizer.next();
-    if (peek != .@"=") return self.errorOut(Error.InvalidAssignmentTarget);
+
+    // var peek = try self.tokenizer.next();
+    // if (peek != .@"=") return self.errorOut(Error.InvalidAssignmentTarget);
 
     if (!try self.isExpressionMutable(target)) return self.errorOutFmt(Error.MutatingImmutableVariable, "Trying to mutate unmutable variable: {f}", .{target});
 
-    peek = try self.tokenizer.peek();
+    var peek = try self.tokenizer.peek();
     const modifier: ?BinaryOperator = if (peek == .bin_op) op: {
         self.tokenizer.skip();
         break :op peek.bin_op;
     } else null;
+    peek = try self.tokenizer.next();
+    if (peek != .@"=") return self.errorOut(Error.InvalidAssignmentTarget);
 
     var value = try self.parseExpression(defaultShouldStop, false);
 
@@ -688,10 +691,14 @@ fn parseStructDeclaration(self: *Parser) Error!StructID {
     if (self.current_scope.current_variable_value_index < self.current_scope.multi_variable_initialization.len) {
         const vd = self.current_scope.multi_variable_initialization[self.current_scope.current_variable_value_index];
         // std.debug.print("VDNAME: {s}, {f}\n", .{ vd.name, vd.type });
-        s.name = vd.name;
-        // s.name = if (vd.type == .@"struct") vd.name else try self.createIntermediateVariableName();
+        // s.name = vd.name;
+        s.name = if (vd.type == .@"struct") vd.name else try self.createIntermediateVariableName();
     } else s.name = try self.createIntermediateVariableName();
 
+    if (try self.tokenizer.peek() == .@"}") {
+        self.tokenizer.skip();
+        return id;
+    }
     try self.parseScope(&s.scope);
 
     return id;

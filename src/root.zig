@@ -8,6 +8,8 @@ pub const ErrCtx = @import("errorctx.zig");
 pub const Error = error{};
 
 pub const Compiler = struct {
+    io: std.Io,
+
     allocator: Allocator,
     arena: std.heap.ArenaAllocator,
 
@@ -19,7 +21,7 @@ pub const Compiler = struct {
 
     pub fn compileFile(self: *Compiler, path: []const u8) !Result {
         if (path.len == 0) return error.EmptyPath;
-        const source = try readFile(self.allocator, path);
+        const source = try readFile(self.io, self.allocator, path);
         const hash = std.hash.Fnv1a_128.hash(source);
 
         var last_replacable: usize = cache_size;
@@ -81,9 +83,11 @@ pub const Compiler = struct {
         });
     }
 
-    pub fn new(allocator: ?Allocator, err_writer: ?*std.Io.Writer, settings: Settings) Compiler {
+    pub fn new(io: std.Io, allocator: ?Allocator, err_writer: ?*std.Io.Writer, settings: Settings) Compiler {
         const a = if (allocator) |a| a else std.heap.page_allocator;
         return .{
+            .io = io,
+
             .allocator = a,
             .arena = .init(a),
 
@@ -299,9 +303,11 @@ pub const minimal =
     \\const frag = entrypoint(.fragment){out col: vec4 = .{1,0,1,0}}
 ;
 const Allocator = std.mem.Allocator;
-pub fn readFile(allocator: Allocator, path: []const u8) ![]const u8 {
-    const source_file = try std.fs.cwd().openFile(path, .{});
-    var reader = source_file.reader(&.{});
+pub fn readFile(io: std.Io, allocator: Allocator, path: []const u8) ![]const u8 {
+    const source_file = try std.Io.Dir.cwd().openFile(io, path, .{});
+    defer source_file.close(io);
+
+    var reader = source_file.reader(io, &.{});
 
     var alloc_writer = std.Io.Writer.Allocating.init(allocator);
     _ = try reader.interface.streamRemaining(&alloc_writer.writer);

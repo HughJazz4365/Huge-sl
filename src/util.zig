@@ -38,50 +38,52 @@ pub fn pow(T: type, left: T, right: T) T {
     else
         std.math.pow(T, left, right);
 }
-pub fn StructFromEnum(Enum: type, T: type, default_value: ?T) type {
+pub fn StructFromEnum(Enum: type, T: type, default_value: ?T, layout: std.builtin.Type.ContainerLayout) type {
     const em = @typeInfo(Enum).@"enum";
-    var struct_fields: [em.fields.len]std.builtin.Type.StructField = undefined;
-    inline for (em.fields, &struct_fields) |ef, *sf| {
-        sf.* = .{
-            .default_value_ptr = if (default_value) |d| &d else null,
-            .alignment = @alignOf(T),
-            .is_comptime = false,
-            .name = ef.name,
-            .type = T,
-        };
+    var struct_field_names: [em.fields.len][]const u8 = undefined;
+    var struct_field_types: [em.fields.len]type = undefined;
+    const sturct_field_attributes: [em.fields.len]std.builtin.Type.StructField.Attributes =
+        @splat(.{
+            .@"comptime" = false,
+            .@"align" = if (layout == .@"packed") null else @alignOf(T),
+            .default_value_ptr = if (default_value) |dv| &dv else null,
+        });
+    inline for (em.fields, 0..) |ef, i| {
+        struct_field_names[i] = ef.name;
+        struct_field_types[i] = T;
     }
-    return @Type(.{ .@"struct" = .{
-        .decls = &.{},
-        .fields = &struct_fields,
-        .is_tuple = false,
-        .layout = .auto,
-    } });
+    return @Struct(
+        layout,
+        null,
+        &struct_field_names,
+        &struct_field_types,
+        &sturct_field_attributes,
+    );
 }
 pub fn FlagStructFromEnum(Enum: type, default_value: bool) type {
-    const em = @typeInfo(Enum).@"enum";
-    var struct_fields: [em.fields.len]std.builtin.Type.StructField = undefined;
-    inline for (em.fields, &struct_fields) |ef, *sf| {
-        sf.* = .{
-            .default_value_ptr = &default_value,
-            .alignment = 0,
-            .is_comptime = false,
-            .name = ef.name,
-            .type = bool,
-        };
-    }
-    return @Type(.{ .@"struct" = .{
-        .decls = &.{},
-        .fields = &struct_fields,
-        .is_tuple = false,
-        .layout = .@"packed",
-    } });
+    return StructFromEnum(Enum, bool, default_value, .@"packed");
 }
 pub fn FlagStructFromUnion(Union: type, comptime dv: bool) type {
     const union_fields = @typeInfo(Union).@"union".fields;
-    var struct_fields: [union_fields.len]Type.StructField = undefined;
-    for (&struct_fields, union_fields) |*sf, uf|
-        sf.* = .{ .alignment = 0, .type = bool, .default_value_ptr = @ptrCast(&dv), .is_comptime = false, .name = uf.name };
-    return @Type(.{ .@"struct" = .{ .decls = &.{}, .fields = &struct_fields, .layout = .@"packed", .is_tuple = false } });
+
+    var struct_field_names: [union_fields.len][]const u8 = undefined;
+    var struct_field_types: [union_fields.len]type = undefined;
+    var sturct_field_attributes: [union_fields.len]std.builtin.Type.StructField.Attributes =
+        @splat(.{
+            .@"comptime" = false,
+            .default_value_ptr = @ptrCast(&dv),
+        });
+    inline for (union_fields, 0..) |uf, i| {
+        struct_field_names[i] = uf.name;
+        struct_field_types[i] = bool;
+    }
+    return @Struct(
+        .@"packed",
+        null,
+        &struct_field_names,
+        &struct_field_types,
+        &sturct_field_attributes,
+    );
 }
 pub fn numericCast(T: type, from: anytype) T {
     const F = @TypeOf(from);
@@ -99,13 +101,13 @@ pub fn extract(T: type, from: anytype) T {
     if (T == bool) return extract(u8, from) > 0;
     const F = @TypeOf(from);
     if (@typeInfo(F) != .int or @typeInfo(F).int.signedness == .signed) @compileError("invalid from type - " ++ @typeName(F));
-    const U = @Type(.{ .int = .{ .bits = @sizeOf(T) * 8, .signedness = .unsigned } });
+    const U = @Int(.unsigned, @sizeOf(T) * 8);
     return @bitCast(uintCast(U, from));
 }
 pub fn fit(T: type, value: anytype) T {
     if (@TypeOf(value) == bool) return fit(T, @as(u8, @intFromBool(value)));
     if (@typeInfo(T) != .int or @typeInfo(T).int.signedness == .signed) @compileError("invalid fit type - " ++ @typeName(T));
-    const U = @Type(.{ .int = .{ .bits = @sizeOf(@TypeOf(value)) * 8, .signedness = .unsigned } });
+    const U = @Int(.unsigned, @sizeOf(@TypeOf(value)) * 8);
     return uintCast(T, @as(U, @bitCast(value)));
 }
 inline fn uintCast(T: type, from: anytype) T {
@@ -137,7 +139,18 @@ pub fn SortEnumDecending(Enum: type) type {
             return a.name.len > b.name.len;
         }
     }.f);
-    return @Type(.{ .@"enum" = .{ .decls = &.{}, .fields = &enum_fields, .tag_type = tinfo.tag_type, .is_exhaustive = tinfo.is_exhaustive } });
+    const I = std.math.IntFittingRange(0, enum_fields.len -| 1);
+    var enum_field_names: [enum_fields.len][]const u8 = undefined;
+    var enum_field_values: [enum_fields.len]I = undefined;
+    for (&enum_field_names, &enum_field_values, &enum_fields) |*en, *ev, ef|
+        en.*, ev.* = .{ ef.name, ef.value };
+
+    return @Enum(
+        I,
+        .exhaustive,
+        &enum_field_names,
+        &enum_field_values,
+    );
 }
 pub fn matchToEnum(Enum: type, str: []const u8) ?Enum {
     return inline for (@typeInfo(Enum).@"enum".fields) |ef| {
