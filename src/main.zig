@@ -41,16 +41,15 @@ pub fn main() !void {
             std.debug.print("======{s}=======\n", .{path});
         const compiled = try f.await(io);
 
-        // const out_file = try std.fs.cwd().createFile("out.spv", .{ .read = true });
-        // defer out_file.close();
-        // var out_buf: [128]u8 = undefined;
-        // var writer = out_file.writer(&out_buf);
+        const out_file = try std.fs.cwd().createFile("out.spv", .{ .read = true });
+        defer out_file.close();
+        var out_buf: [128]u8 = undefined;
+        var writer = out_file.writer(&out_buf);
+        _ = try writer.interface.write(compiled.bytes);
+        try writer.interface.flush();
 
         if (builtin.mode == .Debug)
             std.debug.print("RESULT: {f}\n", .{compiled});
-
-        // _ = try writer.interface.write(compiled.bytes);
-        // try writer.interface.flush();
     }
     if (builtin.mode != .Debug or true)
         std.debug.print("Time: {d}ms\n", .{@as(f64, @floatFromInt(timer.read())) / 1_000_000.0 / 1});

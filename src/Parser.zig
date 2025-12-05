@@ -64,7 +64,6 @@ pub const Error = error{
     InvalidIndex,
     InvalidIndexingTarget,
     InvalidAssignmentTarget,
-    InvalidArrayLen,
     InvalidMemberAccess,
     InvalidSwizzle,
     NonVoidValueIgnored,
@@ -87,8 +86,8 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer, settings: Settings, fi
 
     try self.parseScope(&self.global_scope.scope);
 
-    // if (zigbuiltin.mode == .Debug) {
-    if (false and zigbuiltin.mode == .Debug) {
+    if (zigbuiltin.mode == .Debug) {
+        // if (false and zigbuiltin.mode == .Debug) {
         std.debug.print("[GLOBAL IO: ", .{});
         for (self.global_scope.global_io.items) |gi| std.debug.print("{s}, ", .{gi});
         std.debug.print("]\n", .{});
@@ -629,31 +628,16 @@ fn parseExpressionSidePrimary(self: *Parser, comptime access: bool) Error!Expres
             if (try self.tokenizer.peek() == .@"]") {
                 self.tokenizer.skip();
                 const component_type_expr = try self.refine(try self.parseExpressionSide(false, true));
-                break :blk (Type{ .runtime_array = try self.createVal(try self.asTypeCreate(component_type_expr)) }).asExpr();
+                break :blk (Type{ .array = .{
+                    .component = try self.createVal(try self.asTypeCreate(component_type_expr)),
+                    .len = 0,
+                } }).asExpr();
             }
             const array_len_expr = try self.parseExpression(squareBracketShouldStop, true);
             if (array_len_expr != .value) @panic("return @Array(len, T) since len is not comptime");
 
-            var len_val = array_len_expr.value;
-            len_val = sw: switch (len_val.type) {
-                .compfloat => {
-                    len_val = try ct.implicitCastValue(self, len_val, .compint);
-                    continue :sw .compint;
-                },
-                .compint => if ((len_val.payload.wide >> 32) != 0)
-                    return self.errorOut(Error.InvalidArrayLen)
-                else
-                    .{ .type = tp.u32_type, .payload = .{ .wide = len_val.payload.wide } },
-
-                .scalar => |scalar| if (scalar.type == .float or (len_val.payload.wide >> 32) != 0)
-                    return self.errorOut(Error.InvalidArrayLen)
-                else
-                    .{ .type = tp.u32_type, .payload = .{ .wide = len_val.payload.wide } },
-
-                else => return self.errorOut(Error.InvalidArrayLen),
-            };
+            var len_val = try ct.implicitCastValue(self, array_len_expr.value, tp.u32_type);
             const len: u32 = util.extract(u32, len_val.payload.wide);
-            if (len < 2) return self.errorOut(Error.InvalidArrayLen);
 
             const component_type_expr = try self.refine(try self.parseExpressionSide(false, true));
             break :blk (Type{ .array = .{

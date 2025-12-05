@@ -374,7 +374,7 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
     if (target_type == .unknown) return initial;
 
     const target_cs = target_type.constructorStructure();
-    if (target_cs.len == 1 and target_type != .runtime_array) return self.errorOut(Error.InvalidIndexingTarget);
+    if (!target_type.isIndexable()) return self.errorOut(Error.InvalidIndexingTarget);
 
     const index: u32 = sw: switch (index_type) {
         .compint => {
@@ -402,6 +402,8 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
         .unknown => return initial,
         else => return self.errorOut(Error.InvalidIndex),
     };
+    if (index >= target_cs.len and target_cs.component != .unknown) return self.errorOut(Error.OutOfBoundsAccess);
+
     return sw: switch (indexing.target.*) {
         .identifier => |identifier| {
             const current_scope = self.current_scope;
@@ -409,12 +411,8 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
             continue :sw if (var_ref.value == .identifier and util.strEql(var_ref.value.identifier, identifier) and Parser.isComptimePassable(var_ref.value)) .empty else var_ref.value;
         },
 
-        .constructor => |constructor| if (index >= constructor.components.len)
-            return self.errorOut(Error.OutOfBoundsAccess)
-        else
-            constructor.components[index],
+        .constructor => |constructor| constructor.components[index],
         .value => |value| blk: {
-            if (index >= target_cs.len and target_type != .runtime_array) return self.errorOut(Error.OutOfBoundsAccess);
             switch (value.type) {
                 .void => {
                     indexing.index.* = .{ .value = .{ .type = tp.u32_type, .payload = .{ .wide = util.fit(WIDE, index) } } };
@@ -430,14 +428,11 @@ fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
                     ptr += component_size * index;
                     break :blk .{ .value = .{
                         .type = target_cs.component,
-                        .payload = switch (target_cs.component) {
-                            .scalar, .compint, .compfloat => clk: {
-                                var wide: WIDE = 0;
-                                @memcpy(@as([*]u8, @ptrCast(&wide)), ptr[0..component_size]);
-                                break :clk .{ .wide = wide };
-                            },
-                            else => .{ .ptr = ptr },
-                        },
+                        .payload = if (target_cs.component.isNumber()) clk: {
+                            var wide: WIDE = 0;
+                            @memcpy(@as([*]u8, @ptrCast(&wide)), ptr[0..component_size]);
+                            break :clk .{ .wide = wide };
+                        } else .{ .ptr = ptr },
                     } };
                 },
                 else => @panic("refine indexing"),

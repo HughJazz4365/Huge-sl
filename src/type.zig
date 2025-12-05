@@ -85,7 +85,6 @@ pub const Type = union(enum) {
     scalar: Scalar,
     vector: Vector,
     array: Array,
-    runtime_array: *const Type,
     matrix: Matrix,
 
     @"struct": Parser.StructID, //value.payload - []Expression
@@ -109,10 +108,12 @@ pub const Type = union(enum) {
     pub fn refine(self: Type, parser: *Parser) Error!Type {
         return if (self == .unknown) try parser.asType(self.unknown) else self;
     }
+    pub fn isIndexable(self: Type) bool {
+        return self.constructorStructure().len > 0 or self == .array;
+    }
     pub fn isBindable(self: Type) bool {
         return switch (self) {
             .array => |array| array.component.isDescriptor(),
-            .runtime_array => |runtime_array| runtime_array.isDescriptor(),
             else => self.isDescriptor(),
         };
     }
@@ -197,7 +198,6 @@ pub const Type = union(enum) {
         return switch (self) {
             .vector => |vector| .{ .component = .{ .scalar = vector.component }, .len = @intFromEnum(vector.len) },
             .array => |array| .{ .component = array.component.*, .len = array.len },
-            .runtime_array => |runtime_array| .{ .component = runtime_array.*, .len = 0 },
             .matrix => |matrix| .{ .component = .{ .vector = matrix.columnVector() }, .len = @intFromEnum(matrix.n) },
             .unknown => .{ .component = .unknownempty, .len = 1 },
             else => .{ .component = self },
