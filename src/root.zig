@@ -3,7 +3,7 @@ const util = @import("util.zig");
 pub const Tokenizer = @import("Tokenizer.zig");
 pub const Parser = @import("Parser.zig");
 pub const SpirvGen = @import("spirvgen.zig");
-pub const ErrCtx = @import("errorctx.zig");
+const ErrMsg = @import("ErrorMessage.zig");
 
 pub const Error = error{
     OutOfMemory,
@@ -16,9 +16,9 @@ pub const Error = error{
 
 pub const Compiler = struct {
     result_arena: std.heap.ArenaAllocator,
-    err_ctx: ErrCtx = .{},
     settings: Settings,
 
+    err_writer: *std.Io.Writer,
     cache: [cache_size]CachedShader = @splat(.{}),
     const cache_size: usize = 10;
 
@@ -68,15 +68,17 @@ pub const Compiler = struct {
     }
 
     fn compileRaw(self: *Compiler, allocator: Allocator, source: []const u8, path: []const u8) !Result {
-        self.err_ctx.reinit(source, path);
-        var tokenizer: Tokenizer = .new(source, &self.err_ctx);
+        var err_msg: ErrMsg = .new(self.err_writer, source, path);
+
+        var tokenizer: Tokenizer = .new(source, &err_msg);
         const file_name = path;
         var parser = Parser.parse(
             allocator,
             &tokenizer,
             self.settings,
             file_name,
-        ) catch |err| return self.err_ctx.outputUpdateIfEmpty(err);
+        ) catch |err| return err;
+        // self.err_ctx.outputUpdateIfEmpty(err);
         defer parser.deinit();
 
         // return .{};
@@ -90,12 +92,12 @@ pub const Compiler = struct {
     /// but not the intermediate resources for other compilation stages
     pub fn new(
         result_allocator: Allocator,
-        err_writer: ?*std.Io.Writer,
+        err_writer: *std.Io.Writer,
         settings: Settings,
     ) Compiler {
         return .{
             .result_arena = .init(result_allocator),
-            .err_ctx = .{ .out_writer = err_writer },
+            .err_writer = err_writer,
             .settings = settings,
         };
     }

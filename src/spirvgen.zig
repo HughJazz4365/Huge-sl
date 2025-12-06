@@ -1683,27 +1683,7 @@ const Type = union(enum) {
     sampled_image: SampledImage,
 
     pub fn eql(a: Type, b: Type) bool {
-        if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
-        return switch (a) {
-            .void, .bool => true,
-            .float => |float| float == b.float,
-            .int => |int| int.width == b.int.width and int.signed == b.int.signed,
-            .vector => |vector| vector.len == b.vector.len and vector.component_id == b.vector.component_id,
-            .matrix => |matrix| matrix.column_count == b.matrix.column_count and matrix.column_type_id == b.matrix.column_type_id,
-            .function => |function| function.rtype_id == b.function.rtype_id and
-                if (function.arg_type_ids.len == b.function.arg_type_ids.len)
-                    (for (function.arg_type_ids, b.function.arg_type_ids) |a_arg, b_arg| (if (a_arg != b_arg) break false) else true)
-                else
-                    false,
-            .pointer => |pointer| pointer.pointed_id == b.pointer.pointed_id and pointer.storage_class == b.pointer.storage_class,
-            .array => |array| array.component_id == b.array.component_id and array.len == b.array.len,
-            .runtime_array => |runtime_array| runtime_array == b.runtime_array,
-            .@"struct" => |st| std.mem.eql(WORD, st, b.@"struct"),
-            .buffer => |buffer| std.mem.eql(WORD, buffer.field_ids, b.buffer.field_ids) and buffer.storage_class == b.buffer.storage_class,
-            .image => |image| std.meta.eql(image, b.image),
-            .sampled_image => |sampled_image| sampled_image.image_id == b.sampled_image.image_id,
-            // else => @panic("idk how to compare that type"),
-        };
+        return std.meta.eql(a, b);
     }
 };
 pub fn typeWordConsumption(self: *Generator, @"type": Type) WORD {

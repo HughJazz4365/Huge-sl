@@ -7,14 +7,16 @@ pub const tp = @import("type.zig");
 const util = @import("util.zig");
 const Parser = @This();
 const Tokenizer = @import("Tokenizer.zig");
-const root = @import("root.zig");
-const Settings = root.Settings;
+const ErrMsg = @import("ErrorMessage.zig");
+const hgsl = @import("root.zig");
+const Settings = hgsl.Settings;
 
 pub const CF = f64;
 pub const CI = i128;
 pub const WIDE = u128;
 
 tokenizer: *Tokenizer = undefined,
+err_msg: *ErrMsg = undefined,
 
 allocator: Allocator = undefined,
 arena: std.heap.ArenaAllocator = undefined,
@@ -29,6 +31,7 @@ structs: List(Struct) = .empty,
 
 pub const Error = error{
     OutOfMemory,
+    WriteFailed,
 
     UnexpectedToken,
 
@@ -75,17 +78,20 @@ pub const Error = error{
     IntegerUnderFlow,
     IntegerOverFlow,
     SampleOnStorageTexture,
-} || Tokenizer.Error;
+} || hgsl.Error;
 
 ///creates its own arena
 pub fn parse(allocator: Allocator, tokenizer: *Tokenizer, settings: Settings, file_name: []const u8) Error!Parser {
-    var self: Parser = .{ .settings = settings };
-    self.allocator = allocator;
-    self.tokenizer = tokenizer;
-    self.arena = .init(allocator);
-    self.global_scope = .new(.self);
-    self.global_scope.name = file_name;
+    var self: Parser = .{
+        .settings = settings,
+        .allocator = allocator,
+        .tokenizer = tokenizer,
+        .err_msg = tokenizer.err_msg,
+        .arena = .init(allocator),
+        .global_scope = .new(.self),
+    };
     self.current_scope = &self.global_scope.scope;
+    self.global_scope.name = file_name;
 
     try self.parseScope(&self.global_scope.scope);
 
@@ -971,7 +977,7 @@ fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
     };
 
     const token = try self.tokenizer.next();
-    if (token != .@")") return self.errorOut(Error.InvalidInput);
+    if (token != .@")") return self.errorOut(Error.UnexpectedToken);
 
     const ep_type: Type = .{ .entrypoint = std.meta.activeTag(exec_model_info) };
 
@@ -1252,8 +1258,8 @@ pub const EntryPoint = struct {
     }
 };
 
-pub const Stage = root.Stage;
-pub const StageInfo = root.StageInfo;
+pub const Stage = hgsl.Stage;
+pub const StageInfo = hgsl.StageInfo;
 fn parseValue(self: *Parser, token: Token) Error!Value {
     //true, false
     return switch (token) {
@@ -1564,7 +1570,12 @@ pub fn errorOut(self: *Parser, err: Error) Error {
 }
 pub fn errorOutFmt(self: *Parser, err: Error, comptime fmt: []const u8, args: anytype) Error {
     const offset = @intFromPtr(self.tokenizer.state.last_ptr) - @intFromPtr(self.tokenizer.full_source.ptr);
-    self.tokenizer.err_ctx.printError(offset, err, fmt, args);
+    _ = .{ fmt, offset, args };
+    // try self.tokenizer.err_msg.writer.print("[{s}] ", .{@errorName(err)});
+    // try self.tokenizer.err_msg.writer.print(fmt, args);
+    // try self.tokenizer.err_msg.writer.flush();
+
+    // self.tokenizer.err_ctx.printError(offset, err, fmt, args);
     return err;
 }
 pub fn isScopeGlobal(self: *Parser, scope: *Scope) bool {
