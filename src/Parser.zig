@@ -72,6 +72,9 @@ pub const Error = error{
     OutOfBoundsAccess,
     NegativePower,
     InvalidBitshift,
+    IntegerUnderFlow,
+    IntegerOverFlow,
+    SampleOnStorageTexture,
 } || Tokenizer.Error;
 
 ///creates its own arena
@@ -110,7 +113,7 @@ pub fn turnIntoIntermediateVariable(self: *Parser, expr: Expression) Error!Expre
     try self.addStatement(.{ .var_decl = .{
         .qualifier = .@"const",
         .name = name,
-        .type = try self.typeOf(expr),
+        .type = self.typeOf(expr),
         .initializer = expr,
     } });
     return try self.refine(.{ .identifier = name });
@@ -154,7 +157,7 @@ pub inline fn addStatement(self: *Parser, statement: Statement) Error!void {
 }
 pub fn isStatementComplete(self: *Parser, statement: Statement) Error!bool {
     return switch (statement) {
-        .var_decl => |var_decl| (Type.eql(var_decl.type, try self.typeOf(var_decl.initializer)) or
+        .var_decl => |var_decl| (Type.eql(var_decl.type, self.typeOf(var_decl.initializer)) or
             var_decl.initializer.isEmpty()) and
             var_decl.type != .unknown,
         else => true,
@@ -211,7 +214,7 @@ fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
     self.tokenizer.state = tokenizer_state;
     if (!is_assignment) {
         const ignored_expr = try self.parseExpression(defaultShouldStop, false);
-        const type_of_ignored = try self.typeOf(ignored_expr);
+        const type_of_ignored = self.typeOf(ignored_expr);
         if (type_of_ignored != .unknown and type_of_ignored != .void) return self.errorOut(Error.NonVoidValueIgnored);
 
         return .{ .ignore = ignored_expr };
@@ -244,7 +247,7 @@ fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
     }
     return .{ .assignment = .{
         .target = target,
-        .value = try self.implicitCast(value, try self.typeOf(target)),
+        .value = try self.implicitCast(value, self.typeOf(target)),
     } };
 }
 fn parseVariableDeclarations(self: *Parser) Error!usize {
@@ -416,7 +419,7 @@ fn addInitializerToVarDecl(self: *Parser, var_decl: *VariableDeclaration, initia
         return;
     }
 
-    if (var_decl.type.isEmpty()) var_decl.type = try self.typeOf(var_decl.initializer);
+    if (var_decl.type.isEmpty()) var_decl.type = self.typeOf(var_decl.initializer);
 
     try self.matchVariableTypeWithQualifier(var_decl.type, var_decl.qualifier);
     var_decl.initializer = try self.implicitCast(var_decl.initializer, var_decl.type);
@@ -552,7 +555,7 @@ fn parseExpressionSide(self: *Parser, ignore_curly: bool, comptime access: bool)
     sw: switch (try self.tokenizer.peek()) {
         .@"{" => {
             if (ignore_curly) return expr;
-            if (try self.typeOf(expr) == .type) {
+            if (self.typeOf(expr) == .type) {
                 self.tokenizer.skip();
                 expr = try refine_func(
                     self,
@@ -584,7 +587,7 @@ fn parseExpressionSide(self: *Parser, ignore_curly: bool, comptime access: bool)
                 self.tokenizer.skip();
                 const callee: Expression = if (next == .identifier)
                     refine_func(self, .{ .member_access = .{
-                        .target = try self.createVal((try self.typeOf(expr)).asExpr()),
+                        .target = try self.createVal((self.typeOf(expr)).asExpr()),
                         .member_name = next.identifier,
                     } }) catch |err| switch (err) {
                         Error.InvalidMemberAccess => try refine_func(self, .{ .identifier = next.identifier }),
@@ -689,7 +692,7 @@ fn parseStructDeclaration(self: *Parser) Error!StructID {
 }
 
 fn parseFunctionCall(self: *Parser, callee: Expression, prepend: ?Expression) Error!Call {
-    const @"type" = try self.typeOf(callee);
+    const @"type" = self.typeOf(callee);
 
     const callee_ptr = try self.createVal(callee);
     const args = try self.parseExpressionSequence(prepend, .@")");
@@ -1068,8 +1071,8 @@ pub const Struct = struct {
     pub fn memberIndex(self: *Struct, name: []const u8) ?u32 {
         return for (self.members.items, 0..) |m, i| (if (util.strEql(m.name, name)) break @truncate(i)) else null;
     }
-    pub fn getMemberType(self: *Struct, name: []const u8) Error!Type {
-        return self.members.items[self.memberIndex(name) orelse return Error.NoMemberWithName].type;
+    pub fn getMemberType(self: *Struct, name: []const u8) Type {
+        return self.members.items[self.memberIndex(name) orelse return .unknownempty].type;
     }
     fn bodyFn(scope: *Scope) *[]Statement {
         return &@as(*@This(), @fieldParentPtr("scope", scope)).body.items;

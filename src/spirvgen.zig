@@ -781,7 +781,7 @@ fn generateEntryPoint(self: *Generator, name: []const u8, entry_point: *Parser.E
     variable_buffer.deinit(self.arena);
 }
 fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
-    const type_id = try self.convertTypeID(try self.parser.typeOf(expr));
+    const type_id = try self.convertTypeID(self.parser.typeOf(expr));
 
     const result = switch (expr) {
         .value => |value| try self.generateValue(value),
@@ -804,7 +804,7 @@ fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
 fn generateCast(self: *Generator, cast: Parser.Cast) Error!WORD {
     const result_type_id = try self.convertTypeID(cast.type);
 
-    const from_type = try self.parser.typeOf(cast.expr.*);
+    const from_type = self.parser.typeOf(cast.expr.*);
     if (cast.type == .matrix) {
         if (from_type.isNumber()) @panic("mat from scalar");
         if (from_type == .matrix) {
@@ -874,7 +874,7 @@ fn generateIdentifier(self: *Generator, identifier: []const u8) Error!WORD {
 }
 
 fn generateAccessChain(self: *Generator, expr: Expression) Error!WORD {
-    const access_type_id = try self.convertTypeID(try self.parser.typeOf(expr));
+    const access_type_id = try self.convertTypeID(self.parser.typeOf(expr));
 
     var access_chain: List(WORD) = .empty;
     defer access_chain.deinit(self.arena);
@@ -988,7 +988,7 @@ fn generateAccessChainTargetIDInfoRecursive(
             indexing.target.*,
         },
         .member_access => |member_access| .{
-            switch (try self.parser.typeOf(member_access.target.*)) {
+            switch (self.parser.typeOf(member_access.target.*)) {
                 .@"struct" => |struct_id| self.parser.getStructFromID(struct_id).memberIndex(member_access.member_name).?,
                 .buffer => |buffer| self.parser.getStructFromID(buffer.struct_id).memberIndex(member_access.member_name).?,
                 else => unreachable,
@@ -1381,7 +1381,7 @@ fn generateBinOp(self: *Generator, bin_op: Parser.BinOp, result_type_id: WORD) E
             };
 
             const zero_const = try self.generateValue(
-                .{ .type = try self.parser.typeOf(.{ .bin_op = bin_op }), .payload = .{ .wide = 0 } },
+                .{ .type = self.parser.typeOf(.{ .bin_op = bin_op }), .payload = .{ .wide = 0 } },
             );
             const clamped = try self.addWordsReturnResult(&.{
                 opWord(.ext_inst, 7),
@@ -1395,8 +1395,8 @@ fn generateBinOp(self: *Generator, bin_op: Parser.BinOp, result_type_id: WORD) E
             break :blk clamped;
         },
         .@"*" => blk: {
-            const left_type = try self.parser.typeOf(bin_op.left.*);
-            const right_type = try self.parser.typeOf(bin_op.right.*);
+            const left_type = self.parser.typeOf(bin_op.left.*);
+            const right_type = self.parser.typeOf(bin_op.right.*);
             if (!Parser.Type.eql(left_type, right_type)) {
                 var deep, var shallow, var deep_type, var shallow_type = .{ left, right, left_type, right_type };
                 if (deep_type.depth() < shallow_type.depth())

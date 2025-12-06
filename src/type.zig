@@ -4,29 +4,30 @@ const Parser = @import("Parser.zig");
 const hgsl = @import("root.zig");
 const bi = @import("builtin.zig");
 
-pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
+pub fn typeOf(self: *Parser, expr: Expression) Type {
     return switch (expr) {
         .value => |value| value.type,
         .named_value => |named_value| named_value.value.type,
         .constructor => |constructor| constructor.type,
         .struct_constructor => |struct_constructor| struct_constructor.type,
         .cast => |cast| cast.type,
-        .identifier => |identifier| (try self.current_scope.getVariableReference(self, identifier)).type,
-        .member_access => |member_access| switch (try self.typeOf(member_access.target.*)) {
-            .@"struct" => |s| try self.getStructFromID(s).getMemberType(member_access.member_name),
-            .buffer => |buffer| try self.getStructFromID(buffer.struct_id).getMemberType(member_access.member_name),
+        .identifier => |identifier| (self.current_scope.getVariableReference(self, identifier) catch
+            return .unknownempty).type,
+        .member_access => |member_access| switch (self.typeOf(member_access.target.*)) {
+            .@"struct" => |s| self.getStructFromID(s).getMemberType(member_access.member_name),
+            .buffer => |buffer| self.getStructFromID(buffer.struct_id).getMemberType(member_access.member_name),
             .type => @panic("member access type on 'type'"),
             .texture => |texture| if (util.strEql(member_access.member_name, Texture.sample_function_name))
                 .{ .function = texture.createSampleFunctionType(null) catch unreachable }
             else
-                return Error.InvalidMemberAccess,
+                return .unknownempty,
 
-            else => return self.errorOut(Error.InvalidMemberAccess),
+            else => return .unknownempty,
         },
-        .builtin => |builtin| try bi.typeOfBuiltin(self, builtin),
+        .builtin => |builtin| bi.typeOfBuiltin(builtin),
         .bin_op => |bin_op| blk: {
-            const left_type = try self.typeOf(bin_op.left.*);
-            const right_type = try self.typeOf(bin_op.right.*);
+            const left_type = self.typeOf(bin_op.left.*);
+            const right_type = self.typeOf(bin_op.right.*);
 
             if (left_type == .unknown or right_type == .unknown) return .unknownempty;
             break :blk switch (bin_op.op) {
@@ -57,19 +58,18 @@ pub fn typeOf(self: *Parser, expr: Expression) Error!Type {
             };
         },
         .u_op => |u_op| switch (u_op.op) {
-            else => try self.typeOf(u_op.target.*),
+            else => self.typeOf(u_op.target.*),
         },
-        .indexing => |indexing| (try self.typeOf(indexing.target.*)).constructorStructure().component,
+        .indexing => |indexing| (self.typeOf(indexing.target.*)).constructorStructure().component,
         .call => |call| blk: {
             if (call.callee.* == .builtin)
-                break :blk try bi.typeOfBuiltInCall(self, call.callee.builtin.function, call.args);
-            break :blk switch (try self.typeOf(call.callee.*)) {
+                break :blk bi.typeOfBuiltInCall(self, call.callee.builtin.function, call.args);
+            break :blk switch (self.typeOf(call.callee.*)) {
                 .function => |function| function.rtype.*,
-                .unknown => .unknownempty,
-                else => return Error.InvalidCall,
+                else => .unknownempty,
             };
         },
-        else => .{ .unknown = try self.createVal(expr) },
+        else => .{ .unknown = self.createVal(expr) catch unreachable },
     };
 }
 pub const Type = union(enum) {

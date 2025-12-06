@@ -117,7 +117,7 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
     const initial: Expression = .{ .call = .{ .callee = callee_ptr, .args = args } };
     return switch (bf) {
         .type_of => blk: {
-            const type_of = try self.typeOf(args[0]);
+            const type_of = self.typeOf(args[0]);
             break :blk if (type_of.isEmpty())
                 initial
             else
@@ -188,20 +188,19 @@ pub fn refineBuiltinCall(self: *Parser, bf: BuiltinFunction, args: []Expression,
         else => initial,
     };
 }
-pub fn typeOfBuiltInCall(self: *Parser, bf: BuiltinFunction, args: []Expression) Error!Type {
-    if (args.len != bf.argumentCount()) return self.errorOut(Error.NonMatchingArgumentCount);
+pub fn typeOfBuiltInCall(self: *Parser, bf: BuiltinFunction, args: []Expression) Type {
+    if (args.len != bf.argumentCount()) return .unknownempty;
     const @"type": Type = switch (bf) {
         .col_hex => tp.vec3_type,
         .array_type, .buffer, .texture => .type,
         // else => bf.typeOf().function.rtype.*,
-        else => try self.typeOf(args[0]),
+        else => self.typeOf(args[0]),
     };
     // std.debug.print("@{s} => {f}\n", .{ @tagName(bf), @"type" });
 
     return @"type";
 }
-pub fn typeOfBuiltin(self: *Parser, builtin: Builtin) Error!Type {
-    _ = self;
+pub fn typeOfBuiltin(builtin: Builtin) Type {
     return if (builtin == .variable)
         builtin.variable.typeOf()
     else

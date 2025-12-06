@@ -12,7 +12,7 @@ fn errorImplicitCast(self: *Parser, expr: Expression, @"type": Type, comptime ex
     return self.errorOutFmt(
         Error.CannotImplicitlyCast,
         "Cannot " ++ (if (explicit) "explicitly" else "implicitly") ++ " cast \'{f}\'[{f}] to \'{f}\'",
-        .{ expr, try self.typeOf(expr), @"type" },
+        .{ expr, self.typeOf(expr), @"type" },
     );
 }
 pub fn refineDescend(self: *Parser, expr: Expression) Error!Expression {
@@ -63,39 +63,57 @@ pub fn refine(self: *Parser, expr: Expression) Error!Expression {
 }
 fn refineMemberAccess(self: *Parser, member_access: Parser.MemberAccess) Error!Expression {
     const initial: Expression = .{ .member_access = member_access };
-    const type_of_target = try self.typeOf(member_access.target.*);
-    if (type_of_target == .vector)
-        return try swizzle(self, member_access.target, type_of_target.vector, member_access.member_name);
+    const type_of_target = self.typeOf(member_access.target.*);
+    return switch (type_of_target) {
+        .vector => |vector| try swizzle(
+            self,
+            member_access.target,
+            vector,
+            member_access.member_name,
+        ),
+        .@"struct" => |struct_id| blk: {
+            const s = self.getStructFromID(struct_id);
+            const index = s.memberIndex(member_access.member_name) orelse
+                return self.errorOut(Error.NoMemberWithName);
+            break :blk if (member_access.target.* == .value)
+                @as([*]const Expression, @ptrCast(@alignCast(member_access.target.value.payload.ptr)))[index]
+            else
+                initial;
+        },
+        .buffer => |buffer| return if (self.getStructFromID(buffer.struct_id).memberIndex(member_access.member_name)) |_|
+            initial
+        else
+            self.errorOut(Error.NoMemberWithName),
 
-    if (member_access.target.* == .value) {
-        const value = member_access.target.value;
-        switch (value.type) {
-            .type => return switch (value.payload.type) {
-                .texture => |texture| return if (util.strEql(member_access.member_name, tp.Texture.sample_function_name)) blk: {
+        .unknown => initial,
+        else => return self.errorOut(Error.InvalidMemberAccess),
+        .type => if (member_access.target.* == .value) blk: {
+            const @"type" = member_access.target.value.payload.type;
+            break :blk switch (member_access.target.value.payload.type) {
+                .texture => |texture| if (util.strEql(member_access.member_name, tp.Texture.sample_function_name)) {
+                    if (!texture.sampled) return self.errorOut(Error.SampleOnStorageTexture);
+
                     const function_type = try texture.createSampleFunctionType(self.arena.allocator());
                     break :blk .{ .value = .{
                         .type = .{ .function = function_type },
                         .payload = .{ .ptr = try self.createVal(tp.Texture.getFunction(function_type)) },
                     } };
                 } else return self.errorOut(Error.InvalidMemberAccess),
-                .@"struct" => |struct_id| {
-                    const s = self.getStructFromID(struct_id);
-                    const var_ref = try s.scope.getVariableReference(self, member_access.member_name);
-                    return var_ref.value;
+                .@"struct", .buffer => {
+                    const s = self.getStructFromID(if (@"type" == .@"struct") @"type".@"struct" else @"type".buffer.struct_id);
+                    break :blk (s.scope.getVariableReference(self, member_access.member_name) catch |err| switch (err) {
+                        Error.UndeclaredVariable => if (s.memberIndex(member_access.member_name)) |i|
+                            break :blk s.members.items[i].type.asExpr()
+                        else
+                            return Error.UndeclaredVariable,
+                        else => return err,
+                    }).value;
                 },
 
                 else => @panic("TODO mem access on other types"),
-            },
-            .@"struct" => |struct_id| {
-                const s = self.getStructFromID(struct_id);
-                const index = s.memberIndex(member_access.member_name) orelse return self.errorOut(Error.NoMemberWithName);
-                return @as([*]const Expression, @ptrCast(@alignCast(value.payload.ptr)))[index];
-            },
-            else => return self.errorOut(Error.InvalidMemberAccess),
-        }
-    }
-
-    return initial;
+            };
+        } else initial,
+    };
 }
 fn swizzle(self: *Parser, target: *Expression, vtype: tp.Vector, literal: []const u8) Error!Expression {
     target.* = try self.turnIntoIntermediateVariableIfNeeded(target.*);
@@ -128,7 +146,7 @@ fn swizzle(self: *Parser, target: *Expression, vtype: tp.Vector, literal: []cons
 fn refineCall(self: *Parser, call: Parser.Call) Error!Expression {
     const initial: Expression = .{ .call = call };
 
-    const callee_type = try self.typeOf(call.callee.*);
+    const callee_type = self.typeOf(call.callee.*);
     if (callee_type == .unknown) return initial;
     if (callee_type != .function) return self.errorOut(Error.InvalidCall);
     call.callee.* = try self.turnIntoIntermediateVariableIfNeeded(call.callee.*);
@@ -277,7 +295,7 @@ fn refineCast(self: *Parser, cast: Parser.Cast) Error!Expression {
     if (cast.type == .unknown) return initial;
 
     return (self.implicitCast(cast.expr.*, cast.type)) catch {
-        const type_of = try self.typeOf(cast.expr.*);
+        const type_of = self.typeOf(cast.expr.*);
         if (!isExplicitlyCastable(type_of, cast.type)) return errorImplicitCast(self, cast.expr.*, cast.type, true);
 
         switch (cast.type) {
@@ -369,8 +387,8 @@ fn splatCast(self: *Parser, expr_ptr: *Expression, @"type": Type) Error!Expressi
 }
 fn refineIndexing(self: *Parser, indexing: Parser.Indexing) Error!Expression {
     const initial: Expression = .{ .indexing = indexing };
-    const index_type = try self.typeOf(indexing.index.*);
-    const target_type = try self.typeOf(indexing.target.*);
+    const index_type = self.typeOf(indexing.index.*);
+    const target_type = self.typeOf(indexing.target.*);
     if (target_type == .unknown) return initial;
 
     const target_cs = target_type.constructorStructure();
@@ -549,7 +567,7 @@ const ElementIterator = struct {
     index: u32 = 0,
 
     pub fn next(self: *ElementIterator, parser: *Parser) Error!?Expression {
-        const @"type" = try parser.typeOf(self.expr.*);
+        const @"type" = parser.typeOf(self.expr.*);
 
         if (self.expr.* == .constructor and self.expr.constructor.type == .unknown) {
             if (self.index >= self.expr.constructor.components.len) return null;
@@ -565,7 +583,7 @@ const ElementIterator = struct {
         }
     }
     pub fn new(parser: *Parser, expr: Expression) Error!ElementIterator {
-        const @"type" = try parser.typeOf(expr);
+        const @"type" = parser.typeOf(expr);
         if (!(@"type" == .array or @"type" == .vector or (@"type" == .unknown and expr == .constructor))) return Error.CannotImplicitlyCast;
         return .{ .expr = try parser.createVal(expr) };
     }
@@ -580,7 +598,7 @@ fn refineUOp(self: *Parser, u_op: Parser.UOp) Error!Expression {
         .@"-" => .{ .value = try mulVecOrScalarValues(self, target, minusonecompint) },
         .@"+" => u_op.target.*,
         .@"|" => blk: {
-            const @"type" = try self.typeOf(u_op.target.*);
+            const @"type" = self.typeOf(u_op.target.*);
             if (@"type" != .vector or @"type".vector.component.type != .float)
                 return self.errorOutFmt(Error.InvalidUnaryOperationTarget, "Only floating point vectors can be normalized", .{});
             normalizeValue(u_op.target.value);
@@ -606,9 +624,9 @@ fn normalizeValue(value: Parser.Value) void {
 fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
     if (bin_op.left.* == .bin_op) { //should it go other way as well??
         const inner = bin_op.left.bin_op;
-        const lt = try self.typeOf(inner.left.*);
-        const rt = try self.typeOf(inner.right.*);
-        if (lt == .matrix and rt == .matrix and try self.typeOf(bin_op.right.*) == .vector) {
+        const lt = self.typeOf(inner.left.*);
+        const rt = self.typeOf(inner.right.*);
+        if (lt == .matrix and rt == .matrix and self.typeOf(bin_op.right.*) == .vector) {
             std.mem.swap(Expression, bin_op.left, bin_op.right);
             std.mem.swap(Expression, bin_op.left, bin_op.right.bin_op.left);
             std.mem.swap(Expression, bin_op.right.bin_op.left, bin_op.right.bin_op.right);
@@ -634,7 +652,7 @@ fn refineBinOp(self: *Parser, bin_op: Parser.BinOp) Error!Expression {
 //we might allow pow instruction for integers?? through casting to float and then back
 fn refinePow(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
     const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@"^" } };
-    var left_expr, var left_type, var right_expr, var right_type = .{ left.*, try self.typeOf(left.*), right.*, try self.typeOf(right.*) };
+    var left_expr, var left_type, var right_expr, var right_type = .{ left.*, self.typeOf(left.*), right.*, self.typeOf(right.*) };
 
     if (!equalizeExprTypesIfUnknown(self, &left_expr, &left_type, &right_expr, &right_type)) return initial;
     if (left_type == .vector or right_type == .vector) {
@@ -656,7 +674,7 @@ fn refinePow(self: *Parser, left: *Expression, right: *Expression) Error!Express
 }
 fn refineAndOrXor(self: *Parser, op: AndOrXorOp, left: *Expression, right: *Expression) Error!Expression {
     const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = @enumFromInt(@intFromEnum(op)) } };
-    var left_expr, var left_type, var right_expr, var right_type = .{ left.*, try self.typeOf(left.*), right.*, try self.typeOf(right.*) };
+    var left_expr, var left_type, var right_expr, var right_type = .{ left.*, self.typeOf(left.*), right.*, self.typeOf(right.*) };
 
     if (!equalizeExprTypesIfUnknown(self, &left_expr, &left_type, &right_expr, &right_type)) return initial;
     if (right_type == .vector or left_type == .vector) {
@@ -677,7 +695,7 @@ fn refineAndOrXor(self: *Parser, op: AndOrXorOp, left: *Expression, right: *Expr
 //add left shift// allow left argument to be signed
 fn refineRightShift(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
     const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@">>" } };
-    var left_expr, var left_type, var right_expr, var right_type = .{ left.*, try self.typeOf(left.*), right.*, try self.typeOf(right.*) };
+    var left_expr, var left_type, var right_expr, var right_type = .{ left.*, self.typeOf(left.*), right.*, self.typeOf(right.*) };
 
     if (!equalizeExprTypesIfUnknown(self, &left_expr, &left_type, &right_expr, &right_type)) return initial;
 
@@ -732,7 +750,7 @@ fn rightShiftValues(self: *Parser, left: Value, right: Value) Error!Value {
 }
 fn refineAddOrSub(self: *Parser, op: AddOrSubOp, left: *Expression, right: *Expression) Error!Expression {
     const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = @enumFromInt(@intFromEnum(op)) } };
-    var left_expr, var left_type, var right_expr, var right_type = .{ left.*, try self.typeOf(left.*), right.*, try self.typeOf(right.*) };
+    var left_expr, var left_type, var right_expr, var right_type = .{ left.*, self.typeOf(left.*), right.*, self.typeOf(right.*) };
 
     if (!equalizeExprTypesIfUnknown(self, &left_expr, &left_type, &right_expr, &right_type)) return initial;
     if (left_type.isNumber() or right_type.isNumber()) try equalizeScalarTypes(self, &left_expr, &left_type, &right_expr, &right_type);
@@ -745,7 +763,7 @@ fn refineAddOrSub(self: *Parser, op: AddOrSubOp, left: *Expression, right: *Expr
 fn refineMul(self: *Parser, left: *Expression, right: *Expression) Error!Expression {
     const initial: Expression = .{ .bin_op = .{ .left = left, .right = right, .op = .@"*" } };
 
-    var left_expr, var left_type, var right_expr, var right_type = .{ left.*, try self.typeOf(left.*), right.*, try self.typeOf(right.*) };
+    var left_expr, var left_type, var right_expr, var right_type = .{ left.*, self.typeOf(left.*), right.*, self.typeOf(right.*) };
 
     if (!equalizeExprTypesIfUnknown(self, &left_expr, &left_type, &right_expr, &right_type)) return initial;
 
@@ -795,7 +813,7 @@ fn resolvePatternsMul(self: *Parser, left: *Expression, right: *Expression) Erro
         const curr = if (i == 0) left else right;
         if (curr.* == .value) {
             const other = if (i == 0) right else left;
-            const other_type = try self.typeOf(other.*);
+            const other_type = self.typeOf(other.*);
             if (isScalarOrEachVectorComponentsEqualToNumber(curr.value, 0)) break try refineCast(self, .{
                 .expr = @constCast(&zerocompintexpr),
                 .type = if (curr.value.type.depth() > other_type.depth()) curr.value.type else other_type,
@@ -868,7 +886,7 @@ fn splatScalar(self: *Parser, vector_type: tp.Vector, wide: WIDE) Error!Value {
 pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expression {
     if (@"type" == .unknown) return expr;
 
-    const type_of = try self.typeOf(expr);
+    const type_of = self.typeOf(expr);
     if (type_of.eql(@"type")) return expr;
     const result: Expression = switch (expr) {
         .value => |value| .{ .value = try implicitCastValue(self, value, @"type") },
@@ -885,7 +903,7 @@ pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expres
 
         else => expr,
     };
-    return if (@"type".eql(try self.typeOf(result))) result else errorImplicitCast(self, result, @"type", false);
+    return if (@"type".eql(self.typeOf(result))) result else errorImplicitCast(self, result, @"type", false);
 }
 fn implicitCastEnumLiteral(self: *Parser, enum_literal: []const u8, @"type": Type) Error!Expression {
     const e: tp.Enum = if (@"type" == .@"enum") @"type".@"enum" else return self.errorOut(Error.CannotImplicitlyCast);

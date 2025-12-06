@@ -1,11 +1,5 @@
 
-const main = entrypoint(.fragment){
-	const doStuff = fn(x) f32{return x^5*2}
-	
-	const exposure: f32 = 2
-	const T = u32
-	in somein : f32
-	out col : vec4 = .{doStuff(somein + exposure)}
-}
+const T = f32
+const main = entrypoint(.fragment){out kek: T = 1}
 
 

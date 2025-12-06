@@ -27,6 +27,7 @@ pub fn main() !void {
         "test.hgsl",
         // "../Huge/shader.hgsl",
         // "source.hgsl",
+        // "func.hgsl",
         // "vertfrag.hgsl",
     };
     var futures: [path_arr.len]std.Io.Future(anyerror!hgsl.Result) = undefined;
@@ -34,12 +35,14 @@ pub fn main() !void {
     var timer = try std.time.Timer.start();
 
     for (&path_arr, &futures) |path, *f| {
-        f.* = io.async(hgsl.Compiler.compileFile, .{ &compiler, io, allocator, path });
-    }
-    for (&path_arr, &futures) |path, *f| {
+        //     f.* = io.async(hgsl.Compiler.compileFile, .{ &compiler, io, allocator, path });
+        // }
+        // for (&path_arr, &futures) |path, *f| {
+        _ = &f;
         if (builtin.mode == .Debug)
             std.debug.print("======{s}=======\n", .{path});
-        const compiled = try f.await(io);
+        const compiled = try compiler.compileFile(io, allocator, path);
+        // const compiled = try f.await(io);
 
         const out_file = try std.fs.cwd().createFile("out.spv", .{ .read = true });
         defer out_file.close();

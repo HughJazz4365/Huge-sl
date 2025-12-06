@@ -5,7 +5,14 @@ pub const Parser = @import("Parser.zig");
 pub const SpirvGen = @import("spirvgen.zig");
 pub const ErrCtx = @import("errorctx.zig");
 
-// pub const Error = error{};
+pub const Error = error{
+    OutOfMemory,
+    WriteFailed,
+
+    SyntaxError,
+    ParsingError,
+    CodeGenError,
+};
 
 pub const Compiler = struct {
     result_arena: std.heap.ArenaAllocator,
