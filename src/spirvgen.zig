@@ -83,12 +83,12 @@ pub fn printInstructions(slice: []WORD) void {
     }
 }
 
-pub fn generate(parser: *Parser, result_allocator: Allocator, spirv_version: SpirvVersion) Error!hgsl.Result {
+pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result {
     var self: Generator = .{
         .parser = parser,
         .arena = parser.arena.allocator(),
         .global_io = try parser.arena.allocator().alloc(IOEntry, parser.global_scope.global_io.items.len),
-        .spirv_version = spirv_version,
+        .spirv_version = parser.settings.spirv_version,
     };
 
     var result: std.array_list.Managed(WORD) = .init(result_allocator);
@@ -1926,7 +1926,7 @@ const FunctionControl = enum(WORD) {
     pure = 3,
     @"const" = 4,
 };
-const SpirvVersion = struct {
+pub const SpirvVersion = struct {
     major: u8,
     minor: u8,
     pub fn @"<"(self: SpirvVersion, other: SpirvVersion) bool {

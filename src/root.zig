@@ -82,10 +82,7 @@ pub const Compiler = struct {
         defer parser.deinit();
 
         // return .{};
-        return try SpirvGen.generate(&parser, self.result_arena.allocator(), .{
-            .major = 1,
-            .minor = 6,
-        });
+        return try SpirvGen.generate(&parser, self.result_arena.allocator());
     }
 
     /// result allocator only allocates results of the code generation
@@ -292,13 +289,14 @@ pub const DescriptorType = enum {
 };
 
 pub const Settings = struct {
-    target_env: TargetEnv = .vulkan1_4,
+    target_env: TargetEnv = .vulkan,
+    spirv_version: SpirvGen.SpirvVersion = .{ .major = 1, .minor = 6 },
     optimize: Optimize = .none,
 
     max_push_constant_buffer_size: u32 = 128,
 };
 pub const Optimize = enum { none, speed };
-pub const TargetEnv = enum { vulkan1_4, opengl_spirv, opengl_glsl };
+pub const TargetEnv = enum { vulkan, opengl_spirv, opengl_glsl };
 
 pub const minimal =
     \\const vert = entrypoint(.vertex){}
