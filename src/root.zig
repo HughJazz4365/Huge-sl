@@ -19,56 +19,20 @@ pub const Compiler = struct {
     settings: Settings,
 
     err_writer: *std.Io.Writer,
-    cache: [cache_size]CachedShader = @splat(.{}),
-    const cache_size: usize = 10;
 
     pub fn compileFile(self: *Compiler, io: std.Io, allocator: Allocator, path: []const u8) anyerror!Result {
-        if (path.len == 0) return error.EmptyPath;
         const source = try readFile(io, allocator, path);
-        const hash = std.hash.Fnv1a_128.hash(source);
-
-        var last_replacable: usize = cache_size;
-        var hit = false;
-
-        const index = for (&self.cache, 0..) |*c, i| {
-            if (util.strEql(path, c.path)) {
-                if (c.hash == hash) {
-                    c.hits += 1;
-                    hit = true;
-                    break i;
-                }
-                break i;
-            }
-            if (c.hits == 0) break i;
-
-            c.misses += @intFromBool(c.hits > 0);
-            if (c.misses > c.hits) last_replacable = i;
-        } else last_replacable;
-
-        if (index + 1 < cache_size) {
-            for (self.cache[index + 1 ..]) |*c| {
-                c.misses += @intFromBool(c.hits > 0);
-            }
-        }
-        if (hit) return self.cache[index].result;
 
         const result = try self.compileRaw(allocator, source, path);
-        if (index < cache_size) {
-            if (last_replacable == index)
-                self.cache[index].result.deinit(self.result_arena.allocator());
-            self.cache[index] = .{
-                .hash = hash,
-                .result = result,
-                .path = path,
-                .hits = self.cache[index].hits + 1,
-                .misses = self.cache[index].misses,
-            };
-        }
         return result;
+    }
+    pub fn compile(self: *Compiler, allocator: Allocator, source: []const u8) !Result {
+        return try self.compileRaw(allocator, source, "");
     }
 
     fn compileRaw(self: *Compiler, allocator: Allocator, source: []const u8, path: []const u8) !Result {
         var err_msg: ErrMsg = .new(self.err_writer, source, path);
+        errdefer err_msg.writer.flush() catch {};
 
         var tokenizer: Tokenizer = .new(source, &err_msg);
         const file_name = path;
@@ -113,6 +77,7 @@ pub const Compiler = struct {
         misses: usize = 0,
     };
 };
+pub const Interpolation = enum(u64) { smooth = 0, flat = 1, noperspective = 2 };
 pub const IOType = union(enum) {
     scalar: Scalar,
     vector: struct { len: VectorLen, component: Scalar },
@@ -154,7 +119,7 @@ const Scalar = enum(u32) {
 
 pub const Result = struct {
     bytes: []u8 = &.{},
-    entry_point_infos: []const EntryPointInfo = &.{},
+    entry_point_infos: []EntryPointInfo = &.{},
     pub fn deinit(self: Result, allocator: Allocator) void {
         allocator.free(self.bytes);
         for (self.entry_point_infos) |m| m.deinit(allocator);
@@ -223,14 +188,25 @@ pub const IOMapping = struct {
     size: u32 = 0,
 
     type: IOType,
+    interpolation: Interpolation,
     pub fn format(self: IOMapping, writer: *std.Io.Writer) !void {
         try writer.print("[Location = {d:2}, \"{s}\": {f}]", .{ self.location, self.name, self.type });
     }
 };
 
-pub const Stage = enum(u64) { vertex, fragment, compute };
+pub const Stage = enum(u64) {
+    vertex,
+    tesselation_control,
+    tesselation_evaluation,
+    geometry,
+    fragment,
+    compute,
+};
 pub const StageInfo = union(Stage) {
     vertex,
+    tesselation_control,
+    tesselation_evaluation,
+    geometry,
     fragment,
     compute: [3]u32,
     pub fn format(self: StageInfo, writer: *std.Io.Writer) !void {

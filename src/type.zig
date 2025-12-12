@@ -14,8 +14,8 @@ pub fn typeOf(self: *Parser, expr: Expression) Type {
         .identifier => |identifier| (self.current_scope.getVariableReference(self, identifier) catch
             return .unknownempty).type,
         .member_access => |member_access| switch (self.typeOf(member_access.target.*)) {
-            .@"struct" => |s| self.getStructFromID(s).getMemberType(member_access.member_name),
-            .buffer => |buffer| self.getStructFromID(buffer.struct_id).getMemberType(member_access.member_name),
+            .@"struct" => |s| self.getStructFromID(s).getFieldType(member_access.member_name),
+            .buffer => |buffer| self.getStructFromID(buffer.struct_id).getFieldType(member_access.member_name),
             .type => @panic("member access type on 'type'"),
             .texture => |texture| if (util.strEql(member_access.member_name, Texture.sample_function_name))
                 .{ .function = texture.createSampleFunctionType(null) catch unreachable }

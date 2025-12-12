@@ -170,18 +170,18 @@ pub fn isStatementComplete(self: *Parser, statement: Statement) Error!bool {
     };
 }
 
-pub fn parseStatement(self: *Parser) Error!usize {
+pub fn defaultParseStatement(self: *Parser) Error!bool {
     try self.skipEndl();
     const token = try self.tokenizer.peek();
-    if (self.defaultShouldStop(token) catch unreachable) return 0;
+    if (self.defaultShouldStop(token)) return false;
 
     return switch (token) {
-        .eof => 0,
-        .@"const", .mut, .descriptor, .push, .shared, .out, .in, .member => self.parseVariableDeclarations(),
+        .eof => false,
+        .@"const", .mut, .descriptor, .push, .shared, .out, .in => self.parseVariableOrFieldDeclarations(null),
         .@"return" => blk: {
             self.tokenizer.skip();
             const peek = try self.tokenizer.peek();
-            if (self.defaultShouldStop(peek) catch unreachable) {
+            if (self.defaultShouldStop(peek)) {
                 if (peek != .@"}") self.tokenizer.skip();
                 try self.addStatement(.{ .@"return" = .empty });
             } else try self.addStatement(.{ .@"return" = try self.implicitCast(
@@ -189,13 +189,13 @@ pub fn parseStatement(self: *Parser) Error!usize {
                 self.current_scope.result_type,
             ) });
 
-            break :blk 1;
+            break :blk true;
         },
 
         else => blk: {
             const statement = try self.parseAssignmentOrIgnore();
             try self.addStatement(statement);
-            break :blk 1;
+            break :blk true;
         },
     };
 }
@@ -256,23 +256,22 @@ fn parseAssignmentOrIgnore(self: *Parser) Error!Statement {
         .value = try self.implicitCast(value, self.typeOf(target)),
     } };
 }
-fn parseVariableDeclarations(self: *Parser) Error!usize {
-    // const body_index = self.current_scope.body().*.len;
-
+fn parseVariableOrFieldDeclarations(self: *Parser, @"struct": ?*Struct) Error!bool {
     var list: List(VariableDeclaration) = .empty;
     var index_list: List(usize) = .empty;
-    var member_count: usize = 0;
     defer index_list.deinit(self.arena.allocator());
 
     defer self.current_scope.multi_variable_initialization = &.{};
     self.current_scope.current_variable_value_index = 0;
 
-    var token = try self.tokenizer.next();
+    var qualifier: Qualifier = if (@"struct") |_|
+        .mut
+    else
+        try self.parseQualifier(try self.tokenizer.next());
 
-    var qualifier: Qualifier = try self.parseQualifier(token);
     try self.skipEndl();
 
-    token = try self.tokenizer.next();
+    var token = try self.tokenizer.next();
 
     var last: enum { qual, name, type, comma } = .qual;
     sw: switch (token) {
@@ -287,6 +286,8 @@ fn parseVariableDeclarations(self: *Parser) Error!usize {
         },
 
         .in, .out, .@"const", .mut, .descriptor, .push, .shared => {
+            if (@"struct") |_| return false;
+
             if (last == .type) self.tokenizer.skip();
 
             qualifier = try self.parseQualifier(token);
@@ -305,13 +306,13 @@ fn parseVariableDeclarations(self: *Parser) Error!usize {
                 _ = self.current_scope.getVariableReference(self, identifier) catch break :blk;
                 return self.errorOut(Error.VariableRedeclaration);
             }
-            try index_list.append(self.arena.allocator(), self.current_scope.body().len + list.items.len - member_count);
 
-            if (qualifier == .member) member_count += 1;
+            try index_list.append(self.arena.allocator(), self.current_scope.body().len + list.items.len);
             try list.append(self.arena.allocator(), .{
                 .qualifier = qualifier,
                 .name = identifier,
             });
+
             self.current_scope.multi_variable_initialization = list.items;
 
             token = try self.tokenizer.next();
@@ -348,7 +349,7 @@ fn parseVariableDeclarations(self: *Parser) Error!usize {
                     if (list.items[index].type.isEmpty()) return self.errorOut(Error.NoTypeVariable);
                     index += 1;
 
-                    if (index + 1 == list.items.len and try self.defaultShouldStop(try self.tokenizer.peek())) break :sw2;
+                    if (index + 1 == list.items.len and self.defaultShouldStop(try self.tokenizer.peek())) break :sw2;
                     try self.skipEndl();
                     if (index + 1 > list.items.len) return self.errorOut(Error.NonMatchingVariableInitializerCount);
 
@@ -357,7 +358,7 @@ fn parseVariableDeclarations(self: *Parser) Error!usize {
                     token = try self.tokenizer.peek();
                     continue :sw2 token;
                 },
-                else => if (try self.defaultShouldStop(token)) {
+                else => if (self.defaultShouldStop(token)) {
                     if (expr.isEmpty()) return self.errorUnexpectedToken(token);
                     if (index == 0 and list.items.len > 1) {
                         for (list.items[1..]) |*vd| try self.addInitializerToVarDecl(vd, expr);
@@ -378,12 +379,21 @@ fn parseVariableDeclarations(self: *Parser) Error!usize {
             }
         },
         else => {
-            if (try self.defaultShouldStop(token)) {
+            if (self.defaultShouldStop(token)) {
                 for (list.items[1..]) |*vd| try self.addInitializerToVarDecl(vd, .empty);
                 break :sw;
             }
             return self.errorUnexpectedToken(token);
         },
+    }
+    if (@"struct") |s| {
+        try s.fields.ensureUnusedCapacity(self.arena.allocator(), list.items.len);
+        for (list.items) |i| s.fields.appendAssumeCapacity(.{
+            .name = i.name,
+            .type = i.type,
+            .default_value = i.initializer,
+        });
+        return list.items.len > 0;
     }
 
     var offset: usize = 0;
@@ -407,7 +417,7 @@ fn parseVariableDeclarations(self: *Parser) Error!usize {
         }
     }
 
-    return list.items.len;
+    return list.items.len > 0;
 }
 fn addInitializerToVarDecl(self: *Parser, var_decl: *VariableDeclaration, initializer: Expression) Error!void {
     var_decl.initializer = initializer;
@@ -431,7 +441,6 @@ fn addInitializerToVarDecl(self: *Parser, var_decl: *VariableDeclaration, initia
     var_decl.initializer = try self.implicitCast(var_decl.initializer, var_decl.type);
 }
 fn matchVariableTypeWithQualifier(self: *Parser, @"type": Type, qualifier: Qualifier) Error!void {
-    // std.debug.print("Q: {s}, T: {f}\n", .{ @tagName(qualifier), @"type" });
     if ((@"type".isBindable() != (qualifier == .descriptor)) or //
         (@"type".isComptimeOnly() and qualifier != .@"const")) return self.errorOut(Error.VariableTypeAndQualifierDontMatch);
     if (qualifier == .push and if (@"type".scalarPrimitive()) |sp| sp.width == .short else false) return self.errorOut(Error.VariableTypeAndQualifierDontMatch);
@@ -505,7 +514,7 @@ pub fn parseExpression(self: *Parser, should_stop: ShouldStopFn, consume_end: bo
 pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, consume_end: bool, last_bp: u8) Error!Expression {
     var left = try self.refine(try self.parseExpressionSide(false, true));
     var token = try self.tokenizer.peek();
-    while (!try should_stop(self, token)) {
+    while (!should_stop(self, token)) {
         if (token != .bin_op) return self.errorUnexpectedToken(token);
 
         const op = token.bin_op;
@@ -530,26 +539,26 @@ pub fn parseExpressionRecursive(self: *Parser, should_stop: ShouldStopFn, consum
     return left;
 }
 
-fn bracketShouldStop(_: *Parser, token: Token) !bool {
+fn bracketShouldStop(_: *Parser, token: Token) bool {
     return token == .@")";
 }
-fn argDeclShouldStop(_: *Parser, token: Token) !bool {
+fn argDeclShouldStop(_: *Parser, token: Token) bool {
     return token == .@")" or token == .@"," or token == .@":";
 }
-fn argShouldStop(_: *Parser, token: Token) !bool {
+fn argShouldStop(_: *Parser, token: Token) bool {
     return token == .@")" or token == .@",";
 }
-fn constructorShouldStop(_: *Parser, token: Token) !bool {
-    return token == .@"}" or token == .@",";
+fn constructorShouldStop(self: *Parser, token: Token) bool {
+    return token == .@"}" or token == .@"," or self.defaultShouldStop(token);
 }
-fn initializerShouldStop(self: *Parser, token: Token) !bool {
-    return token == .@"," or try self.defaultShouldStop(token);
+fn initializerShouldStop(self: *Parser, token: Token) bool {
+    return token == .@"," or self.defaultShouldStop(token);
 }
-fn defaultShouldStop(self: *Parser, token: Token) !bool {
+fn defaultShouldStop(self: *Parser, token: Token) bool {
     return token == .endl or token == .eof or (token == .@"}" and !self.inGlobalScope());
 }
 
-fn squareBracketShouldStop(self: *Parser, token: Token) !bool {
+fn squareBracketShouldStop(self: *Parser, token: Token) bool {
     _ = self;
     return token == .@"]";
 }
@@ -683,9 +692,8 @@ fn parseStructDeclaration(self: *Parser) Error!StructID {
 
     if (self.current_scope.current_variable_value_index < self.current_scope.multi_variable_initialization.len) {
         const vd = self.current_scope.multi_variable_initialization[self.current_scope.current_variable_value_index];
-        // std.debug.print("VDNAME: {s}, {f}\n", .{ vd.name, vd.type });
-        // s.name = vd.name;
-        s.name = if (vd.type == .@"struct") vd.name else try self.createIntermediateVariableName();
+        // s.name = if (vd.type == .@"struct") vd.name else try self.createIntermediateVariableName();
+        s.name = vd.name;
     } else s.name = try self.createIntermediateVariableName();
 
     if (try self.tokenizer.peek() == .@"}") {
@@ -725,7 +733,7 @@ fn parseCastOrConstructor(self: *Parser, @"type": Type) Error!Expression {
 
     if (components.len == 0)
         return if (@"type" == .@"struct" or @"type" == .unknown)
-            .{ .struct_constructor = .{ .type = @"type", .members = &.{} } }
+            .{ .struct_constructor = .{ .type = @"type", .fields = &.{} } }
         else
             self.errorOut(Error.InvalidConstructor);
 
@@ -746,15 +754,17 @@ fn parseStructConstructor(self: *Parser, @"type": Type) Error!Expression {
             if (next != .identifier) return self.errorOut(Error.UnexpectedToken);
 
             if (try self.tokenizer.next() != .@"=") return self.errorOut(Error.UnexpectedToken);
+
             try list.append(self.arena.allocator(), .{
                 .name = next.identifier,
                 .expr = try self.parseExpression(constructorShouldStop, false),
             });
+            try self.skipEndl();
             continue :sw try self.tokenizer.peek();
         },
         .@"}" => {
             self.tokenizer.skip();
-            try self.skipEndl();
+            // try self.skipEndl();
             break :sw;
         },
         .@"," => {
@@ -775,14 +785,14 @@ fn parseStructConstructor(self: *Parser, @"type": Type) Error!Expression {
 
     return .{ .struct_constructor = .{
         .type = @"type",
-        .members = try list.toOwnedSlice(self.arena.allocator()),
+        .fields = try list.toOwnedSlice(self.arena.allocator()),
     } };
 }
 fn parseExpressionSequence(self: *Parser, prepend: ?Expression, comptime until: Token) Error![]Expression {
     const should_stop = struct {
-        pub fn f(parser: *Parser, token: Token) Error!bool {
+        pub fn f(parser: *Parser, token: Token) bool {
             // return std.meta.eql(token, until) or token == .@",";
-            return std.meta.eql(token, until) or token == .@"," or try defaultShouldStop(parser, token);
+            return std.meta.eql(token, until) or token == .@"," or defaultShouldStop(parser, token);
         }
     }.f;
     var list: List(Expression) = .empty;
@@ -810,7 +820,7 @@ fn parseFunctionTypeOrValue(self: *Parser) Error!Expression {
     var mode: enum { unsure, type, value } = .value;
     var peek = try self.tokenizer.peek();
     //fn <==> fn()void
-    if (try defaultShouldStop(self, peek)) return .{ .value = .{
+    if (defaultShouldStop(self, peek)) return .{ .value = .{
         .type = .type,
         .payload = .{ .type = .{ .function = .{
             .rtype = &.void,
@@ -974,6 +984,7 @@ fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
         .vertex => .vertex,
         .fragment => .fragment,
         .compute => .{ .compute = @splat(0) },
+        else => unreachable,
     };
 
     const token = try self.tokenizer.next();
@@ -1002,9 +1013,7 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
     self.current_scope = scope;
     defer self.current_scope = last_scope;
     while (true) {
-        const added_statement_count = try self.parseStatement();
-        if (added_statement_count == 0) break;
-
+        const is_scope_end = !(try self.current_scope.parseStatement(self));
         var peek = try self.tokenizer.peek();
         if (peek == .endl) {
             self.tokenizer.skip();
@@ -1014,13 +1023,12 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
             self.tokenizer.skip();
             break;
         }
-    } else if (try self.defaultShouldStop(try self.tokenizer.peek())) {
+        if (is_scope_end) break;
+    } else if (self.defaultShouldStop(try self.tokenizer.peek())) {
         self.tokenizer.skip();
     } else if (!self.inGlobalScope()) return self.errorOut(Error.UnclosedScope);
 
     //remove useless statements
-    // if (true) return;
-
     const body = scope.body();
     var i: usize = 0;
     while (i < body.len) {
@@ -1029,7 +1037,7 @@ fn parseScope(self: *Parser, scope: *Scope) Error!void {
         if (shouldUntrackInStatement(statement))
             try self.trackReferencesInStatement(statement, .untrack);
         if (try self.isStatementOmittable(statement) //
-        // and false //
+        and false //
         ) {
             util.removeAt(Statement, body, index);
         } else i += 1;
@@ -1046,14 +1054,14 @@ pub fn getStructFromID(self: *Parser, id: StructID) *Struct {
 }
 
 pub const StructID = enum(u32) { self = ~@as(u32, 0), _ };
-pub const StructMember = struct {
+pub const StructField = struct {
     name: []const u8,
     type: Type,
     default_value: Expression = .empty,
 };
 pub const Struct = struct {
     name: []const u8 = "",
-    members: List(StructMember) = .empty,
+    fields: List(StructField) = .empty,
     scope: Scope,
 
     body: List(Statement) = .empty,
@@ -1065,6 +1073,7 @@ pub const Struct = struct {
         return .{
             .id = id,
             .scope = .{
+                .parseStatementFn = parseStatementFn,
                 .getVariableReferenceFn = getVariableReferenceFn,
                 .addStatementFn = addStatementFn,
                 .trackReferenceFn = trackReferenceFn,
@@ -1074,31 +1083,40 @@ pub const Struct = struct {
             },
         };
     }
-    pub fn memberIndex(self: *Struct, name: []const u8) ?u32 {
-        return for (self.members.items, 0..) |m, i| (if (util.strEql(m.name, name)) break @truncate(i)) else null;
+    pub fn fieldIndex(self: *Struct, name: []const u8) ?u32 {
+        return for (self.fields.items, 0..) |m, i| (if (util.strEql(m.name, name)) break @truncate(i)) else null;
     }
-    pub fn getMemberType(self: *Struct, name: []const u8) Type {
-        return self.members.items[self.memberIndex(name) orelse return .unknownempty].type;
+    pub fn getFieldType(self: *Struct, name: []const u8) Type {
+        return self.fields.items[self.fieldIndex(name) orelse return .unknownempty].type;
     }
     fn bodyFn(scope: *Scope) *[]Statement {
         return &@as(*@This(), @fieldParentPtr("scope", scope)).body.items;
+    }
+    fn parseStatementFn(scope: *Scope, parser: *Parser) Error!bool {
+        const s: *Struct = @fieldParentPtr("scope", scope);
+
+        try parser.skipEndl();
+        while (try parser.tokenizer.peek() == .identifier) {
+            var state = parser.tokenizer.state;
+
+            if (!(try parseVariableOrFieldDeclarations(parser, s))) {
+                state = parser.tokenizer.state;
+                break;
+            }
+            try parser.skipEndl();
+        }
+        try parser.skipEndl();
+        return try parser.defaultParseStatement();
     }
     fn addStatementFn(scope: *Scope, parser: *Parser, statement: Statement) Error!void {
         const s: *Struct = @fieldParentPtr("scope", scope);
         if (statement != .var_decl) return parser.errorOut(Error.UnexpectedStatement);
 
         if (!(try parser.isStatementComplete(statement))) return parser.errorIncompleteStatement(statement);
-        if (statement.var_decl.qualifier == .member) {
-            try s.members.append(parser.arena.allocator(), .{
-                .name = statement.var_decl.name,
-                .type = statement.var_decl.type,
-                .default_value = statement.var_decl.initializer,
-            });
-        } else {
-            try s.body.append(parser.arena.allocator(), statement);
-            if (statement.var_decl.qualifier.isIO())
-                try s.global_io.append(parser.arena.allocator(), statement.var_decl.name);
-        }
+
+        try s.body.append(parser.arena.allocator(), statement);
+        if (statement.var_decl.qualifier.isIO())
+            try s.global_io.append(parser.arena.allocator(), statement.var_decl.name);
     }
     pub fn getVariableReference(self: *Struct, parser: *Parser, name: []const u8) Error!VariableReference {
         return try self.scope.getVariableReference(parser, name);
@@ -1234,8 +1252,6 @@ pub const EntryPoint = struct {
         const entry_point: *EntryPoint = @fieldParentPtr("scope", scope);
         if (!(try parser.isStatementComplete(statement))) return parser.errorOut(Error.IncompleteStatement);
         try entry_point.body.append(parser.arena.allocator(), statement);
-        if (statement == .var_decl and statement.var_decl.qualifier == .member)
-            return parser.errorOut(Error.IncompleteStatement);
         if (statement == .var_decl and statement.var_decl.qualifier.isIO())
             try entry_point.io.append(parser.arena.allocator(), statement.var_decl.name);
     }
@@ -1342,7 +1358,7 @@ pub fn isExpressionMutable(self: *Parser, expr: Expression) Error!bool {
 }
 pub const StructConstructor = struct {
     type: Type,
-    members: []NameExpr,
+    fields: []NameExpr,
 };
 
 pub const NameExpr = struct { name: []const u8, expr: Expression };
@@ -1385,6 +1401,7 @@ pub const BinOp = struct {
 };
 
 pub const Scope = struct {
+    parseStatementFn: ?*const fn (*Scope, *Parser) Error!bool = null,
     addStatementFn: *const fn (*Scope, *Parser, Statement) Error!void = undefined,
     getVariableReferenceFn: *const fn (*Scope, *Parser, []const u8) Error!VariableReference = undefined,
     trackReferenceFn: *const fn (*Scope, []const u8, DeclReferenceType) Error!void = undefined,
@@ -1399,6 +1416,9 @@ pub const Scope = struct {
     pub const DeclReferenceType = enum { track, untrack };
     pub fn body(self: *Scope) *[]Statement {
         return self.bodyFn(self);
+    }
+    pub fn parseStatement(self: *Scope, parser: *Parser) Error!bool {
+        return if (self.parseStatementFn) |p| try p(self, parser) else try defaultParseStatement(parser);
     }
     pub fn addStatement(self: *Scope, parser: *Parser, statement: Statement) Error!void {
         try self.addStatementFn(self, parser, statement);
@@ -1442,15 +1462,16 @@ fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
                 self.tokenizer.skip();
                 break :blk smooth;
             }
-            var interpolation: bi.Interpolation = .smooth;
+            var interpolation: hgsl.Interpolation = .smooth;
             const expr = try self.implicitCast(try self.parseExpressionSide(false, true), bi.interpolation_type);
             if (expr != .value) return self.errorOut(Error.IncompleteStatement);
 
             interpolation = @enumFromInt(util.extract(u64, expr.value.payload.wide));
+            if (try self.tokenizer.next() != .@")")
+                return self.errorOut(Error.IncompleteStatement);
             break :blk if (token == .in) .{ .in = interpolation } else .{ .out = interpolation };
             // .{ .in = .smooth },
         },
-        .member => .member,
         .@"const" => .@"const",
         .mut => .mut,
         .descriptor => blk: {
@@ -1466,8 +1487,11 @@ fn parseQualifier(self: *Parser, token: Token) Error!Qualifier {
 
             if (try self.tokenizer.next() == .@")") break :blk .{ .descriptor = .{ .set = set } };
 
-            const binding_expr = try self.implicitCast(try self.parseExpression(argShouldStop, true), tp.u32_type);
+            const binding_expr = try self.implicitCast(try self.parseExpression(argShouldStop, false), tp.u32_type);
             if (set_expr != .value) return self.errorOut(Error.IncompleteStatement);
+
+            if (try self.tokenizer.next() != .@")")
+                return self.errorOut(Error.IncompleteStatement);
             break :blk .{ .descriptor = .{
                 .set = set,
                 .binding = util.extract(u32, binding_expr.value.payload.wide),
@@ -1485,15 +1509,14 @@ pub const DescriptorBinding = struct {
 };
 
 pub const Qualifier = union(enum) {
-    member,
     @"const",
     mut,
 
     descriptor: DescriptorBinding,
     push,
 
-    in: bi.Interpolation,
-    out: bi.Interpolation,
+    in: hgsl.Interpolation,
+    out: hgsl.Interpolation,
 
     shared,
     pub fn isIO(self: Qualifier) bool {
@@ -1504,13 +1527,13 @@ pub const Qualifier = union(enum) {
     }
     pub fn canHaveInitializer(self: Qualifier) bool {
         return switch (self) {
-            .in, .push, .descriptor, .member => false,
+            .in, .push, .descriptor => false,
             else => true,
         };
     }
     pub fn isMutable(self: Qualifier) bool {
         return switch (self) {
-            .mut, .shared, .out, .member => true,
+            .mut, .shared, .out => true,
             .@"const", .in, .descriptor, .push => false,
         };
     }
@@ -1571,8 +1594,11 @@ pub fn errorOut(self: *Parser, err: Error) Error {
 pub fn errorOutFmt(self: *Parser, err: Error, comptime fmt: []const u8, args: anytype) Error {
     const offset = @intFromPtr(self.tokenizer.state.last_ptr) - @intFromPtr(self.tokenizer.full_source.ptr);
     _ = .{ fmt, offset, args };
-    // try self.tokenizer.err_msg.writer.print("[{s}] ", .{@errorName(err)});
-    // try self.tokenizer.err_msg.writer.print(fmt, args);
+
+    _ = self.tokenizer.err_msg.writer.consumeAll();
+    try self.tokenizer.err_msg.writer.print("[{s}] ", .{@errorName(err)});
+    try self.tokenizer.err_msg.writer.print(fmt, args);
+    try self.tokenizer.err_msg.writer.writeByte('\n');
     // try self.tokenizer.err_msg.writer.flush();
 
     // self.tokenizer.err_ctx.printError(offset, err, fmt, args);
@@ -1585,7 +1611,7 @@ pub fn inGlobalScope(self: *Parser) bool {
     return self.isScopeGlobal(self.current_scope);
 }
 
-const ShouldStopFn = fn (*Parser, Token) Error!bool;
+const ShouldStopFn = fn (*Parser, Token) bool;
 const List = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const BinaryOperator = Tokenizer.BinaryOperator;

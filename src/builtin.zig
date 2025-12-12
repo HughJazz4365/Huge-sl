@@ -1,10 +1,10 @@
 const std = @import("std");
+const hgsl = @import("root.zig");
 const util = @import("util.zig");
 const tp = @import("type.zig");
 const ct = @import("comptime.zig");
 const Parser = @import("Parser.zig");
 
-pub const Interpolation = enum(u64) { smooth = 0, flat = 1, noperspective = 2 };
 // pub const BufferType = enum(u64)
 
 pub fn getBuiltin(name: []const u8) Error!Builtin {
@@ -217,7 +217,7 @@ const inv_oxFF = Expression{ .value = .{
 pub const stage_type: Type = .{ .@"enum" = .fromZig(Parser.Stage) };
 
 pub const texture_type_type: Type = .{ .@"enum" = .fromZig(tp.TextureType) };
-pub const interpolation_type: Type = .{ .@"enum" = .fromZig(Interpolation) };
+pub const interpolation_type: Type = .{ .@"enum" = .fromZig(hgsl.Interpolation) };
 pub const buffer_type_type: Type = .{ .@"enum" = .fromZig(tp.BufferType) };
 
 const Type = tp.Type;

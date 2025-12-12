@@ -1,5 +1,6 @@
 #version 430 core
 
+layout(location = 1)out double mem;
 const vec2 verts[4] = {
 		{0.,0.},
 		{0.,1.},

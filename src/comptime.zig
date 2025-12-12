@@ -73,14 +73,14 @@ fn refineMemberAccess(self: *Parser, member_access: Parser.MemberAccess) Error!E
         ),
         .@"struct" => |struct_id| blk: {
             const s = self.getStructFromID(struct_id);
-            const index = s.memberIndex(member_access.member_name) orelse
+            const index = s.fieldIndex(member_access.member_name) orelse
                 return self.errorOut(Error.NoMemberWithName);
             break :blk if (member_access.target.* == .value)
                 @as([*]const Expression, @ptrCast(@alignCast(member_access.target.value.payload.ptr)))[index]
             else
                 initial;
         },
-        .buffer => |buffer| return if (self.getStructFromID(buffer.struct_id).memberIndex(member_access.member_name)) |_|
+        .buffer => |buffer| return if (self.getStructFromID(buffer.struct_id).fieldIndex(member_access.member_name)) |_|
             initial
         else
             self.errorOut(Error.NoMemberWithName),
@@ -102,8 +102,8 @@ fn refineMemberAccess(self: *Parser, member_access: Parser.MemberAccess) Error!E
                 .@"struct", .buffer => {
                     const s = self.getStructFromID(if (@"type" == .@"struct") @"type".@"struct" else @"type".buffer.struct_id);
                     break :blk (s.scope.getVariableReference(self, member_access.member_name) catch |err| switch (err) {
-                        Error.UndeclaredVariable => if (s.memberIndex(member_access.member_name)) |i|
-                            break :blk s.members.items[i].type.asExpr()
+                        Error.UndeclaredVariable => if (s.fieldIndex(member_access.member_name)) |i|
+                            break :blk s.fields.items[i].type.asExpr()
                         else
                             return Error.UndeclaredVariable,
                         else => return err,
@@ -470,14 +470,14 @@ fn refineStructConstructor(self: *Parser, struct_constructor: Parser.StructConst
     if (struct_constructor.type != .@"struct") return Error.InvalidConstructor;
 
     const s = self.getStructFromID(struct_constructor.type.@"struct");
-    const slice = try self.arena.allocator().alloc(Expression, s.members.items.len);
+    const slice = try self.arena.allocator().alloc(Expression, s.fields.items.len);
     @memset(slice, .empty);
-    for (struct_constructor.members) |cm| {
-        const index = s.memberIndex(cm.name) orelse return self.errorOut(Error.NoMemberWithName);
-        slice[index] = try self.implicitCast(cm.expr, s.members.items[index].type);
+    for (struct_constructor.fields) |cm| {
+        const index = s.fieldIndex(cm.name) orelse return self.errorOut(Error.NoMemberWithName);
+        slice[index] = try self.implicitCast(cm.expr, s.fields.items[index].type);
     }
-    for (s.members.items, 0..) |m, i| {
-        slice[i] = for (struct_constructor.members) |elem| (if (util.strEql(m.name, elem.name)) //
+    for (s.fields.items, 0..) |m, i| {
+        slice[i] = for (struct_constructor.fields) |elem| (if (util.strEql(m.name, elem.name)) //
             break try self.implicitCast(elem.expr, m.type)) else //
             if (!m.default_value.isEmpty()) m.default_value else return self.errorOut(Error.IncompleteStructConstructor);
     }
@@ -895,7 +895,7 @@ pub fn implicitCast(self: *Parser, expr: Expression, @"type": Type) Error!Expres
         else
             return self.errorOut(Error.CannotImplicitlyCast)),
         .struct_constructor => |struct_constructor| try refineStructConstructor(self, if (struct_constructor.type == .unknown)
-            .{ .members = struct_constructor.members, .type = @"type" }
+            .{ .fields = struct_constructor.fields, .type = @"type" }
         else
             return self.errorOut(Error.CannotImplicitlyCast)),
         .cast => |cast| try implicitCastCast(self, cast, @"type"),

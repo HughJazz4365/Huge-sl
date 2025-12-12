@@ -86,7 +86,7 @@ pub fn formatExpression(expr: Expression, writer: *std.Io.Writer) !void {
                 const s = p.getStructFromID(struct_constructor.type.@"struct");
                 try writer.print("{s}{{\n", .{s.name});
             } else try writer.print("{f}{{\n", .{struct_constructor.type});
-            for (struct_constructor.members) |elem| {
+            for (struct_constructor.fields) |elem| {
                 try writer.print("\t.{s} = {f},\n", .{ elem.name, elem.expr });
             }
             try writer.print("}}", .{});
@@ -135,7 +135,7 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
             const members_ptr = @as([*]const Expression, @ptrCast(@alignCast(value.payload.ptr)));
 
             try writer.print("|{s}|{{\n", .{s.name});
-            for (members_ptr[0..s.members.items.len], s.members.items) |v, m| {
+            for (members_ptr[0..s.fields.items.len], s.fields.items) |v, m| {
                 try writer.print("\t.{s} = {f},\n", .{ m.name, v });
             }
             try writer.print("}}", .{});
@@ -157,7 +157,7 @@ pub fn formatValue(value: Parser.Value, writer: *std.Io.Writer) !void {
             const s = p.getStructFromID(value.payload.type.@"struct");
 
             try writer.print("struct[{s}]{{\n", .{s.name});
-            for (s.members.items) |m| try writer.print("[.{s} : {f} = {f}]\n", .{ m.name, m.type, m.default_value });
+            for (s.fields.items) |m| try writer.print("[.{s} : {f} = {f}]\n", .{ m.name, m.type, m.default_value });
             if (s.body.items.len > 0) _ = try writer.write("\n");
             for (s.body.items) |statement| try writer.print("{f}\n", .{statement});
             try writer.print("}}\n", .{});

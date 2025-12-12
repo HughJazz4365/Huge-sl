@@ -20,12 +20,16 @@ pub fn main() !void {
     var compiler: hgsl.Compiler = .new(
         allocator,
         &out_writer.interface,
-        .{ .optimize = if (builtin.mode == .Debug) .none else .speed },
+        .{
+            .optimize = if (builtin.mode == .Debug) .none else .speed,
+            .spirv_version = .{ .major = 1, .minor = 5 },
+        },
     );
     defer compiler.deinit();
     const path_arr = [_][]const u8{
         "test.hgsl",
         // "../Huge/shader.hgsl",
+        // "../Huge/triangle.hgsl",
         // "source.hgsl",
         // "func.hgsl",
         // "vertfrag.hgsl",
@@ -51,8 +55,8 @@ pub fn main() !void {
         _ = try writer.interface.write(compiled.bytes);
         try writer.interface.flush();
 
-        if (builtin.mode == .Debug)
-            std.debug.print("RESULT: {f}\n", .{compiled});
+        // if (builtin.mode == .Debug)
+        //     std.debug.print("RESULT: {f}\n", .{compiled});
     }
     if (builtin.mode != .Debug or true)
         std.debug.print("Time: {d}ms\n", .{@as(f64, @floatFromInt(timer.read())) / 1_000_000.0 / 1});

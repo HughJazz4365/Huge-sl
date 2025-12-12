@@ -27,6 +27,7 @@ const IOEntry = struct {
     id: WORD,
     type_id: WORD,
     io_type: IOType = undefined,
+    interpolation: hgsl.Interpolation,
 
     set: WORD = 0,
     binding: WORD = std.math.maxInt(WORD),
@@ -156,6 +157,7 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
             .vertex => 0,
             .fragment => 4,
             .compute => 5,
+            else => unreachable,
         };
         try result.appendSlice(&.{ opWord(
             .entry_point,
@@ -438,6 +440,7 @@ pub fn generate(parser: *Parser, result_allocator: Allocator) Error!hgsl.Result 
                         .name = name,
                         .size = size,
                         .type = self.toIOType(@"type"),
+                        .interpolation = io.interpolation,
                     };
                     index_ptr.* += 1;
                 },
@@ -532,6 +535,7 @@ fn sizeOf(self: *Generator, @"type": Type) WORD {
 const Alignment = enum { scalar, base, extended };
 
 fn generateStatment(self: *Generator, statement: Parser.Statement) Error!void {
+    if (self.parser.isStatementOmittable(statement) catch unreachable) return;
     return switch (statement) {
         .var_decl => |var_decl| try self.generateVariableDeclaration(var_decl),
         .assignment => |assignment| try self.generateAssignment(assignment),
@@ -571,7 +575,6 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
             .ssbo => .storage_buffer,
             else => .uniform_constant,
         },
-        .member => unreachable,
     };
     var initializer: WORD = 0;
     var load: WORD = 0;
@@ -594,6 +597,11 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
                 (if (var_decl.qualifier.descriptor.binding) |b| b else std.math.maxInt(u32))
             else
                 std.math.maxInt(u32),
+            .interpolation = switch (var_decl.qualifier) {
+                .in => |in| in,
+                .out => |out| out,
+                else => .smooth,
+            },
         };
 
         if (self.inGlobalScope()) {
@@ -989,8 +997,8 @@ fn generateAccessChainTargetIDInfoRecursive(
         },
         .member_access => |member_access| .{
             switch (self.parser.typeOf(member_access.target.*)) {
-                .@"struct" => |struct_id| self.parser.getStructFromID(struct_id).memberIndex(member_access.member_name).?,
-                .buffer => |buffer| self.parser.getStructFromID(buffer.struct_id).memberIndex(member_access.member_name).?,
+                .@"struct" => |struct_id| self.parser.getStructFromID(struct_id).fieldIndex(member_access.member_name).?,
+                .buffer => |buffer| self.parser.getStructFromID(buffer.struct_id).fieldIndex(member_access.member_name).?,
                 else => unreachable,
             },
             true,
@@ -1591,8 +1599,8 @@ fn convertType(self: *Generator, from: Parser.Type) Error!Type {
         } },
         .@"struct" => |struct_id| blk: {
             const s = self.parser.getStructFromID(struct_id);
-            const slice = try self.arena.alloc(WORD, s.members.items.len);
-            for (slice, s.members.items) |*id, m| id.* = try self.convertTypeID(m.type);
+            const slice = try self.arena.alloc(WORD, s.fields.items.len);
+            for (slice, s.fields.items) |*id, m| id.* = try self.convertTypeID(m.type);
             break :blk .{ .@"struct" = slice };
         },
         .buffer => |buffer| .{ .buffer = .{
