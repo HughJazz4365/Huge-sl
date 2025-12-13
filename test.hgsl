@@ -1,4 +1,21 @@
-const main = entrypoint(.fragment){
-	const S = struct{f: f32}
-	out o = S{.f = 100}.f
+const MVP = struct{vp, model : mat4}
+descriptor(0, 0) bindless_mvp_buffers: []@Buffer(MVP, .ssbo)
+
+push  mvp_id : u32
+
+const vert = entrypoint(.vertex){
+	const vp, model =
+	bindless_mvp_buffers[mvp_id].vp,
+	bindless_mvp_buffers[mvp_id].model
+
+	
+	in pos, normal: vec3, uv: vec2
+	const world_pos = model * vec4{pos, 1}
+
+	out(.flat) out_normal = |(@transpose(@inverse(mat3{model})) * normal)
+	out out_pos, out_uv = world_pos.xyz, uv 
+
+	@position = vp * world_pos
 }
+
+

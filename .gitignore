@@ -2,3 +2,7 @@
 zig-out/
 lib/
 
+*.spv
+*.spvasm
+
+

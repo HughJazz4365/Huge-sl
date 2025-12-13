@@ -95,8 +95,8 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer, settings: Settings, fi
 
     try self.parseScope(&self.global_scope.scope);
 
-    if (zigbuiltin.mode == .Debug) {
-        // if (false and zigbuiltin.mode == .Debug) {
+    // if (zigbuiltin.mode == .Debug) {
+    if (false and zigbuiltin.mode == .Debug) {
         std.debug.print("[GLOBAL IO: ", .{});
         for (self.global_scope.global_io.items) |gi| std.debug.print("{s}, ", .{gi});
         std.debug.print("]\n", .{});
@@ -1007,7 +1007,7 @@ fn parseEntryPointTypeOrValue(self: *Parser) Error!Expression {
 }
 
 fn parseScope(self: *Parser, scope: *Scope) Error!void {
-    debug.p = self; //TODO: REMOVE
+    if (zigbuiltin.mode == .Debug) debug.p = self; //TODO: REMOVE
 
     const last_scope = self.current_scope;
     self.current_scope = scope;
@@ -1292,7 +1292,7 @@ pub const Expression = union(enum) {
 
     call: Call,
     identifier: []const u8,
-    named_value: NamedValue,
+    named_value: NamedValue, //TODO: REMOVE
 
     builtin: bi.Builtin,
 
@@ -1303,7 +1303,6 @@ pub const Expression = union(enum) {
 
     swizzle: Swizzle,
     member_access: MemberAccess,
-    method_call: void, //?
     indexing: Indexing,
 
     cast: Cast,

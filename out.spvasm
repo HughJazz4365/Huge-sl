@@ -1,56 +1,129 @@
 ; SPIR-V
-; Version: 1.6
+; Version: 1.5
 ; Generator: Khronos; 0
-; Bound: 35
+; Bound: 80
 ; Schema: 0
                OpCapability Shader
+               OpCapability RuntimeDescriptorArray
           %1 = OpExtInstImport "GLSL.std.450"
                OpMemoryModel Logical GLSL450
-               OpEntryPoint Fragment %13 "main" %bindless_samplers_2d %out_color %21
-               OpExecutionMode %13 OriginUpperLeft
-               OpName %bindless_samplers_2d "bindless_samplers_2d"
-               OpName %bindless_samplers_cube "bindless_samplers_cube"
-               OpName %out_color "out_color"
-               OpDecorate %bindless_samplers_2d Binding 0
-               OpDecorate %bindless_samplers_2d DescriptorSet 0
-               OpDecorate %bindless_samplers_cube Binding 0
-               OpDecorate %bindless_samplers_cube DescriptorSet 0
-               OpDecorate %out_color Location 0
-               OpDecorate %_struct_19 Block
-               OpMemberDecorate %_struct_19 0 Offset 0
+               OpEntryPoint Vertex %11 "vert" %bindless_mvp_buffers %pos %normal %uv %out_normal %out_pos %out_uv %77 %17
+               OpName %bindless_mvp_buffers "bindless_mvp_buffers"
+               OpName %pos "pos"
+               OpName %normal "normal"
+               OpName %uv "uv"
+               OpName %out_normal "out_normal"
+               OpName %out_pos "out_pos"
+               OpName %out_uv "out_uv"
+               OpDecorate %bindless_mvp_buffers Binding 0
+               OpDecorate %bindless_mvp_buffers DescriptorSet 0
+               OpDecorate %pos Location 0
+               OpDecorate %normal Location 1
+               OpDecorate %uv Location 2
+               OpDecorate %out_normal Location 0
+               OpDecorate %out_pos Location 1
+               OpDecorate %out_uv Location 2
+               OpDecorate %_struct_15 Block
+               OpDecorate %out_normal Flat
+               OpDecorate %_struct_75 Block
+               OpMemberDecorate %_struct_75 0 BuiltIn Position
+               OpMemberDecorate %_struct_75 1 BuiltIn PointSize
+               OpMemberDecorate %_struct_75 2 BuiltIn CullDistance
+               OpMemberDecorate %_struct_15 0 Offset 0
+               OpDecorate %_struct_5 Block
+               OpMemberDecorate %_struct_5 0 ColMajor
+               OpMemberDecorate %_struct_5 0 MatrixStride 16
+               OpMemberDecorate %_struct_5 0 Offset 0
+               OpMemberDecorate %_struct_5 1 ColMajor
+               OpMemberDecorate %_struct_5 1 MatrixStride 16
+               OpMemberDecorate %_struct_5 1 Offset 64
       %float = OpTypeFloat 32
-          %3 = OpTypeImage %float 2D 0 0 0 1 Unknown
-          %4 = OpTypeSampledImage %3
-%_runtimearr_4 = OpTypeRuntimeArray %4
-%_ptr_UniformConstant__runtimearr_4 = OpTypePointer UniformConstant %_runtimearr_4
-          %8 = OpTypeImage %float Cube 0 0 0 1 Unknown
-          %9 = OpTypeSampledImage %8
-%_runtimearr_9 = OpTypeRuntimeArray %9
-%_ptr_UniformConstant__runtimearr_9 = OpTypePointer UniformConstant %_runtimearr_9
-       %void = OpTypeVoid
-         %16 = OpTypeFunction %void
-       %uint = OpTypeInt 32 0
- %_struct_19 = OpTypeStruct %uint
-%_ptr_PushConstant__struct_19 = OpTypePointer PushConstant %_struct_19
-%_ptr_PushConstant_uint = OpTypePointer PushConstant %uint
     %v4float = OpTypeVector %float 4
-%_ptr_UniformConstant_4 = OpTypePointer UniformConstant %4
+%mat4v4float = OpTypeMatrix %v4float 4
+  %_struct_5 = OpTypeStruct %mat4v4float %mat4v4float
+%_runtimearr__struct_5 = OpTypeRuntimeArray %_struct_5
+%_ptr_StorageBuffer__runtimearr__struct_5 = OpTypePointer StorageBuffer %_runtimearr__struct_5
+       %uint = OpTypeInt 32 0
+%_ptr_PushConstant_uint = OpTypePointer PushConstant %uint
+       %void = OpTypeVoid
+         %14 = OpTypeFunction %void
+ %_struct_15 = OpTypeStruct %uint
+%_ptr_PushConstant__struct_15 = OpTypePointer PushConstant %_struct_15
+%_ptr_StorageBuffer_mat4v4float = OpTypePointer StorageBuffer %mat4v4float
+    %v3float = OpTypeVector %float 3
+%_ptr_Input_v3float = OpTypePointer Input %v3float
     %v2float = OpTypeVector %float 2
+%_ptr_Input_v2float = OpTypePointer Input %v2float
+%mat3v3float = OpTypeMatrix %v3float 3
+%_ptr_Function_mat4v4float = OpTypePointer Function %mat4v4float
+%_ptr_Output_v3float = OpTypePointer Output %v3float
+%_ptr_Function_v4float = OpTypePointer Function %v4float
+%_ptr_Output_v2float = OpTypePointer Output %v2float
 %_ptr_Output_v4float = OpTypePointer Output %v4float
+     %uint_1 = OpConstant %uint 1
+%_arr_float_uint_1 = OpTypeArray %float %uint_1
+ %_struct_75 = OpTypeStruct %v4float %float %_arr_float_uint_1
+%_ptr_Output__struct_75 = OpTypePointer Output %_struct_75
      %uint_0 = OpConstant %uint 0
-    %float_0 = OpConstant %float 0
-         %33 = OpConstantComposite %v2float %float_0 %float_0
-%bindless_samplers_2d = OpVariable %_ptr_UniformConstant__runtimearr_4 UniformConstant
-%bindless_samplers_cube = OpVariable %_ptr_UniformConstant__runtimearr_9 UniformConstant
-  %out_color = OpVariable %_ptr_Output_v4float Output
-         %21 = OpVariable %_ptr_PushConstant__struct_19 PushConstant
-         %13 = OpFunction %void None %16
-         %14 = OpLabel
-         %26 = OpAccessChain %_ptr_PushConstant_uint %21 %uint_0
-         %27 = OpLoad %uint %26
-         %29 = OpAccessChain %_ptr_UniformConstant_4 %bindless_samplers_2d %27
-         %30 = OpLoad %4 %29
-         %25 = OpImageSampleImplicitLod %v4float %30 %33
-               OpStore %out_color %25
+   %uint_1_0 = OpConstant %uint 1
+    %float_1 = OpConstant %float 1
+%bindless_mvp_buffers = OpVariable %_ptr_StorageBuffer__runtimearr__struct_5 StorageBuffer
+        %pos = OpVariable %_ptr_Input_v3float Input
+     %normal = OpVariable %_ptr_Input_v3float Input
+         %uv = OpVariable %_ptr_Input_v2float Input
+ %out_normal = OpVariable %_ptr_Output_v3float Output
+    %out_pos = OpVariable %_ptr_Output_v3float Output
+     %out_uv = OpVariable %_ptr_Output_v2float Output
+         %77 = OpVariable %_ptr_Output__struct_75 Output
+         %17 = OpVariable %_ptr_PushConstant__struct_15 PushConstant
+         %11 = OpFunction %void None %14
+         %12 = OpLabel
+         %45 = OpVariable %_ptr_Function_mat4v4float Function
+         %49 = OpVariable %_ptr_Function_mat4v4float Function
+         %52 = OpVariable %_ptr_Function_mat4v4float Function
+         %62 = OpVariable %_ptr_Function_v4float Function
+         %65 = OpVariable %_ptr_Function_v4float Function
+         %67 = OpVariable %_ptr_Function_v4float Function
+         %18 = OpAccessChain %_ptr_PushConstant_uint %17 %uint_0
+         %20 = OpLoad %uint %18
+         %22 = OpAccessChain %_ptr_StorageBuffer_mat4v4float %bindless_mvp_buffers %20 %uint_0
+         %23 = OpLoad %mat4v4float %22
+         %25 = OpAccessChain %_ptr_StorageBuffer_mat4v4float %bindless_mvp_buffers %20 %uint_1_0
+         %26 = OpLoad %mat4v4float %25
+         %35 = OpLoad %v3float %pos
+         %36 = OpCompositeExtract %float %35 0
+         %37 = OpCompositeExtract %float %35 1
+         %38 = OpCompositeExtract %float %35 2
+         %34 = OpCompositeConstruct %v4float %36 %37 %38 %float_1
+         %40 = OpMatrixTimesVector %v4float %26 %34
+               OpStore %45 %26
+         %47 = OpCompositeExtract %v4float %26 0
+         %48 = OpVectorShuffle %v3float %47 %47 0 1 2
+               OpStore %49 %26
+         %50 = OpCompositeExtract %v4float %26 1
+         %51 = OpVectorShuffle %v3float %50 %50 0 1 2
+               OpStore %52 %26
+         %53 = OpCompositeExtract %v4float %26 2
+         %54 = OpVectorShuffle %v3float %53 %53 0 1 2
+         %55 = OpCompositeConstruct %mat3v3float %48 %51 %54
+         %44 = OpExtInst %mat3v3float %1 MatrixInverse %55
+         %43 = OpTranspose %mat3v3float %44
+         %56 = OpLoad %v3float %normal
+         %57 = OpMatrixTimesVector %v3float %43 %56
+         %58 = OpExtInst %v3float %1 Normalize %57
+               OpStore %out_normal %58
+               OpStore %62 %40
+         %64 = OpCompositeExtract %float %40 0
+               OpStore %65 %40
+         %66 = OpCompositeExtract %float %40 1
+               OpStore %67 %40
+         %68 = OpCompositeExtract %float %40 2
+         %61 = OpCompositeConstruct %v3float %64 %66 %68
+               OpStore %out_pos %61
+         %70 = OpLoad %v2float %uv
+               OpStore %out_uv %70
+         %78 = OpAccessChain %_ptr_Output_v4float %77 %uint_0
+         %79 = OpMatrixTimesVector %v4float %23 %40
+               OpStore %78 %79
                OpReturn
                OpFunctionEnd

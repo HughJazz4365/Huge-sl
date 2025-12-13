@@ -304,7 +304,6 @@ pub const Token = union(enum) {
     @"{",
     @"}",
     //keywords
-    member,
     @"const",
     mut,
     in,

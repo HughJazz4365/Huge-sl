@@ -562,10 +562,12 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
         .out => .output,
         .@"const" => {
             if (!self.inGlobalScope()) try self.current_name_mappings.append(self.arena, .{
-                .type_id = try self.convertTypeID(var_decl.type),
-                .id = 0,
                 .name = var_decl.name,
-                .load = try self.generateExpression(var_decl.initializer),
+                .id_info = .{
+                    .type_id = try self.convertTypeID(var_decl.type),
+                    .id = 0,
+                    .load = try self.heapWord(try self.generateExpression(var_decl.initializer)),
+                },
             }) else @panic("TODO: global scope constant");
             return;
         },
@@ -674,7 +676,14 @@ fn generateVariableDeclaration(self: *Generator, var_decl: Parser.VariableDeclar
     if (storage_class == .function) {
         try self.current_variable_buffer.appendSlice(self.arena, &.{ opWord(.variable, if (initializer == 0) 4 else 5), ptr_type_id, var_id, @intFromEnum(StorageClass.function) });
         if (initializer != 0) try self.addWord(initializer);
-        try self.current_name_mappings.append(self.arena, .{ .type_id = type_id, .id = var_id, .name = var_decl.name, .load = load });
+        try self.current_name_mappings.append(self.arena, .{
+            .name = var_decl.name,
+            .id_info = .{
+                .type_id = type_id,
+                .id = var_id,
+                .load = try self.heapWord(load),
+            },
+        });
     } else {
         if (!self.inGlobalScope()) try self.addInterfaceID(var_id);
         try self.global_vars.append(self.arena, .{
@@ -796,7 +805,7 @@ fn generateExpression(self: *Generator, expr: Expression) Error!WORD {
         .bin_op => |bin_op| try self.generateBinOp(bin_op, type_id),
         .u_op => |u_op| try self.generateUOp(u_op, type_id),
         .call => |call| try self.generateCall(call, type_id),
-        .constructor => |constructor| try self.generateConstructor(constructor.components, type_id),
+        .constructor => |constructor| try self.generateConstructor(type_id, constructor.components),
         .identifier => |identifier| try self.generateIdentifier(identifier),
         .indexing, .member_access => try self.generateAccessChain(expr),
         .builtin => |builtin| if (builtin == .variable) try self.generatePointerLoad(try self.generateBuiltinVariableIDInfo(builtin.variable)) else @panic("gen builtin function"),
@@ -817,8 +826,9 @@ fn generateCast(self: *Generator, cast: Parser.Cast) Error!WORD {
         if (from_type.isNumber()) @panic("mat from scalar");
         if (from_type == .matrix) {
             //load matrix so that generateIndexing uses the loaded value
-            _ = try self.generateExpression(cast.expr.*);
+            // _ = try self.generateExpression(cast.expr.*);
 
+            //TODO: find vector with components
             const n: WORD = @intFromEnum(cast.type.matrix.n);
             const m: WORD = @intFromEnum(cast.type.matrix.m);
             const v01 = if (m > @intFromEnum(from_type.matrix.m) or n > @intFromEnum(from_type.matrix.n)) switch (cast.type.matrix.width) {
@@ -869,7 +879,7 @@ fn generateCast(self: *Generator, cast: Parser.Cast) Error!WORD {
     @panic("idk how to gen that cast");
 }
 fn generateIdentifier(self: *Generator, identifier: []const u8) Error!WORD {
-    const id_info = try self.getNameInfo(identifier);
+    const id_info = try self.getNameIDInfo(identifier);
     if (id_info.load.* != 0) return id_info.load.*;
     const load = try self.addWordsReturnResult(&.{
         opWord(.load, 4),
@@ -887,8 +897,9 @@ fn generateAccessChain(self: *Generator, expr: Expression) Error!WORD {
     var access_chain: List(WORD) = .empty;
     defer access_chain.deinit(self.arena);
 
-    var const_mask: u64 = 0;
-    var target_name_info = try self.generateAccessChainTargetIDInfoRecursive(expr, &access_chain, &const_mask);
+    //if bit 'i' is '1' access_chain[i] is literal not an id
+    var literal_mask: u64 = 0;
+    var target_name_info = try self.getAccessChainTargetIDInfo(expr, &access_chain, &literal_mask);
     for (0..access_chain.items.len / 2) |i| //reverse access chain
         std.mem.swap(WORD, &access_chain.items[i], &access_chain.items[access_chain.items.len - i - 1]);
 
@@ -898,19 +909,19 @@ fn generateAccessChain(self: *Generator, expr: Expression) Error!WORD {
         self.typeFromID(target_name_info.type_id) == .vector;
 
     //convert all literals to ids if not all indices are compime known
-    if (const_mask != 0) {
+    if (literal_mask != 0) {
         for (access_chain.items, 0..) |*ac, i| {
-            if (((const_mask >> @truncate(i)) & 1) == 0)
+            if (((literal_mask >> @truncate(i)) & 1) == 0)
                 ac.* = try self.addConstant(
                     try self.convertTypeID(tp.u32_type),
                     .{ .quad = .{ ac.*, 0, 0, 0 } },
                 );
         }
-        const_mask = ~@as(u64, 0);
+        literal_mask = ~@as(u64, 0);
     }
 
     const l = access_chain.items.len;
-    if (target_name_info.load.* == 0 and const_mask == 0 and is_target_vector) {
+    if (target_name_info.load.* == 0 and literal_mask == 0 and is_target_vector) {
         target_name_info.load.* = try self.addWordsReturnResult(&.{
             opWord(.load, 4),
             self.typeFromID(target_name_info.type_id).pointer.pointed_id,
@@ -919,7 +930,7 @@ fn generateAccessChain(self: *Generator, expr: Expression) Error!WORD {
         });
     }
     if (target_name_info.load.* != 0) {
-        if (const_mask == 0) {
+        if (literal_mask == 0) {
             const id = self.newID();
             try self.addWords(&.{
                 opWord(.composite_extract, @truncate(4 + l)),
@@ -950,15 +961,15 @@ fn generateAccessChain(self: *Generator, expr: Expression) Error!WORD {
             });
             if (initialize) try self.current_variable_buffer.append(self.arena, target_name_info.load.*);
 
-            for (self.current_name_mappings.items) |*nm| if (nm.load == target_name_info.load.*) {
-                nm.type_id = ptr_type_id;
-                nm.id = id;
+            for (self.current_name_mappings.items) |*nm| if (nm.id_info.load.* == target_name_info.load.*) {
+                nm.id_info.type_id = ptr_type_id;
+                nm.id_info.id = id;
             };
             target_name_info.id = id;
         }
     }
     for (access_chain.items, 0..) |*ac, i| { //turn all the index literals into ids anyway
-        if (((const_mask >> @truncate(i)) & 1) == 0)
+        if (((literal_mask >> @truncate(i)) & 1) == 0)
             ac.* = try self.generateValue(.{ .type = tp.u32_type, .payload = .{ .wide = ac.* } });
     }
     const access_ptr_type_id = try self.typeID(.{ .pointer = .{ .pointed_id = access_type_id, .storage_class = target_name_info.storage_class } });
@@ -978,11 +989,11 @@ fn generateAccessChain(self: *Generator, expr: Expression) Error!WORD {
     });
     return load;
 }
-fn generateAccessChainTargetIDInfoRecursive(
+fn getAccessChainTargetIDInfo(
     self: *Generator,
     expr: Expression,
     access_chain: *List(WORD),
-    const_mask: *u64,
+    literal_mask: *u64,
 ) Error!IDInfo {
     const index_word: WORD, //
     const is_index_comptime: bool, //
@@ -1007,20 +1018,27 @@ fn generateAccessChainTargetIDInfoRecursive(
         else => unreachable,
     };
 
-    const_mask.* = const_mask.* << 1;
-    if (!is_index_comptime) const_mask.* |= 1;
+    literal_mask.* = literal_mask.* << 1;
+    if (!is_index_comptime) literal_mask.* |= 1;
     if (access_chain.items.len >= 64) return Error.GenError;
 
     try access_chain.append(self.arena, index_word);
 
     return switch (target) {
         .indexing, .member_access => //
-        try self.generateAccessChainTargetIDInfoRecursive(target, access_chain, const_mask),
-        else => try self.generatePointer(target),
+        try self.getAccessChainTargetIDInfo(target, access_chain, literal_mask),
+        .identifier => |identifier| try self.getNameIDInfo(identifier),
+        .builtin => |builtin| if (builtin == .variable)
+            try self.generateBuiltinVariableIDInfo(builtin.variable)
+        else
+            unreachable,
+
+        else => unreachable,
+        // self.generatePointer(target);
     };
 }
 
-fn getNameInfo(self: *Generator, name: []const u8) Error!IDInfo {
+fn getNameIDInfo(self: *Generator, name: []const u8) Error!IDInfo {
     if (!self.inGlobalScope()) {
         const entry_point = &self.entry_points.items[self.entry_points.items.len - 1];
         for (entry_point.push_constants.items, 0..) |*pc, i| {
@@ -1046,7 +1064,7 @@ fn getNameInfo(self: *Generator, name: []const u8) Error!IDInfo {
         }
         for (self.current_name_mappings.items) |*nm|
             if (util.strEql(name, nm.name))
-                return .{ .type_id = nm.type_id, .id = nm.id, .load = &nm.load, .global = false };
+                return nm.id_info;
     }
     return for (self.global_vars.items) |*gv| {
         if (util.strEql(name, gv.name) and self.checkEntryPointIndex(gv.entry_point_index)) {
@@ -1088,33 +1106,34 @@ fn generateIdentifierPointer(self: *Generator, identifier: []const u8) Error!IDI
         if (util.strEql(identifier, nm.name)) {
             const var_id = self.newID();
             const ptr_type_id =
-                if (nm.id == 0)
-                    try self.typeID(.{ .pointer = .{ .pointed_id = nm.type_id, .storage_class = .function } })
+                if (nm.id_info.id == 0)
+                    try self.typeID(.{ .pointer = .{ .pointed_id = nm.id_info.type_id, .storage_class = .function } })
                 else
-                    nm.type_id;
+                    nm.id_info.type_id;
 
-            const initialize = for (self.constants.items) |c| {
-                if (c.id == nm.load) break true;
+            const initializer = for (self.constants.items) |c| {
+                if (c.id == nm.id_info.load.*) break true;
             } else false;
 
             try self.current_variable_buffer.appendSlice(self.arena, &.{
-                opWord(.variable, if (initialize) 5 else 4),
+                opWord(.variable, if (initializer) 5 else 4),
                 ptr_type_id,
                 var_id,
                 @intFromEnum(StorageClass.function),
             });
+            nm.id_info.id = var_id;
+            nm.id_info.type_id = ptr_type_id;
 
-            if (initialize) {
-                try self.current_variable_buffer.append(self.arena, nm.load);
-            } else try self.addWords(&.{ opWord(.store, 3), var_id, nm.load });
+            if (initializer) {
+                try self.current_variable_buffer.append(self.arena, nm.id_info.load.*);
+            } else {
+                try self.addWords(&.{ opWord(.store, 3), var_id, nm.id_info.load.* });
+            }
 
-            nm.id = var_id;
-            nm.type_id = ptr_type_id;
-
-            return .{ .type_id = nm.type_id, .id = nm.id, .load = &nm.load };
+            return nm.id_info;
         };
 
-    return self.getNameInfo(identifier);
+    return self.getNameIDInfo(identifier);
 }
 
 fn generateBuiltinVariableIDInfo(self: *Generator, bv: bi.BuiltinVariable) Error!IDInfo {
@@ -1221,18 +1240,119 @@ fn generateBuiltinVariableIDInfo(self: *Generator, bv: bi.BuiltinVariable) Error
     };
 }
 
-fn generateConstructor(self: *Generator, components: []Expression, result_type_id: WORD) Error!WORD {
+fn generateConstructor(self: *Generator, type_id: WORD, components: []Expression) Error!WORD {
     const id = self.newID();
     var quad: [4]WORD = @splat(0);
     const slice = if (components.len <= 4) quad[0..components.len] else try self.arena.alloc(WORD, components.len);
     defer if (components.len > 4) self.arena.free(slice);
 
-    for (slice, components) |*s, c| s.* = try self.generateExpression(c);
+    std.debug.print("CONSTRUCTOR\n", .{});
+    const swizzle = try self.generateSwizzle(type_id, components);
+    if (swizzle != 0) return swizzle;
 
-    try self.addWords(&.{ opWord(.composite_construct, @truncate(3 + components.len)), result_type_id, id });
+    for (slice, components) |*s, c| {
+        std.debug.print("COMPONENT: {f}\n", .{c});
+        s.* = try self.generateExpression(c);
+    }
+
+    try self.addWords(&.{ opWord(.composite_construct, @truncate(3 + components.len)), type_id, id });
     for (slice) |s| try self.addWord(s);
     return id;
 }
+fn generateSwizzle(self: *Generator, type_id: WORD, components: []Expression) Error!WORD {
+    if (self.typeFromID(type_id) != .vector) return 0;
+
+    //means that component is not a vector[i]
+    const none = std.math.maxInt(usize);
+    var unique_vectors: [4]Expression = undefined;
+    var unique_vector_count: usize = 0;
+    //index into unique_vectors
+    var vector_indices: [4]usize = @splat(none);
+
+    var result_indices: [4]WORD = @splat(0);
+
+    for (components, 0..) |c, i| switch (c) {
+        .indexing => |indexing| {
+            if (indexing.index.* != .value) continue;
+            const index = util.extract(WORD, indexing.index.value.payload.wide);
+            const target_type = self.parser.typeOf(indexing.target.*);
+            if (target_type != .vector) continue;
+
+            const u = for (0..unique_vector_count) |j| {
+                const t = indexing.target.*;
+                if (std.meta.activeTag(unique_vectors[j]) == std.meta.activeTag(t) and
+                    switch (unique_vectors[j]) {
+                        //only check expression types that wouldnt
+                        //be turned into and intermediate variable???
+                        .identifier => |identifier| util.strEql(identifier, t.identifier),
+                        .builtin => |builtin| std.meta.eql(builtin, t.builtin),
+                        .value => |value| blk: {
+                            if (!tp.Type.eql(value.type, t.value.type))
+                                break :blk false;
+                            switch (value.type.vector.component.width) {
+                                inline else => |width| {
+                                    const U = @Int(.unsigned, @intFromEnum(width));
+                                    const len = @intFromEnum(value.type.vector.len);
+                                    break :blk std.mem.eql(
+                                        U,
+                                        @as([*]const U, @ptrCast(@alignCast(value.payload.ptr)))[0..len],
+                                        @as([*]const U, @ptrCast(@alignCast(t.value.payload.ptr)))[0..len],
+                                    );
+                                },
+                            }
+                        },
+
+                        else => false,
+                    }) break j;
+            } else unique_vector_count;
+
+            if (u == unique_vector_count) {
+                unique_vectors[unique_vector_count] = indexing.target.*;
+                unique_vector_count += 1;
+            }
+            vector_indices[i] = u;
+            result_indices[i] = index;
+        },
+
+        .value => {}, //literal,
+        else => {},
+    };
+
+    if (unique_vector_count > 2) return 0;
+
+    const vec_only = (unique_vector_count > 0) and for (vector_indices[0..components.len]) |vi| {
+        if (vi == none) break false;
+    } else true;
+
+    if (vec_only) {
+        var unique_vector_words: [4]WORD = @splat(0);
+        for (unique_vectors[0..unique_vector_count], 0..) |uv, i|
+            unique_vector_words[i] = try self.generateExpression(uv);
+
+        std.debug.print("VECIND: {any}, {any}\n", .{ vector_indices, result_indices });
+        const result = try self.addWordsReturnResult(&.{
+            opWord(.vector_shuffle, @intCast(5 + components.len)),
+            type_id,
+            self.newID(),
+            unique_vector_words[0],
+            unique_vector_words[@min(unique_vector_count - 1, 1)],
+        });
+        try self.addWords(result_indices[0..components.len]);
+        return result;
+    }
+
+    //==VALID:::CONFIGURATIONS===
+    // vec1[..]
+    // vec1[..] + vec1[..]
+    // vec1[2+] + literals
+    // vec1[2] + ids[2]
+
+    //==INVALID:::CONFIGURATIONS===
+
+    //TODO: intermediate vectors
+    return 0;
+}
+
 fn generateCall(self: *Generator, call: Parser.Call, result_type_id: WORD) Error!WORD {
     return switch (call.callee.*) {
         .value => |value| blk: {
@@ -1278,6 +1398,22 @@ fn generateCall(self: *Generator, call: Parser.Call, result_type_id: WORD) Error
                 opWord(.transpose, 4),
                 result_type_id,
                 self.newID(),
+                try self.generateExpression(call.args[0]),
+            }),
+            .ceil => try self.addWordsReturnResult(&.{
+                opWord(.ext_inst, 6),
+                result_type_id,
+                self.newID(),
+                glsl_std_id,
+                @intFromEnum(GlslStdExtOp.ceil),
+                try self.generateExpression(call.args[0]),
+            }),
+            .floor => try self.addWordsReturnResult(&.{
+                opWord(.ext_inst, 6),
+                result_type_id,
+                self.newID(),
+                glsl_std_id,
+                @intFromEnum(GlslStdExtOp.floor),
                 try self.generateExpression(call.args[0]),
             }),
             else => @panic("idk how to gen that builtin call"),
@@ -1503,7 +1639,8 @@ const GlobalVariable = struct {
     load: WORD = 0,
     entry_point_index: u32 = ~@as(u32, 0),
 };
-const NameMapping = struct { name: []const u8, type_id: WORD, id: WORD, load: WORD = 0 };
+// const NameMapping = struct { name: []const u8, type_id: WORD, id: WORD, load: WORD = 0 };
+const NameMapping = struct { name: []const u8, id_info: IDInfo = .{} };
 
 const Constant = struct {
     id: WORD,
@@ -1659,6 +1796,11 @@ fn typeID(self: *Generator, @"type": Type) Error!WORD {
         break :blk id;
     };
 }
+fn heapWord(self: *Generator, word: WORD) Error!*WORD {
+    const ptr = try self.arena.create(WORD);
+    ptr.* = word;
+    return ptr;
+}
 fn newID(self: *Generator) WORD {
     self.current_id += 1;
     return self.current_id - 1;
@@ -1806,6 +1948,9 @@ const GlslStdExtOp = enum(WORD) {
     reflect = 71,
     pow = 26,
     matrix_inverse = 34,
+
+    floor = 8,
+    ceil = 9,
 
     fmax = 40,
     umax = 41,

@@ -15,6 +15,10 @@ const name_map: std.StaticStringMap(Builtin) = .initComptime(.{
     .{ "reflect", Builtin{ .function = .reflect } },
     .{ "transpose", Builtin{ .function = .transpose } },
     .{ "inverse", Builtin{ .function = .inverse } },
+
+    .{ "ceil", Builtin{ .function = .ceil } },
+    .{ "floor", Builtin{ .function = .floor } },
+
     .{ "colHex", Builtin{ .function = .col_hex } },
 
     //comptime
@@ -34,10 +38,14 @@ pub const Builtin = union(enum) {
     variable: BuiltinVariable,
 };
 pub const BuiltinFunction = enum {
-    col_hex,
     reflect,
     transpose,
     inverse,
+
+    ceil,
+    floor,
+
+    col_hex,
 
     //comptime
     buffer,
@@ -61,7 +69,11 @@ pub const BuiltinFunction = enum {
                 .rtype = &.type,
                 .arg_types = &.{ .type, texture_type_type, .bool },
             } },
-            .transpose, .inverse => .{ .function = .{
+            .ceil,
+            .floor,
+            .transpose,
+            .inverse,
+            => .{ .function = .{
                 .rtype = &.unknownempty,
                 .arg_types = &.{.unknownempty},
             } },
