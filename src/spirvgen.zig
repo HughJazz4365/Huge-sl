@@ -1246,14 +1246,11 @@ fn generateConstructor(self: *Generator, type_id: WORD, components: []Expression
     const slice = if (components.len <= 4) quad[0..components.len] else try self.arena.alloc(WORD, components.len);
     defer if (components.len > 4) self.arena.free(slice);
 
-    std.debug.print("CONSTRUCTOR\n", .{});
     const swizzle = try self.generateSwizzle(type_id, components);
     if (swizzle != 0) return swizzle;
 
-    for (slice, components) |*s, c| {
-        std.debug.print("COMPONENT: {f}\n", .{c});
+    for (slice, components) |*s, c|
         s.* = try self.generateExpression(c);
-    }
 
     try self.addWords(&.{ opWord(.composite_construct, @truncate(3 + components.len)), type_id, id });
     for (slice) |s| try self.addWord(s);
@@ -1329,7 +1326,6 @@ fn generateSwizzle(self: *Generator, type_id: WORD, components: []Expression) Er
         for (unique_vectors[0..unique_vector_count], 0..) |uv, i|
             unique_vector_words[i] = try self.generateExpression(uv);
 
-        std.debug.print("VECIND: {any}, {any}\n", .{ vector_indices, result_indices });
         const result = try self.addWordsReturnResult(&.{
             opWord(.vector_shuffle, @intCast(5 + components.len)),
             type_id,
