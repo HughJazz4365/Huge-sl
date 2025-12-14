@@ -1555,6 +1555,12 @@ fn generateBinOp(self: *Generator, bin_op: Parser.BinOp, result_type_id: WORD) E
                     self.newID(),
                     left,
                     right,
+                }) else if (deep_type == .vector) break :blk self.addWordsReturnResult(&.{
+                    opWord(.vector_times_scalar, 5),
+                    try self.convertTypeID(deep_type),
+                    self.newID(),
+                    deep,
+                    shallow,
                 });
                 //asymmetric ones:
                 //scalar x vector (both ways)
@@ -1932,6 +1938,7 @@ const Op = enum(WORD) {
 
     imul = 132,
     fmul = 133,
+    vector_times_scalar = 142,
     vector_times_matrix = 144,
     matrix_times_vector = 145,
     matrix_times_matrix = 146,

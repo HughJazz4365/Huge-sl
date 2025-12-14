@@ -1,22 +1,9 @@
-const MVP = struct{vp, model : mat4}
-descriptor(0, 0) bindless_mvp_buffers: []@Buffer(MVP, .ssbo)
-
-push  mvp_id, second : u32, third : vec3
-//push   third : vec3, mvp_id, second : u32
-
 const vert = entrypoint(.vertex){
-	const vp, model =
-	bindless_mvp_buffers[mvp_id].vp,
-	bindless_mvp_buffers[mvp_id].model
+	//in iv : ivec3, is: i32
+	//out io = iv * is
 
-	
-	in pos, normal: vec3, uv: vec2
-	const world_pos = model * vec4{pos, 1}
-
-	out(.flat) out_normal = |(@transpose(@inverse(mat3{model})) * normal)
-	out out_pos, out_uv = world_pos.xyz, uv 
-
-	@position = vp * world_pos
+	in fv: vec3, fs: f32
+	out fo = fv * fs
 }
 
 
