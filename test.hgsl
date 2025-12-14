@@ -1,7 +1,8 @@
 const MVP = struct{vp, model : mat4}
 descriptor(0, 0) bindless_mvp_buffers: []@Buffer(MVP, .ssbo)
 
-push  mvp_id : u32
+push  mvp_id, second : u32, third : vec3
+//push   third : vec3, mvp_id, second : u32
 
 const vert = entrypoint(.vertex){
 	const vp, model =

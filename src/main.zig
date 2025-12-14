@@ -27,8 +27,8 @@ pub fn main() !void {
     );
     defer compiler.deinit();
     const path_arr = [_][]const u8{
-        // "test.hgsl",
-        "../Huge/shader.hgsl",
+        "test.hgsl",
+        // "../Huge/shader.hgsl",
         // "../Huge/triangle.hgsl",
         // "source.hgsl",
         // "func.hgsl",

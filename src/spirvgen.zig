@@ -501,7 +501,14 @@ fn decorateStructLayout(self: *Generator, type_id: WORD, fields: []const WORD, r
             },
             else => {},
         }
-        offset = util.wrut(offset, self.alignOf(field_type, .scalar)); //???
+
+        if (field_type == .vector and
+            field_size > 16 or ((offset / 16) != ((offset + field_size) / 16)))
+        {
+            offset = util.wrut(offset, 16);
+        } else offset = util.wrut(offset, self.alignOf(field_type, .scalar)); //???
+
+        // std.debug.print(" offset: {d}\n", .{offset});
         try self.decorations.appendSlice(self.arena, &.{
             opWord(.member_decorate, 5),
             type_id,
@@ -516,8 +523,8 @@ fn alignOf(self: *Generator, @"type": Type, alignment: Alignment) WORD {
     return switch (@"type") {
         .float => |width| @intFromEnum(width) / 8,
         .int => |int| @intFromEnum(int.width) / 8,
-        .vector => |vector| self.alignOf(self.typeFromID(vector.component_id), alignment) * //
-            @as(WORD, if (alignment == .scalar) 1 else if (vector.len == ._2) 2 else 4),
+        .vector => |vector| self.alignOf(self.typeFromID(vector.component_id), alignment),
+        // * @as(WORD, if (alignment == .scalar) 1 else if (vector.len == ._2) 2 else 4),
         .array => |array| util.wrut(self.alignOf(self.typeFromID(array.component_id), alignment), if (alignment == .extended) 16 else 1),
         .matrix => |matrix| util.wrut(self.alignOf(self.typeFromID(matrix.column_type_id), alignment), if (alignment == .extended) 16 else 1),
         else => @panic("idk alignment of this type"),

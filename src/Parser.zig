@@ -95,8 +95,8 @@ pub fn parse(allocator: Allocator, tokenizer: *Tokenizer, settings: Settings, fi
 
     try self.parseScope(&self.global_scope.scope);
 
-    // if (zigbuiltin.mode == .Debug) {
-    if (false and zigbuiltin.mode == .Debug) {
+    if (zigbuiltin.mode == .Debug) {
+        // if (false and zigbuiltin.mode == .Debug) {
         std.debug.print("[GLOBAL IO: ", .{});
         for (self.global_scope.global_io.items) |gi| std.debug.print("{s}, ", .{gi});
         std.debug.print("]\n", .{});
