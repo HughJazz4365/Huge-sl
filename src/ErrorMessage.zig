@@ -8,11 +8,27 @@ const ErrMsg = @This();
 
 statement_offset: usize = 0,
 token_offset: usize = 0,
+//*Tokenizer
 
 writer: *std.Io.Writer,
 source: []const u8 = "",
 
 path: []const u8 = "",
+pub fn printErrorInfo(writer: *std.Io.Writer, error_info: ErrorInfo) Error {
+    try self.printPath();
+    try self.writer.print("invalid {s} literal:\n", .{if (is_float) "float" else "integer"});
+
+    try self.printLineAtOffset(offset);
+    try self.writer.flush();
+    return Error.SyntaxError;
+}
+pub const ErrorInfo = union(enum) {
+    //syntax
+    invalid_numeric_literal: struct { offset: usize, is_float: bool },
+    invalid_character: struct { offset: usize, char: u8 },
+
+    unknown,
+};
 pub fn offFromPtr(self: ErrMsg, ptr: [*]const u8) usize {
     return @intFromPtr(ptr) - @intFromPtr(self.source.ptr);
 }
