@@ -1,0 +1,77 @@
+==MAIN REWRITE POINTS==:
+
+1) expression dynamicity
+uniform     | comptime?                     | -
+dyn_uniform | dynamic, same for all threads | dep. on push constants
+dynamic     | can differ between threads    | dep
+
+expression.dynamicity = max(expression.subexpressions[].dynamicity)
+
+===| expression
+
+2) expression bounds
+(shouldnt be stored, but rather calculated recursively on demand)
+
+3)control flow blocks:
+========================================
+1. function [
+	?return ::: goto block end
+	/ if(rtype == void) return
+]
+2. standalone block [
+	bounds doesnt translate directly into instructions
+	used for scoping variables, 'defer' direction
+]
+3. if [
+	true [
+	]
+	?false[
+	]
+]
+4. for loop[
+	/ continue
+]
+5. while loop
+6. switch 
+
+========================================
+
+3) defer:
+	deferred statement gets inserted at each end of the scope its in
+	executed in reverse order
+5) descriptor indexing
+6) using pointers instead of buffers
+7) more expression analytics for better code gen
+8) more consistent syntax(type names, comma separation)
+
+?9) no vertex attributes(vertex fetch only)?
+
+-------------------------------------------------
+why do we need to track control flow anyway??:
+1. defer
+2. codegen in general??
+3. smth about dynamic expressions
+
+figure out control flow representation
+ternary in cf 
+partial conditional expression( a = if(cond) return else 5
+
+----
+if either of branches has side effects -
+if its const initializer: 
+
+control flow can only go:
+1. forwards
+2. backwards into parent
+
+main[
+  [(cond: pred > 4) - dyn_uniform
+    true -> [
+      
+    ]
+    false -> [
+      
+    ]
+  ] -> merge[
+  ]
+]

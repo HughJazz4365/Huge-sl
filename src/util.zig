@@ -8,6 +8,10 @@ pub fn rut(T: type, a: T, b: T) T {
     return (a + b - 1) / b * b;
 }
 
+pub fn last(T: type, slice: []const T) T {
+    return slice[slice.len -| 1];
+}
+
 pub fn removeAt(T: type, slice_ptr: *[]T, index: usize) void {
     @memmove(slice_ptr.*[index .. slice_ptr.len - 1], slice_ptr.*[index + 1 ..]);
     slice_ptr.len -= 1;

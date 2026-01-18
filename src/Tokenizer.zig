@@ -1,117 +1,159 @@
 const std = @import("std");
+const hgsl = @import("root.zig");
 const util = @import("util.zig");
 const tp = @import("type.zig");
 const Tokenizer = @This();
-const Parser = @import("Parser.zig");
-const ErrMsg = @import("ErrorMessage.zig");
+const error_message = @import("errorMessage.zig");
 
-const Error = @import("root.zig").Error;
-const State = struct {
-    source: []const u8,
-    last: Token = .eof,
-    last_ptr: [*]const u8 = undefined,
-};
-state: State,
+const comment_symbol = "//";
 
+error_info: ErrorInfo = .unknown,
+source: []const u8,
+last: FatToken = .{},
+
+//needed for error messages
 full_source: []const u8,
-err_msg: *ErrMsg,
+path: []const u8,
 
+pub fn skipEndl(self: *Tokenizer) Error!void {
+    self.last = try self.peekRaw();
+}
 pub fn skipErr(self: *Tokenizer) Error!void {
-    _ = try self.next();
+    self.bump((try self.peekRaw()).slice.len);
 }
-
-///assumes token was already peeked
 pub fn skip(self: *Tokenizer) void {
-    _ = self.next() catch unreachable;
+    self.bump((self.peekRaw() catch unreachable).slice.len);
 }
+pub fn peekPastEndl(self: *Tokenizer) Error!Token {
+    const first = try self.peek();
+    if (first != .endl) return first;
 
-pub fn peekArray(self: *Tokenizer, comptime num: usize) Error![num]Token {
-    var result: [num]Token = undefined;
-    const save_state = self.state;
-    defer self.state = save_state;
+    const t = self.*;
+    defer self.* = t;
 
-    for (&result, 0..) |*t, i| {
-        t.* = try self.peek();
-        if (i + 1 < num) self.skip();
-    }
-
-    return result;
+    self.skip();
+    return try self.peek();
 }
-pub fn peekTimes(self: *Tokenizer, num: usize) Error!Token {
-    const save_state = self.state;
-    defer self.state = save_state;
-
-    for (0..num -| 1) |_| try self.skipErr();
-    const token = try self.peek();
-
-    return token;
+pub fn peekSlice(self: *Tokenizer, slice: []Token) Error!void {
+    const t = self.*;
+    defer self.* = t;
+    for (slice) |*token| token.* = try self.next();
 }
 pub fn peek(self: *Tokenizer) Error!Token {
-    const save_state = self.state;
-    defer self.state = save_state;
-
-    return self.next();
+    return (try self.peekFat()).token;
 }
+pub fn peekFat(self: *Tokenizer) Error!FatToken {
+    const s = self.source;
+    defer self.source = s;
+    return self.peekRaw();
+}
+
 pub fn next(self: *Tokenizer) Error!Token {
-    const fat = try self.nextFat();
-    self.shift(fat.len);
-    self.state.last = fat.token;
-    return fat.token;
+    self.last = try self.peekRaw();
+    self.bump(self.last.slice.len);
+    return self.last.token;
 }
 
-fn nextFat(self: *Tokenizer) Error!FatToken {
-    const bytes = switch (self.nextBytes()) {
-        .endl => return .{ .len = 0, .token = .endl },
-        .eof => return .{ .len = 0, .token = .eof },
-        .valid => |v| v,
-    };
+fn peekRaw(self: *Tokenizer) Error!FatToken {
+    var is_endl = false;
+    var in_comment = false;
+    var count: usize = 0;
+
+    while (self.source.len > count) {
+        const char = self.source[count];
+
+        const is_valid: std.meta.Tuple(&.{ bool, usize }) = blk: {
+            if (util.strStartsComp(self.source[count..], comment_symbol)) {
+                in_comment = true;
+                break :blk .{ false, comment_symbol.len };
+            }
+            if (util.startingEndlLength(self.source)) |l| {
+                is_endl = true;
+                in_comment = false;
+                break :blk .{ false, l };
+            }
+            break :blk .{ !isWhitespace(char) and !in_comment, 1 };
+        };
+        if (is_valid[0]) {
+            if (is_endl) break;
+            count += 1;
+        } else {
+            if (count > 0) break;
+            self.bump(is_valid[1]);
+        }
+    }
+    if (count == 0) return if (is_endl)
+        .{ .token = .endl, .slice = self.source[0..0] }
+    else
+        .{ .token = .eof, .slice = self.source[0..0] };
+
+    const bytes = self.source[0..count];
     inline for (keywords) |tag| {
         if (if (@intFromEnum(tag) >= @intFromEnum(TokenTag.@"const"))
             strExtract(bytes, @tagName(tag))
         else
             util.strStarts(bytes, @tagName(tag))) return .{
-            .len = @tagName(tag).len,
             .token = @unionInit(Token, @tagName(tag), {}),
+            .slice = bytes[0..@tagName(tag).len],
         };
     }
 
-    if (try self.getNumberLiteralRaw(bytes)) |l| return l;
+    if (try self.getNumberLiteralFat(bytes)) |l| return l;
 
     const bin_op_match = util.matchToEnum(BinaryOperator, bytes);
     const u_op_match = util.matchToEnum(UnaryOperator, bytes);
-    switch (self.state.last) {
+    switch (self.last.token) {
         .identifier,
         .type_literal,
-        .compfloat,
-        .compint,
+        .int_literal,
+        .float_literal,
         .true,
         .false,
         .@")",
         .@"]",
         .@"}",
         => {
-            if (bin_op_match) |x| return .{ .len = @tagName(x).len, .token = .{ .bin_op = x } };
-            if (u_op_match) |x| return .{ .len = @tagName(x).len, .token = .{ .u_op = x } };
+            if (bin_op_match) |x| return .{ .token = .{ .bin_op = x }, .slice = bytes[0..@tagName(x).len] };
+            if (u_op_match) |x| return .{ .token = .{ .u_op = x }, .slice = bytes[0..@tagName(x).len] };
         },
         else => {
-            if (u_op_match) |x| return .{ .len = @tagName(x).len, .token = .{ .u_op = x } };
-            if (bin_op_match) |x| return .{ .len = @tagName(x).len, .token = .{ .bin_op = x } };
+            if (u_op_match) |x| return .{ .token = .{ .u_op = x }, .slice = bytes[0..@tagName(x).len] };
+            if (bin_op_match) |x| return .{ .token = .{ .bin_op = x }, .slice = bytes[0..@tagName(x).len] };
         },
     }
 
-    if (getTypeLiteralRaw(bytes)) |t| return t;
+    if (try self.getTypeLiteralFat(bytes)) |t| return t;
 
     const is_builtin = bytes[0] == '@';
     const valid_identifier = try self.stripValidIdentifier(bytes[@intFromBool(is_builtin)..]);
 
     return if (is_builtin)
-        .{ .len = valid_identifier.len + 1, .token = .{ .builtin = valid_identifier } }
+        .{ .token = .{ .builtin = valid_identifier }, .slice = bytes[0 .. valid_identifier.len + 1] }
     else
-        .{ .len = valid_identifier.len, .token = .{ .identifier = valid_identifier } };
+        .{ .token = .{ .identifier = valid_identifier }, .slice = bytes[0..valid_identifier.len] };
 }
 
-const FatToken = struct { len: usize, token: Token };
-fn getNumberLiteralRaw(self: *Tokenizer, bytes: []const u8) Error!?FatToken {
+fn stripValidIdentifier(self: *Tokenizer, bytes: []const u8) Error![]const u8 {
+    var letter = false;
+    const end = for (bytes, 0..) |char, i| {
+        if (!switch (char) {
+            'a'...'z', 'A'...'Z', '_' => blk: {
+                letter = true;
+                break :blk true;
+            },
+            '0'...'9' => i != 0,
+            else => false,
+        }) break i;
+    } else bytes.len;
+    if (!letter) {
+        //TODO: invalid character error
+        return self.errorOut(.unknown);
+    }
+
+    return bytes[0..end];
+}
+fn getNumberLiteralFat(self: *Tokenizer, bytes: []const u8) Error!?FatToken {
+    //redo that
     const neg = bytes[0] == '-';
 
     var count: usize = @intFromBool(neg);
@@ -148,105 +190,87 @@ fn getNumberLiteralRaw(self: *Tokenizer, bytes: []const u8) Error!?FatToken {
     if (count - off - @as(usize, @intFromBool(dot)) == 0)
         return null;
     return .{
-        .len = count,
+        .slice = bytes[0..count],
         .token = if (dot) .{
-            .compfloat = blk: {
-                const f = std.fmt.parseFloat(Parser.CF, bytes[off..count]) catch
-                    return self.err_msg.errorInvalidNumericLiteral(self.err_msg.offFromPtr(bytes.ptr), true);
+            .float_literal = blk: {
+                const f = std.fmt.parseFloat(hgsl.CF, bytes[off..count]) catch
+                    return self.errorOut(.unknown);
+                // return self.err_msg.errorInvalidNumericLiteral(self.err_msg.offFromPtr(bytes.ptr), true);
                 break :blk if (neg) -f else f;
             },
-        } else .{ .compint = blk: {
-            const i = std.fmt.parseInt(Parser.CI, bytes[off..count], base) catch
-                return self.err_msg.errorInvalidNumericLiteral(self.err_msg.offFromPtr(bytes.ptr), false);
-            break :blk if (neg) -i else i;
-        } },
+        } else .{
+            .int_literal = blk: {
+                const i = std.fmt.parseInt(hgsl.CI, bytes[off..count], base) catch
+                    return self.errorOut(.unknown);
+                // return self.err_msg.errorInvalidNumericLiteral(self.err_msg.offFromPtr(bytes.ptr), false);
+                break :blk if (neg) -i else i;
+            },
+        },
     };
 }
-fn getTypeLiteralRaw(bytes: []const u8) ?FatToken {
+fn getTypeLiteralFat(self: *Tokenizer, bytes: []const u8) Error!?FatToken {
     inline for (.{ "void", "bool", "type", "compint", "compfloat" }) |s| {
         if (strExtract(bytes, s))
-            return .{ .len = s.len, .token = .{ .type_literal = @unionInit(tp.Type, s, {}) } };
+            return .{
+                .token = .{ .type_literal = @unionInit(tp.Type, s, {}) },
+                .slice = bytes[0..s.len],
+            };
     }
-    inline for (comptime tp.Matrix.allMatrixTypes) |m| {
-        const literal = m.toLiteral();
-        if (strExtract(bytes, literal)) {
-            return .{ .len = literal.len, .token = .{ .type_literal = .{ .matrix = m } } };
-        } else if (m.m == m.n and strExtract(bytes, literal[0 .. literal.len - 2]))
-            return .{ .len = literal.len - 2, .token = .{ .type_literal = .{ .matrix = m } } };
-    }
-    inline for (comptime tp.Vector.allVectorTypes) |v| {
-        const vec_literal = comptime v.toLiteral();
-        if (strExtract(bytes, vec_literal))
-            return .{ .len = vec_literal.len, .token = .{ .type_literal = .{ .vector = v } } };
-    }
-    inline for (comptime tp.Scalar.allScalarTypes) |v| {
-        const num_literal = comptime v.toLiteral();
-        if (strExtract(bytes, num_literal))
-            return .{ .len = num_literal.len, .token = .{ .type_literal = .{ .scalar = v } } };
-    }
-    return null;
-}
+    const scalar: tp.Scalar = .{
+        .layout = switch (bytes[0]) {
+            'i' => .int,
+            'u' => .uint,
+            'f' => .float,
+            else => return null,
+        },
+        .width = inline for (@typeInfo(tp.Scalar.Width).@"enum".fields) |ef| {
+            if (util.strStarts(bytes[1..], ef.name[1..]))
+                break @enumFromInt(ef.value);
+        } else return null,
+    };
+    if (scalar.layout == .float and scalar.width == ._8)
+        return self.errorOut(.float8);
 
-pub fn nextBytes(self: *Tokenizer) RawToken {
-    const comment_symbol = "//"; /////////
+    const scalar_off: usize = if (scalar.width == ._8) 2 else 3;
+    if (bytes.len <= scalar_off) return .{
+        .token = .{ .type_literal = .{ .scalar = scalar } },
+        .slice = bytes,
+    };
 
-    var is_endl = false;
-    var in_comment = false;
-    var count: usize = 0;
-
-    while (self.state.source.len > count) {
-        const char = self.state.source[count];
-
-        const is_valid: std.meta.Tuple(&.{ bool, usize }) = blk: {
-            if (util.strStartsComp(self.state.source[count..], comment_symbol)) {
-                in_comment = true;
-                break :blk .{ false, comment_symbol.len };
-            }
-            if (util.startingEndlLength(self.state.source)) |l| {
-                is_endl = true;
-                in_comment = false;
-                break :blk .{ false, l };
-            }
-            break :blk .{ !isWhitespace(char) and !in_comment, 1 };
-        };
-        if (is_valid[0]) {
-            if (is_endl) break;
-            count += 1;
-        } else {
-            if (count > 0) break;
-            self.shift(is_valid[1]);
+    var lengthes: [2]tp.Vector.Len = undefined;
+    var dim: usize = 0;
+    for (0..2) |i| {
+        const off = scalar_off + i * 2 + 1;
+        if (bytes.len <= off) break;
+        if (bytes[off - 1] == 'x') {
+            if (bytes.len <= off) return null;
+            lengthes[i] = switch (bytes[off]) {
+                '2'...'4' => @enumFromInt(bytes[off] - '0'),
+                else => return null,
+            };
+            dim += 1;
         }
     }
-    if (count == 0) return if (is_endl) .endl else .eof;
-    self.state.last_ptr = self.state.source.ptr;
-    return .{ .valid = self.state.source[0..count] };
+    const len = scalar_off + dim * 2;
+    if (bytes.len > len and isIdentifierChar(bytes[len])) return null;
+
+    return .{
+        .token = .{ .type_literal = switch (dim) {
+            0 => .{ .scalar = scalar },
+            1 => .{ .vector = .{ .len = lengthes[0], .component = scalar } },
+            2 => .{ .matrix = .{ .m = lengthes[0], .n = lengthes[1], .component = scalar } },
+            else => unreachable,
+        } },
+        .slice = bytes[0..len],
+    };
 }
-fn isWhitespace(char: u8) bool {
-    return char == ' ' or char == '\t';
-}
+
 fn strExtract(haystack: []const u8, needle: []const u8) bool {
     if (!util.strStarts(haystack, needle)) return false;
     if (haystack.len == needle.len) return true;
     return !isIdentifierChar(haystack[needle.len]);
 }
-fn stripValidIdentifier(self: *Tokenizer, bytes: []const u8) Error![]const u8 {
-    var letter = false;
-    const end = for (bytes, 0..) |char, i| {
-        if (!switch (char) {
-            'a'...'z', 'A'...'Z', '_' => blk: {
-                letter = true;
-                break :blk true;
-            },
-            '0'...'9' => i != 0,
-            else => false,
-        }) break i;
-    } else bytes.len;
-    if (!letter) {
-        return self.err_msg.errorInvalidCharacter(self.err_msg.offFromPtr(bytes.ptr), bytes[0]);
-    }
 
-    return bytes[0..end];
-}
 fn isIdentifierChar(char: u8) bool {
     return switch (char) {
         'a'...'z',
@@ -259,20 +283,12 @@ fn isIdentifierChar(char: u8) bool {
     };
 }
 
-fn shift(self: *Tokenizer, amount: usize) void {
-    self.state.source = self.state.source[amount..];
+fn bump(self: *Tokenizer, amount: usize) void {
+    self.source = self.source[amount..];
 }
 const RawToken = union(enum) { eof, endl, valid: []const u8 };
-
-pub fn new(source: []const u8, err_msg: *ErrMsg) Tokenizer {
-    return .{
-        .state = .{
-            .source = source,
-            .last = .eof,
-        },
-        .err_msg = err_msg,
-        .full_source = source,
-    };
+fn isWhitespace(char: u8) bool {
+    return char == ' ' or char == '\t';
 }
 
 pub const Token = union(enum) {
@@ -283,13 +299,13 @@ pub const Token = union(enum) {
     builtin: []const u8,
 
     type_literal: tp.Type,
-    compint: Parser.CI,
-    compfloat: Parser.CF,
+
+    int_literal: hgsl.CI,
+    float_literal: hgsl.CF,
 
     bin_op: BinaryOperator,
     u_op: UnaryOperator,
 
-    swizzle: []const u8,
     @"=>",
     @"=",
     //punctuation
@@ -303,22 +319,25 @@ pub const Token = union(enum) {
     @"]",
     @"{",
     @"}",
-    //keywords
+
     @"const",
     mut,
     in,
     out,
-    descriptor,
     push,
     shared,
 
     @"if",
     @"else",
     @"switch",
+    @"for",
+
     @"return",
     @"break",
-    @"for",
-    @"while",
+    @"continue",
+    discard,
+
+    @"defer",
 
     @"fn",
     entrypoint,
@@ -326,12 +345,9 @@ pub const Token = union(enum) {
 
     @"struct",
     @"enum",
-    image,
-    @"defer",
 
     true,
     false,
-
     pub const format = @import("debug.zig").formatToken;
 };
 const TokenTag = @typeInfo(Token).@"union".tag_type.?;
@@ -411,5 +427,15 @@ pub const UnaryOperator = util.SortEnumDecending(
         @"|", //normalize
         @"~", //magnitude|
         @"~~", //sqr magnitude
+
+        @"*", //pointer type
     },
 );
+
+pub fn errorOut(self: *Tokenizer, error_info: ErrorInfo) Error {
+    self.error_info = error_info;
+    return error_message.errorOut(error_info);
+}
+pub const FatToken = struct { token: Token = .eof, slice: []const u8 = "" };
+const ErrorInfo = error_message.ErrorInfo;
+const Error = hgsl.Error;

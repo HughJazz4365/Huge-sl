@@ -23,16 +23,16 @@ pub fn build(b: *std.Build) !void {
     });
     b.installArtifact(cli);
 
-    const lsp = b.addExecutable(.{
-        .name = "lsp",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("lsp/lspmain.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "hgsl", .module = lib_mod }},
-        }),
-    });
-    b.installArtifact(lsp);
+    // const lsp = b.addExecutable(.{
+    //     .name = "lsp",
+    //     .root_module = b.createModule(.{
+    //         .root_source_file = b.path("lsp/lspmain.zig"),
+    //         .target = target,
+    //         .optimize = optimize,
+    //         .imports = &.{.{ .name = "hgsl", .module = lib_mod }},
+    //     }),
+    // });
+    // b.installArtifact(lsp);
 
     const run = b.addRunArtifact(cli);
     run.step.dependOn(b.getInstallStep());

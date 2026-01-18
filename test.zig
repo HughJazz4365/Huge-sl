@@ -6,5 +6,10 @@ pub fn main() !void {
     //3-4, f32 => 128
     //2, f16 => 128
     //3-4, f16 => 128
-
+}
+fn f() void {
+    return function();
+}
+fn function() void {
+    std.debug.print("aerstnaroi\n", .{});
 }

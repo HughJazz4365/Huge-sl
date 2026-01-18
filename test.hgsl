@@ -1,9 +1,13 @@
-const vert = entrypoint(.vertex){
-	//in iv : ivec3, is: i32
-	//out io = iv * is
-
-	in fv: vec3, fs: f32
-	out fo = fv * fs
+const main = entrypoint(.fragment){
+	out o : f32
+	const two = 2
+	{
+		out k = two
+		out h = o
+		{{
+		out k = two
+		}}//breaks on adding one more pair of brackets
+	}
+	const r = two
+	
 }
-
-
