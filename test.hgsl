@@ -1,13 +1,1 @@
-const main = entrypoint(.fragment){
-	out o : f32
-	const two = 2
-	{
-		out k = two
-		out h = o
-		{{
-		out k = two
-		}}//breaks on adding one more pair of brackets
-	}
-	const r = two
-	
-}
+const kek = mem

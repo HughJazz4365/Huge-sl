@@ -23,14 +23,22 @@ pub fn test_() !void {
 
     var buf: [128]u8 = undefined;
     var file_writer = std.Io.File.stdout().writer(io, &buf);
+    _ = &file_writer;
 
-    _ = try compile(
-        io,
-        allocator,
-        "test.hgsl",
-        // "cf.hgsl",
-        &file_writer.interface,
-    );
+    const path = "test.hgsl";
+    const source = readFile(io, allocator, path) catch
+        return Error.FileReadFailed;
+
+    var tok: Tokenizer = .{ .full_source = source, .path = path };
+    try tok.tokenize(allocator);
+
+    // _ = try compile(
+    //     io,
+    //     allocator,
+    //     "test.hgsl",
+    //     // "cf.hgsl",
+    //     &file_writer.interface,
+    // );
 }
 pub fn compile(io: std.Io, allocator: Allocator, path: []const u8, error_writer: *std.Io.Writer) Error![]u32 {
     const source = readFile(io, allocator, path) catch

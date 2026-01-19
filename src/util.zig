@@ -42,6 +42,45 @@ pub fn pow(T: type, left: T, right: T) T {
     else
         std.math.pow(T, left, right);
 }
+fn EnumSlice(
+    Enum: type,
+    I: type,
+    comptime from: []const u8,
+    comptime to: []const u8,
+) type {
+    const f = @intFromEnum(from);
+    const t = @intFromEnum(to);
+    const len = t - f;
+    var enum_field_names: [len][]const u8 = undefined;
+    var enum_field_values: [len]I = undefined;
+
+    for (@typeInfo(Enum).@"enum".fields[f..t], f..t) |ef, i| {
+        enum_field_names[i] = ef.name;
+        enum_field_values[i] = @intCast(i);
+    }
+
+    return @Enum(
+        I,
+        .exhaustive,
+        &enum_field_names,
+        &enum_field_values,
+    );
+}
+pub fn EnumSliceConv(
+    Enum: type,
+    I: type,
+    comptime from: Enum,
+    comptime to: Enum,
+) @Tuple(&.{ EnumSlice(Enum, I, to, from), fn (Enum) EnumSlice(Enum, I, to, from) }) {
+    const T = EnumSlice(Enum, I, to, from);
+    return .{ T, struct {
+        pub inline fn convert(e: Enum) ?T {
+            const f = comptime @intFromEnum(from);
+            const t = comptime @intFromEnum(to);
+            return if (@intFromEnum(e) >= f and @intFromEnum(e) <= t) @enumFromInt(@intFromEnum(e) - f) else null;
+        }
+    }.convert };
+}
 pub fn StructFromEnum(Enum: type, T: type, default_value: ?T, layout: std.builtin.Type.ContainerLayout) type {
     const em = @typeInfo(Enum).@"enum";
     var struct_field_names: [em.fields.len][]const u8 = undefined;
