@@ -26,6 +26,7 @@ pub fn tokenize(self: *Tokenizer, allocator: std.mem.Allocator) Error!void {
     if (self.source.len == 0) return;
 
     self.list = try .initCapacity(allocator, 32);
+
     while (try self.getNextEntry()) |e| {
         try self.list.append(allocator, e);
         if (e.kind != .endl) self.bump(e.len);
@@ -209,13 +210,29 @@ const TokenEntry = packed struct(u64) {
     }
 };
 
-pub const BinaryOperator = __B[0];
-pub const binOpFromTokenKind = __B[1];
-const __B = util.EnumSliceConv(TokenKind, u8, "add", "dotsat");
+pub inline fn binOpFromTokenKind(kind: TokenKind) ?BinaryOperator {
+    const f = @intFromEnum(__bin_op_from);
+    const t = @intFromEnum(__bin_op_to);
+    return if (@intFromEnum(kind) >= f and @intFromEnum(kind) <= t) //
+        @enumFromInt(@intFromEnum(kind) - f)
+    else
+        null;
+}
+pub const BinaryOperator = util.EnumSlice(TokenKind, u8, __bin_op_from, __bin_op_to);
+const __bin_op_from: TokenKind = .add;
+const __bin_op_to: TokenKind = .dotsat;
 
-pub const UnaryOperator = __U[0];
-pub const uOpFromTokenKind = __U[1];
-const __U = util.EnumSliceConv(TokenKind, u8, "neg", "sqrmag");
+pub inline fn uOpFromTokenKind(kind: TokenKind) ?UnaryOperator {
+    const f = @intFromEnum(__u_op_from);
+    const t = @intFromEnum(__u_op_to);
+    return if (@intFromEnum(kind) >= f and @intFromEnum(kind) <= t) //
+        @enumFromInt(@intFromEnum(kind) - f)
+    else
+        null;
+}
+pub const UnaryOperator = util.EnumSlice(TokenKind, u8, __u_op_from, __u_op_to);
+const __u_op_from: TokenKind = .neg;
+const __u_op_to: TokenKind = .sqrmag;
 
 pub const TokenKind = enum(u8) {
     endl,
@@ -238,26 +255,32 @@ pub const TokenKind = enum(u8) {
     @"]",
     @"{",
     @"}",
+
     @"const",
-    mut,
+    @"var",
     in,
     out,
     push,
     shared,
+
     @"if",
     @"else",
     @"switch",
-    @"for",
+    loop,
+
     @"return",
     @"break",
     @"continue",
     discard,
-    @"defer",
+
     @"fn",
-    entrypoint,
-    @"anytype",
+    entry_point,
     @"struct",
     @"enum",
+
+    @"anytype",
+    @"defer",
+
     true,
     false,
 
@@ -266,7 +289,6 @@ pub const TokenKind = enum(u8) {
     sub,
     mul,
     div,
-
     pow,
     mod,
 

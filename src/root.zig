@@ -6,6 +6,8 @@ const Parser = @import("Parser.zig");
 pub const CI = i128;
 pub const CF = f64;
 
+pub const Stage = enum { fragment, vertex, compute };
+
 pub const Error = error{
     OutOfMemory,
     FileReadFailed,
@@ -31,6 +33,17 @@ pub fn test_() !void {
 
     var tok: Tokenizer = .{ .full_source = source, .path = path };
     try tok.tokenize(allocator);
+
+    const list: std.ArrayList(Parser) = .empty;
+    const p = try Parser.parseFile(allocator, tok, list);
+    p.dump();
+    // _ = p;
+
+    std.debug.print("size of Expression: {d}, {d}\n", .{
+        @sizeOf(@import("Parser.zig").NodeEntry),
+        @sizeOf(@import("Parser.zig").TypeEntry),
+        // @sizeOf(Tokenizer.BinaryOperator),
+    });
 
     // _ = try compile(
     //     io,
