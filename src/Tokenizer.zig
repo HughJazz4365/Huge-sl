@@ -10,11 +10,12 @@ const comment_symbol = "//";
 var current: *Tokenizer = undefined;
 list: List(TokenEntry) = .empty,
 
-error_info: ErrorInfo = .unknown,
 source: []const u8 = undefined,
 
 path: []const u8,
 full_source: []const u8,
+
+error_info: ErrorInfo = .unknown,
 
 pub fn deinit(self: *Tokenizer, allocator: std.mem.Allocator) void {
     self.list.deinit(allocator);
@@ -30,9 +31,6 @@ pub fn tokenize(self: *Tokenizer, allocator: std.mem.Allocator) Error!void {
     while (try self.getNextEntry()) |e| {
         try self.list.append(allocator, e);
         if (e.kind != .endl) self.bump(e.len);
-    }
-    for (0..self.list.items.len) |i| {
-        std.debug.print("T: {f}\n", .{self.list.items[i]});
     }
 }
 fn createEntry(self: Tokenizer, kind: TokenKind, bytes: []const u8) TokenEntry {
@@ -88,6 +86,10 @@ fn getNextEntry(self: *Tokenizer) Error!?TokenEntry {
             return self.createEntry(@enumFromInt(i), bytes[0..tn.len]);
     }
 
+    switch (bytes[0]) {
+        '0'...'9' => return self.createEntry(.int_literal, bytes[0..1]),
+        else => {},
+    }
     // if (try self.getNumberLiteralFat(bytes)) |l| return l;
 
     if (self.matchOperator(
@@ -188,13 +190,17 @@ fn isWhitespace(char: u8) bool {
 }
 pub const Token = u32;
 pub inline fn entry(self: Tokenizer, token: Token) TokenEntry {
-    return self.list.items[token];
+    return if (token < self.list.items.len)
+        self.list.items[token]
+    else blk: {
+        @branchHint(.unlikely);
+        break :blk .eof;
+    };
 }
 pub inline fn slice(self: Tokenizer, token: Token) []const u8 {
     return self.entry(token).slice(self);
 }
-const TokenList = std.MultiArrayList(TokenEntry);
-const TokenEntry = packed struct(u64) {
+pub const TokenEntry = packed struct(u64) {
     offset: u32,
     len: u24,
     kind: TokenKind,
@@ -204,10 +210,13 @@ const TokenEntry = packed struct(u64) {
     pub fn format(self: TokenEntry, writer: *std.Io.Writer) !void {
         try writer.print("'{s}'", .{@tagName(self.kind)});
         switch (self.kind) {
-            .identifier => try writer.print(" : {s}", .{self.slice(current.*)}),
+            .identifier,
+            .int_literal,
+            => try writer.print(" : {s}", .{self.slice(current.*)}),
             else => {},
         }
     }
+    pub const eof: TokenEntry = .{ .kind = .eof, .offset = 0, .len = 0 };
 };
 
 pub inline fn binOpFromTokenKind(kind: TokenKind) ?BinaryOperator {
@@ -235,6 +244,7 @@ const __u_op_from: TokenKind = .neg;
 const __u_op_to: TokenKind = .sqrmag;
 
 pub const TokenKind = enum(u8) {
+    eof,
     endl,
 
     //str literals

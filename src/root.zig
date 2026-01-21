@@ -34,24 +34,22 @@ pub fn test_() !void {
     var tok: Tokenizer = .{ .full_source = source, .path = path };
     try tok.tokenize(allocator);
 
-    const list: std.ArrayList(Parser) = .empty;
-    const p = try Parser.parseFile(allocator, tok, list);
+    var p = try Parser.new(allocator);
+    try p.parseFile(tok);
     p.dump();
     // _ = p;
 
-    std.debug.print("size of Expression: {d}, {d}\n", .{
-        @sizeOf(@import("Parser.zig").NodeEntry),
-        @sizeOf(@import("Parser.zig").TypeEntry),
-        // @sizeOf(Tokenizer.BinaryOperator),
-    });
+    inline for (&[_]type{
+        Parser.NodeEntry,
+        Parser.StructEntry,
+        Parser.ScopeEntry,
+        Parser.TypeEntry,
+        Parser.EntryPointEntry,
+        Tokenizer.TokenEntry,
+    }) |_| {}
+    // }) |T|
+    //     std.debug.print("size of {s}: {d}\n", .{ @typeName(T), @sizeOf(T) });
 
-    // _ = try compile(
-    //     io,
-    //     allocator,
-    //     "test.hgsl",
-    //     // "cf.hgsl",
-    //     &file_writer.interface,
-    // );
 }
 pub fn compile(io: std.Io, allocator: Allocator, path: []const u8, error_writer: *std.Io.Writer) Error![]u32 {
     const source = readFile(io, allocator, path) catch
