@@ -24,11 +24,17 @@ token: Token = 0,
 
 error_info: ErrorInfo = .unknown,
 
-pub fn dump(self: Parser) void {
+pub fn dump(self: *Parser) void {
     std.debug.print("types:\n", .{});
     for (self.types.items) |t| std.debug.print("--- {any}\n", .{t});
     std.debug.print("scopes:\n", .{});
-    for (self.scopes.items) |t| std.debug.print("--- {any}\n", .{t});
+    for (self.scopes.items) |t| {
+        std.debug.print("--- {any}\n", .{t});
+        std.debug.print("--- ---  items:\n", .{});
+        for (t.body.items) |node|
+            std.debug.print("\t{any}, ", .{node});
+        std.debug.print("\n", .{});
+    }
     std.debug.print("structs:\n", .{});
     for (self.structs.items) |t| std.debug.print("--- {any}\n", .{t});
     std.debug.print("entry_points:\n", .{});
@@ -70,7 +76,9 @@ pub fn parseScope(self: *Parser, entry: ScopeEntry) Error!Scope {
     self.current_scope = scope;
     defer self.current_scope = last_scope;
 
-    while (true) {
+    const len = try self.parseExpressionBase();
+    std.debug.print("LEN : {d}\n", .{len});
+    while (true and false) {
         self.skipEndl();
         const peek = self.tokenEntry().kind;
         if (!self.isScopeFile(self.current_scope)) {
@@ -84,7 +92,7 @@ pub fn parseScope(self: *Parser, entry: ScopeEntry) Error!Scope {
             break;
         }
 
-        try self.parseStatement();
+        // try self.parseStatement();
     }
     return scope;
 }
@@ -109,44 +117,63 @@ fn parseVarDecl(self: *Parser, qualifier: Qualifier) Error!void {
     const name = name_token.slice(self.tokenizer);
     std.debug.print("NAME: {s}\n", .{name});
     _ = qualifier;
-
-    // const type_node =
-
-    // const name = name_token.identifier;
-
-    // const @"type": ?Type = switch (try self.tokenizer.peek()) {
-    //     .@":" => blk: {
-    //         self.tokenizer.skip();
-    //         break :blk try self.expressionAsTypeAlloc(
-    //             try self.parseExpressionAtom(),
-    //         );
-    //     },
-    //     .@"=" => null,
-    //     else => |e| if (self.defaultShouldStop(e))
-    //         return self.errorOut(.unknown)
-    //     else
-    //         null,
-    // };
-
-    // const peek = try self.tokenizer.next();
-    // const initializer = if (peek == .@"=")
-    //     try self.parseExpression(defaultShouldStop)
-    // else if (self.defaultShouldStop(peek))
-    //     .null
-    // else
-    //     return self.errorOut(.{ .unexpected_token = self.tokenizer.last });
-
-    // if (initializer == .null and qualifier == .@"const")
-    //     return self.errorOut(.unknown);
-
-    // try self.addStatement(.{ .var_decl = .{
-    //     .qualifier = qualifier,
-    //     .name = name,
-    //     .type = if (@"type") |t| t else try self.typeOfAlloc(initializer),
-    //     .initializer = if (@"type") |t| try self.implicitCast(t, initializer) else initializer,
-    // } });
-
 }
+
+const ShouldStopFn = fn (*Parser, Token) bool;
+inline fn parseExpression(self: *Parser, should_stop_fn: *const ShouldStopFn) Error!NodeSlice {
+    return self.parseExpressionRecursive(should_stop_fn, 0);
+}
+fn parseExpressionRecursive(self: *Parser, should_stop_fn: *const ShouldStopFn, bp: u8) Error!NodeSlice {
+    var left = try self.parseExpressionBase();
+    var fat = try self.tokenizer.peekFat();
+    while (!should_stop_fn(self, fat.token)) {
+        if (fat.token != .bin_op) return self.errorOut(.{ .unexpected_token = fat });
+
+        const op = fat.token.bin_op;
+        if (Tokenizer.bindingPower(op) <= bp) break;
+
+        self.tokenizer.skip();
+        try self.tokenizer.skipEndl(); //?
+
+        const right = try self.parseExpressionRecursive(try self.parseExpressionAtom(), should_stop_fn, Tokenizer.bindingPower(op));
+        const add_left = try self.createVal(left);
+        left = .{ .bin_op = .{
+            .left = add_left,
+            .right = try self.createVal(right),
+            .op = op,
+        } };
+        fat = try self.tokenizer.peekFat();
+    }
+    return left;
+}
+fn parseExpressionBase(self: *Parser) Error!NodeSlice { //should return {node: Node, len: usize}
+    const len: usize = switch (self.tokenEntry().kind) {
+        .int_literal => blk: {
+            const int = parseIntLiteral(self.tokenEntry().slice(self.tokenizer));
+            break :blk .{
+                .node = try self.appendNode(.{ .value = .{
+                    .type = try self.getType(.compint),
+                    .payload = try self.addScalarValue(int),
+                } }),
+                .len = 1,
+            };
+        },
+        else => return self.errorOut(.unknown),
+        // .true => .{ .value = .create(.bool, true) },
+        // .false => .{ .value = .create(.bool, false) },
+
+        // .identifier => |identifier| .{ .identifier = identifier },
+        // .int_literal => |il| .{ .value = Value.create(.compint, il) },
+        // .float_literal => |fl| .{ .value = Value.create(.compfloat, fl) },
+        // .type_literal => |@"type"| exprFromType(@"type"),
+    };
+    return len;
+}
+const NodeSlice = struct { node: Node, len: u32 };
+fn parseIntLiteral(str: []const u8) i128 {
+    return str[0] - '0';
+}
+
 fn isScopeFile(self: *Parser, scope: Scope) bool {
     const entry = self.get(scope);
     return if (entry.container == .@"struct")
@@ -172,6 +199,12 @@ fn getType(self: *Parser, entry: TypeEntry) Error!Type {
     const l = self.types.items.len;
     try self.types.append(self.allocator, entry);
     return @enumFromInt(l);
+}
+fn appendNode(self: *Parser, entry: NodeEntry) Error!Node {
+    const scope = self.get(self.current_scope);
+    const l: Node = @truncate(scope.body.items.len);
+    try scope.body.append(self.allocator, entry);
+    return l;
 }
 
 pub inline fn add(self: *Parser, entry: anytype) Error!HandleType(@TypeOf(entry)) {
@@ -204,6 +237,11 @@ fn EntryType(Handle: type) type {
 
         else => comptime unreachable,
     };
+}
+fn addScalarValue(self: *Parser, scalar: anytype) Error!u32 {
+    const l: u32 = @truncate(self.scalar_values.items.len);
+    try self.scalar_values.append(self.allocator, util.fit(u128, scalar));
+    return l;
 }
 
 fn addScope(self: *Parser, entry: ScopeEntry) Error!Scope {
