@@ -33,18 +33,23 @@ pub fn dump(self: *Parser) void {
         std.debug.print("--- ---  items:\n", .{});
         self.current_scope = @enumFromInt(i);
 
-        var node: Node = 0;
-        while (node < t.body.items.len) {
-            std.debug.print("\t{f}\n", .{FatNodeEntry{
-                .self = self,
-                .node = &node,
-            }});
-        }
+        self.dumpCurrentScope();
     }
     std.debug.print("structs:\n", .{});
     for (self.structs.items) |t| std.debug.print("--- {any}\n", .{t});
     std.debug.print("entry_points:\n", .{});
     for (self.entry_points.items) |t| std.debug.print("--- {any}\n", .{t});
+}
+fn dumpCurrentScope(self: *Parser) void {
+    const scope = self.getScope(self.current_scope);
+    for (scope.body.items) |node| std.debug.print("\t{any}\n", .{node});
+    var node: Node = 0;
+    while (node < scope.body.items.len) {
+        std.debug.print("\t{f}\n", .{FatNodeEntry{
+            .self = self,
+            .node = &node,
+        }});
+    }
 }
 
 pub fn new(allocator: Allocator) Error!Parser {
@@ -83,8 +88,7 @@ pub fn parseScope(self: *Parser, entry: ScopeEntry) Error!Scope {
     defer self.current_scope = last_scope;
 
     self.skipEndl();
-    const len = try self.parseExpression(defaultShouldStop);
-    std.debug.print("LEN : {d}\n", .{len});
+    _ = try self.parseExpression(defaultShouldStop);
     while (true and false) {
         self.skipEndl();
         const peek = self.tokenEntry().kind;
@@ -139,37 +143,36 @@ fn parseExpressionRecursive(self: *Parser, should_stop_fn: *const ShouldStopFn, 
     const left_node: Node = self.nextNode();
     var left_len = try self.parseExpressionBase();
 
+    var iter: usize = 0;
     while (!should_stop_fn(self, self.token)) {
         const op = if (Tokenizer.binOpFromTokenKind(self.tokenEntry().kind)) |bop|
             bop
         else
             return self.errorOut(.{ .unexpected_token = self.token });
 
-        // if (Tokenizer.bindingPower(op) <= bp) break;
-        if (1 <= bp) break;
+        if (Tokenizer.bindingPower(op) <= bp) break;
         self.token += 1;
 
         // try self.tokenizer.skipEndl(); //?
 
-        //shift one to the right
-        try self.shiftLastNNodes(1);
+        try self.shiftLastNNodes(left_len, 1); //shift left expression 1 to the right
         self.getScope(self.current_scope).body.items[left_node] = .{ .bin_op = op };
+        iter += 1;
 
         left_len += 1 + try self.parseExpressionRecursive(
             should_stop_fn,
-            1,
-            // Tokenizer.bindingPower(op),
+            Tokenizer.bindingPower(op),
         );
     }
     return left_len;
 }
-fn shiftLastNNodes(self: *Parser, count: u32) Error!void {
+fn shiftLastNNodes(self: *Parser, count: u32, shift: usize) Error!void {
     const scope = self.getScope(self.current_scope);
-    try scope.body.ensureUnusedCapacity(self.allocator, count);
+    try scope.body.ensureUnusedCapacity(self.allocator, shift);
     const len = scope.body.items.len;
-    scope.body.items.len += count;
+    scope.body.items.len += shift;
     @memmove(
-        scope.body.items[len .. len + count],
+        scope.body.items[len - count + shift .. len + shift],
         scope.body.items[len - count .. len],
     );
 }
@@ -226,11 +229,15 @@ fn nextTokenEntry(self: *Parser) TokenEntry {
 fn tokenEntry(self: *Parser) TokenEntry {
     return self.tokenizer.entry(self.token);
 }
+fn getScalarValue(self: *Parser, id: u32) u128 {
+    return self.scalar_values.items[id];
+}
 
+fn getType(self: *Parser, @"type": Type) TypeEntry {
+    return self.types.items[@intFromEnum(@"type")];
+}
 fn addType(self: *Parser, entry: TypeEntry) Error!Type {
-    for (self.types.items, 0..) |t, i| {
-        if (std.meta.eql(entry, t)) return @enumFromInt(i);
-    }
+    for (self.types.items, 0..) |t, i| if (TypeEntry.eql(entry, t)) return @enumFromInt(i);
     const l = self.types.items.len;
     try self.types.append(self.allocator, entry);
     return @enumFromInt(l);
@@ -243,6 +250,7 @@ fn appendNode(self: *Parser, entry: NodeEntry) Error!Node {
 }
 
 fn addScalarValue(self: *Parser, scalar: anytype) Error!u32 {
+    for (self.scalar_values.items, 0..) |s, i| if (s == util.fit(u128, scalar)) return @truncate(i);
     const l: u32 = @truncate(self.scalar_values.items.len);
     try self.scalar_values.append(self.allocator, util.fit(u128, scalar));
     return l;
@@ -380,6 +388,7 @@ pub const TypeEntry = union(enum) {
 
     // pub const format = @import("debug.zig").formatType;
     pub const Tag = std.meta.Tag(@This());
+    pub const eql = std.meta.eql;
 };
 
 pub const Matrix = packed struct {
@@ -426,7 +435,21 @@ pub inline fn errorOut(self: *Parser, error_info: ErrorInfo) Error {
     self.error_info = error_info;
     return error_message.errorOut(error_info);
 }
-//debug struct for formatting nodes
+//debug structs for formatting
+
+const FatValueEntry = struct {
+    self: *Parser,
+    value: Value,
+    pub fn format(entry: FatValueEntry, writer: *std.Io.Writer) !void {
+        const type_entry = entry.self.getType(entry.value.type);
+        switch (type_entry) {
+            .compint => try writer.print("{d}", .{
+                util.extract(i128, entry.self.getScalarValue(entry.value.payload)),
+            }),
+            else => {},
+        }
+    }
+};
 const FatNodeEntry = struct {
     self: *Parser,
     node: *Node,
@@ -435,14 +458,14 @@ const FatNodeEntry = struct {
         switch (scope.body.items[entry.node.*]) {
             .bin_op => |op| {
                 entry.node.* += 1;
-                try writer.print("{f} -{s}- {f}", .{
+                try writer.print("({f} -{s}- {f})", .{
                     entry,
                     @tagName(op),
                     entry,
                 });
             },
             .value => |value| {
-                try writer.print("value(t:{d})", .{value.type});
+                try writer.print("{f}", .{FatValueEntry{ .self = entry.self, .value = value }});
                 entry.node.* += 1;
             },
             else => {

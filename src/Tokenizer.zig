@@ -335,6 +335,13 @@ pub const TokenKind = enum(u8) {
     mag,
     sqrmag,
 };
+pub fn bindingPower(op: BinaryOperator) u8 {
+    return switch (op) {
+        .mul => 3,
+        .add => 2,
+        else => 1,
+    };
+}
 
 pub fn errorOut(self: *Tokenizer, error_info: ErrorInfo) Error {
     self.error_info = error_info;
