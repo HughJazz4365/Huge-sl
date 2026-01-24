@@ -31,11 +31,17 @@ pub fn test_() !void {
     const source = readFile(io, allocator, path) catch
         return Error.FileReadFailed;
 
+    var timer = try std.time.Timer.start();
     var tok: Tokenizer = .{ .full_source = source, .path = path };
     try tok.tokenize(allocator);
 
     var p = try Parser.new(allocator);
     try p.parseFile(tok);
+    const measure = timer.read();
+    std.debug.print(
+        "time: {d}ms\n",
+        .{@as(f64, @floatFromInt(measure)) / 1_000_000.0},
+    );
     p.dump();
     // _ = p;
 

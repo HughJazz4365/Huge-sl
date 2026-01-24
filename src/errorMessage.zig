@@ -6,6 +6,8 @@ pub const ErrorInfo = union(enum) {
     unexpected_token: Token,
     float8,
 
+    entry_point_decl_arg_count,
+    entry_point_type_decl_arg_count,
     //
     undeclared_identifier: []const u8,
     dependency_loop: []const u8,

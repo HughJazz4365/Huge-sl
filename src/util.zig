@@ -49,7 +49,7 @@ pub fn EnumSlice(
     comptime to: Enum,
 ) type {
     const f = @intFromEnum(from);
-    const t = @intFromEnum(to);
+    const t = @intFromEnum(to) + 1;
     const len = t - f;
     var enum_field_names: [len][]const u8 = undefined;
     var enum_field_values: [len]I = undefined;

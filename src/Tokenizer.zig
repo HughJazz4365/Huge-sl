@@ -337,9 +337,25 @@ pub const TokenKind = enum(u8) {
 };
 pub fn bindingPower(op: BinaryOperator) u8 {
     return switch (op) {
-        .mul => 3,
-        .add => 2,
-        else => 1,
+        .pow => 13,
+        .cross => 12,
+        .dist => 11,
+
+        .dot, .dotsat => 10,
+
+        .mul, .div, .mod => 8,
+
+        .add, .sub => 7,
+        .shl, .shr => 6,
+
+        .greater, .less, .goq, .loq => 5,
+        .eql, .not_eql => 4,
+
+        .@"and" => 3,
+        .xor => 2,
+        .@"or" => 1,
+
+        // else => 1,
     };
 }
 

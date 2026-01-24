@@ -87,10 +87,8 @@ pub fn parseScope(self: *Parser, entry: ScopeEntry) Error!Scope {
     self.current_scope = scope;
     defer self.current_scope = last_scope;
 
-    self.skipEndl();
-    _ = try self.parseExpression(defaultShouldStop);
-    while (true and false) {
-        self.skipEndl();
+    while (true) {
+        _ = self.skipEndl();
         const peek = self.tokenEntry().kind;
         if (!self.isScopeFile(self.current_scope)) {
             if (peek == .eof) return self.errorOut(.unclosed_scope);
@@ -103,14 +101,14 @@ pub fn parseScope(self: *Parser, entry: ScopeEntry) Error!Scope {
             break;
         }
 
-        // try self.parseStatement();
+        try self.parseStatement();
     }
     return scope;
 }
 
 fn parseStatement(self: *Parser) Error!void {
     std.debug.print("TOK: {f}\n", .{self.tokenEntry()});
-    const token = self.nextTokenEntry();
+    const token = self.tokenEntryShift();
     switch (token.kind) {
         .@"const", .@"var", .in, .out, .shared, .push => //
         try self.parseVarDecl(.@"const"),
@@ -120,22 +118,25 @@ fn parseStatement(self: *Parser) Error!void {
     self.token += 1;
 }
 fn parseVarDecl(self: *Parser, qualifier: Qualifier) Error!void {
-    const name_token = self.tokenEntry();
-    if (name_token.kind != .identifier)
+    const name_token = self.token;
+    if (self.tokenEntry().kind != .identifier)
+        return self.errorOut(.{ .unexpected_token = name_token });
+    self.token += 1;
+
+    if (self.tokenEntry().kind != .@"=")
         return self.errorOut(.{ .unexpected_token = self.token });
     self.token += 1;
 
-    const name = name_token.slice(self.tokenizer);
-    std.debug.print("NAME: {s}\n", .{name});
-    _ = qualifier;
+    _ = try self.appendNode(.{ .var_decl = .{
+        .qualifier = qualifier,
+        .name = name_token,
+    } });
+
+    _ = try self.parseExpression(defaultShouldStop);
 }
 
 const ShouldStopFn = fn (*Parser, Token) bool;
 
-fn defaultShouldStop(self: *Parser, token: Token) bool {
-    const kind = self.tokenizer.entry(token).kind;
-    return kind == .endl or kind == .eof or kind == .@"}";
-}
 inline fn parseExpression(self: *Parser, should_stop_fn: *const ShouldStopFn) Error!u32 {
     return self.parseExpressionRecursive(should_stop_fn, 0);
 }
@@ -177,8 +178,9 @@ fn shiftLastNNodes(self: *Parser, count: u32, shift: usize) Error!void {
     );
 }
 
+//returns the node list size not the amount of consumed tokens
 fn parseExpressionBase(self: *Parser) Error!u32 {
-    const len: usize = switch (self.tokenEntry().kind) {
+    const len: u32 = switch (self.tokenEntry().kind) {
         .int_literal => blk: {
             const int = parseIntLiteral(self.tokenEntry().slice(self.tokenizer));
             _ = try self.appendNode(.{ .value = .{
@@ -186,7 +188,38 @@ fn parseExpressionBase(self: *Parser) Error!u32 {
                 .payload = try self.addScalarValue(int),
             } });
 
+            self.token += 1;
             break :blk 1;
+        },
+        .entry_point => blk: { //entry point decl or type
+            self.token += 1;
+            const header_node = try self.appendNode(.entry_point_type_decl);
+
+            if (self.tokenEntry().kind != .@"(")
+                return self.errorOut(.{ .unexpected_token = self.token });
+            self.token += 1;
+            const args = try self.parseArguments();
+            if (args.count == 0 or args.count > 2)
+                return self.errorOut(.entry_point_decl_arg_count);
+
+            _ = self.skipEndl();
+            if (self.tokenEntry().kind != .@"{") {
+                if (args.count == 2)
+                    return self.errorOut(.entry_point_type_decl_arg_count);
+                break :blk 2;
+            } //parses the entry point scope if its not a type decl
+            self.token += 1; //skip the '}'
+            if (args.count == 1) _ = try self.appendNode(.null);
+
+            const epid = try self.addEntryPoint(.{ .node = header_node });
+            const scope = try self.parseScope(.{
+                .parent = self.current_scope,
+                .container = .{ .entry_point = epid },
+            });
+            self.getEntryPoint(epid).scope = scope;
+            self.getNodeEntry(header_node).* = .{ .entry_point_decl = epid };
+
+            break :blk 3;
         },
         else => return self.errorOut(.unknown),
         // .true => .{ .value = .create(.bool, true) },
@@ -197,8 +230,27 @@ fn parseExpressionBase(self: *Parser) Error!u32 {
         // .float_literal => |fl| .{ .value = Value.create(.compfloat, fl) },
         // .type_literal => |@"type"| exprFromType(@"type"),
     };
-    self.token += len;
     return len;
+}
+const ParseArgumentsResult = struct {
+    count: u32 = 0,
+    node_consumption: u32 = 0,
+};
+fn parseArguments(self: *Parser) Error!ParseArgumentsResult {
+    _ = self.skipEndl();
+    var result: ParseArgumentsResult = .{};
+
+    while (self.tokenEntryPastEndl().kind != .@")") {
+        std.debug.print("ARGTOKEN: {f}\n", .{self.tokenEntry()});
+        result.node_consumption += try self.parseExpression(argumentShouldStop);
+        result.count += 1;
+        if (self.tokenEntry().kind == .@",") {
+            self.token += 1;
+            _ = self.skipEndl();
+        }
+    }
+    self.token += if (self.tokenEntry().kind == .endl) 2 else 1;
+    return result;
 }
 
 fn nextNode(self: *Parser) Node {
@@ -209,6 +261,14 @@ fn parseIntLiteral(str: []const u8) i128 {
     return str[0] - '0';
 }
 
+fn defaultShouldStop(self: *Parser, token: Token) bool {
+    const kind = self.tokenizer.entry(token).kind;
+    return kind == .endl or kind == .eof or kind == .@"}";
+}
+fn argumentShouldStop(self: *Parser, token: Token) bool {
+    const kind = self.tokenizer.entry(token).kind;
+    return kind == .@")" or kind == .@",";
+}
 fn isScopeFile(self: *Parser, scope: Scope) bool {
     const entry = self.getScope(scope);
     return if (entry.container == .@"struct")
@@ -217,14 +277,22 @@ fn isScopeFile(self: *Parser, scope: Scope) bool {
         false;
 }
 
-fn skipEndl(self: *Parser) void {
-    if (self.tokenEntry().kind == .endl) self.token += 1;
+fn skipEndl(self: *Parser) bool {
+    const is_endl = self.tokenEntry().kind == .endl;
+    self.token += @intFromBool(is_endl);
+    return is_endl;
 }
 
-fn nextTokenEntry(self: *Parser) TokenEntry {
+fn tokenEntryShift(self: *Parser) TokenEntry {
     const token = self.tokenEntry();
     self.token += 1;
     return token;
+}
+fn tokenEntryPastEndl(self: *Parser) TokenEntry {
+    return if (self.tokenEntry().kind == .endl)
+        self.tokenizer.entry(self.token + 1)
+    else
+        self.tokenEntry();
 }
 fn tokenEntry(self: *Parser) TokenEntry {
     return self.tokenizer.entry(self.token);
@@ -241,6 +309,9 @@ fn addType(self: *Parser, entry: TypeEntry) Error!Type {
     const l = self.types.items.len;
     try self.types.append(self.allocator, entry);
     return @enumFromInt(l);
+}
+fn getNodeEntry(self: *Parser, node: Node) *NodeEntry {
+    return &self.getScope(self.current_scope).body.items[node];
 }
 fn appendNode(self: *Parser, entry: NodeEntry) Error!Node {
     const scope = self.getScope(self.current_scope);
@@ -272,6 +343,7 @@ pub const ScopeEntry = struct {
 
     const Container = union(enum) {
         @"struct": Struct,
+        entry_point: EntryPoint,
     };
 };
 
@@ -304,16 +376,24 @@ pub const StructEntry = struct {
         tokenizer: u32,
     };
 };
+
+fn addEntryPoint(self: *Parser, entry: EntryPointEntry) Error!EntryPoint {
+    const l = self.entry_points.items.len;
+    try self.entry_points.append(self.allocator, entry);
+    return @enumFromInt(l);
+}
+fn getEntryPoint(self: *Parser, handle: EntryPoint) *EntryPointEntry {
+    return &self.entry_points.items[@intFromEnum(handle)];
+}
 pub const EntryPoint = enum(u32) { _ };
 pub const EntryPointEntry = struct {
-    scope: Scope,
+    scope: Scope = undefined,
     //next node specifies additional stage info(pad if none)
     //next 'len' nodes after stage info are EP body
     node: Node = undefined,
 
     name: Token = undefined,
     len: u32 = 0,
-    stage: hgsl.Stage,
 };
 
 // const CompositeHeader = packed struct(u8);
@@ -329,6 +409,9 @@ pub const NodeEntry = union(enum) {
     bin_op: BinaryOperator,
     u_op: UnaryOperator,
     value: Value,
+
+    entry_point_decl: EntryPoint, //[stage:Node][stage_info:Node]
+    entry_point_type_decl, //[stage:Node]
 
     //is there is no else its padded
     branch,
@@ -456,9 +539,17 @@ const FatNodeEntry = struct {
     pub fn format(entry: FatNodeEntry, writer: *std.Io.Writer) !void {
         const scope = entry.self.getScope(entry.self.current_scope);
         switch (scope.body.items[entry.node.*]) {
+            .var_decl => |var_decl| {
+                entry.node.* += 1;
+                try writer.print("{s} {s} = {f}", .{
+                    @tagName(var_decl.qualifier),
+                    entry.self.tokenizer.slice(var_decl.name),
+                    entry,
+                });
+            },
             .bin_op => |op| {
                 entry.node.* += 1;
-                try writer.print("({f} -{s}- {f})", .{
+                try writer.print("({f} <{s}> {f})", .{
                     entry,
                     @tagName(op),
                     entry,
@@ -467,6 +558,11 @@ const FatNodeEntry = struct {
             .value => |value| {
                 try writer.print("{f}", .{FatValueEntry{ .self = entry.self, .value = value }});
                 entry.node.* += 1;
+            },
+            .entry_point_decl => |epd| {
+                _ = epd;
+                entry.node.* += 1;
+                try writer.print("entry_point({f}, {f}){{}}", .{ entry, entry });
             },
             else => {
                 entry.node.* += 1;
