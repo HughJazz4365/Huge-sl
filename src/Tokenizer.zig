@@ -1,6 +1,7 @@
 const std = @import("std");
 const hgsl = @import("root.zig");
 const util = @import("util.zig");
+const Parser = @import("Parser.zig");
 // const tp = @import("type.zig");
 const Tokenizer = @This();
 const error_message = @import("errorMessage.zig");
@@ -30,14 +31,14 @@ pub fn tokenize(self: *Tokenizer, allocator: std.mem.Allocator) Error!void {
 
     while (try self.getNextEntry()) |e| {
         try self.list.append(allocator, e);
-        if (e.kind != .endl) self.bump(e.len);
+        if (e.kind != .endl) self.bump(e.len());
     }
 }
 fn createEntry(self: Tokenizer, kind: TokenKind, bytes: []const u8) TokenEntry {
     return .{
         .kind = kind,
         .offset = @truncate(bytes.ptr - self.full_source.ptr),
-        .len = @truncate(bytes.len),
+        ._len = @truncate(bytes.len),
     };
 }
 fn getNextEntry(self: *Tokenizer) Error!?TokenEntry {
@@ -101,12 +102,62 @@ fn getNextEntry(self: *Tokenizer) Error!?TokenEntry {
         },
     )) |t| return t;
 
-    // if (try self.getTypeLiteralFat(bytes)) |t| return t;
+    if (getNumericTypeLiteral(bytes)) |tl| {
+        if (tl.scalar.width == ._8 and tl.scalar.layout == .float)
+            return self.errorOut(.float8);
+        return .{
+            .offset = @truncate(bytes.ptr - self.full_source.ptr),
+            ._len = @bitCast(tl),
+            .kind = .type_literal,
+        };
+    }
 
     const valid_identifier = try self.stripValidIdentifier(bytes[@intFromBool(bytes[0] == '@')..]);
 
     return self.createEntry(if (bytes[0] == '@') .builtin else .identifier, valid_identifier);
 }
+fn getNumericTypeLiteral(bytes: []const u8) ?TypeLiteral {
+    if (bytes.len < 2) return null;
+    const scalar: Parser.Scalar = .{
+        .layout = switch (bytes[0]) {
+            'i' => .int,
+            'u' => .uint,
+            'f' => .float,
+            else => return null,
+        },
+        .width = inline for (@typeInfo(Parser.Scalar.Width).@"enum".fields) |ef| {
+            if (util.strStarts(bytes[1..], ef.name[1..]))
+                break @enumFromInt(ef.value);
+        } else return null,
+    };
+
+    const scalar_off: usize = if (scalar.width == ._8) 2 else 3;
+    if (bytes.len <= scalar_off) return .{ .scalar = scalar };
+
+    var lengthes: [2]u2 = .{ 0, 0 };
+    var dim: usize = 0;
+    for (0..2) |i| {
+        const off = scalar_off + i * 2 + 1;
+        if (bytes.len <= off) break;
+        if (bytes[off - 1] == 'x') {
+            if (bytes.len <= off) return null;
+            lengthes[i] = switch (bytes[off]) {
+                '2'...'4' => @intCast(bytes[off] - '1'),
+                else => return null,
+            };
+            dim += 1;
+        }
+    }
+    const len = scalar_off + dim * 2;
+    if (bytes.len > len and isIdentifierChar(bytes[len])) return null;
+
+    return .{
+        .scalar = scalar,
+        .vector_len = lengthes[0],
+        .column_count = lengthes[0],
+    };
+}
+
 fn stripValidIdentifier(self: *Tokenizer, bytes: []const u8) Error![]const u8 {
     var letter = false;
     const end = for (bytes, 0..) |char, i| {
@@ -200,12 +251,47 @@ pub inline fn entry(self: Tokenizer, token: Token) TokenEntry {
 pub inline fn slice(self: Tokenizer, token: Token) []const u8 {
     return self.entry(token).slice(self);
 }
+
+pub const TypeLiteral = packed struct(u24) {
+    scalar: Parser.Scalar,
+
+    vector_len: u2 = 0, //1-4
+    column_count: u2 = 0, //1-4
+
+    rest: u16 = 0,
+    pub fn len(self: TypeLiteral) u32 {
+        return 2 + @as(u32, @intFromBool(self.scalar.width != ._8)) +
+            2 * @as(u32, @intFromBool(self.vector_len != 0)) +
+            2 * @as(u32, @intFromBool(self.column_count != 0));
+    }
+    pub fn entry(self: TypeLiteral) Parser.TypeEntry {
+        return if (self.column_count != 0) //
+            .{ .matrix = .{
+                .scalar = self.scalar,
+                .m = @enumFromInt(self.vector_len - 1),
+                .n = @enumFromInt(self.column_count - 1),
+            } }
+        else if (self.vector_len != 0) //
+            .{ .vector = .{
+                .scalar = self.scalar,
+                .len = @enumFromInt(self.vector_len - 1),
+            } }
+        else
+            .{ .scalar = self.scalar };
+    }
+};
 pub const TokenEntry = packed struct(u64) {
     offset: u32,
-    len: u24,
+    _len: u24,
     kind: TokenKind,
     pub inline fn slice(self: TokenEntry, tokenizer: Tokenizer) []const u8 {
-        return tokenizer.full_source[self.offset .. self.offset + self.len];
+        return tokenizer.full_source[self.offset .. self.offset + self.len()];
+    }
+    pub fn len(self: TokenEntry) u32 {
+        return if (self.kind == .type_literal)
+            @as(TypeLiteral, @bitCast(self._len)).len()
+        else
+            self._len;
     }
     pub fn format(self: TokenEntry, writer: *std.Io.Writer) !void {
         try writer.print("'{s}'", .{@tagName(self.kind)});
@@ -216,7 +302,7 @@ pub const TokenEntry = packed struct(u64) {
             else => {},
         }
     }
-    pub const eof: TokenEntry = .{ .kind = .eof, .offset = 0, .len = 0 };
+    pub const eof: TokenEntry = .{ .kind = .eof, .offset = 0, ._len = 0 };
 };
 
 pub inline fn binOpFromTokenKind(kind: TokenKind) ?BinaryOperator {
@@ -253,6 +339,7 @@ pub const TokenKind = enum(u8) {
     builtin,
     int_literal,
     float_literal,
+    type_literal,
 
     @"=>",
     @"=",
@@ -335,6 +422,7 @@ pub const TokenKind = enum(u8) {
     mag,
     sqrmag,
 };
+
 pub fn bindingPower(op: BinaryOperator) u8 {
     return switch (op) {
         .pow => 13,

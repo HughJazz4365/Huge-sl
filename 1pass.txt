@@ -1,0 +1,4 @@
++ type check/inferrence
++ constant folding
++ variable reference checks
+

@@ -1,5 +1,6 @@
 const std = @import("std");
 const util = @import("util.zig");
+const error_message = @import("errorMessage.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
 
@@ -19,32 +20,6 @@ pub const Error = error{
 };
 
 pub fn test_() !void {
-    var threaded_io = std.Io.Threaded.init_single_threaded;
-    const io = threaded_io.io();
-    const allocator = std.heap.page_allocator;
-
-    var buf: [128]u8 = undefined;
-    var file_writer = std.Io.File.stdout().writer(io, &buf);
-    _ = &file_writer;
-
-    const path = "test.hgsl";
-    const source = readFile(io, allocator, path) catch
-        return Error.FileReadFailed;
-
-    var timer = try std.time.Timer.start();
-    var tok: Tokenizer = .{ .full_source = source, .path = path };
-    try tok.tokenize(allocator);
-
-    var p = try Parser.new(allocator);
-    try p.parseFile(tok);
-    const measure = timer.read();
-    std.debug.print(
-        "time: {d}ms\n",
-        .{@as(f64, @floatFromInt(measure)) / 1_000_000.0},
-    );
-    p.dump();
-    // _ = p;
-
     inline for (&[_]type{
         Parser.NodeEntry,
         Parser.StructEntry,
@@ -54,7 +29,38 @@ pub fn test_() !void {
         Tokenizer.TokenEntry,
     }) |_| {}
     // }) |T|
-    //     std.debug.print("size of {s}: {d}\n", .{ @typeName(T), @sizeOf(T) });
+    // std.debug.print("size of {s}: {d}\n", .{ @typeName(T), @sizeOf(T) });
+
+    var threaded_io = std.Io.Threaded.init_single_threaded;
+    const io = threaded_io.io();
+    const allocator = std.heap.page_allocator;
+
+    var buf: [128]u8 = undefined;
+    var file_writer = std.Io.File.stdout().writer(io, &buf);
+
+    const path = "test.hgsl";
+    const source = readFile(io, allocator, path) catch
+        return Error.FileReadFailed;
+
+    var timer = try std.time.Timer.start();
+    var tok: Tokenizer = .{ .full_source = source, .path = path };
+    tok.tokenize(allocator) catch |err| {
+        try error_message.printErrorMessage(&file_writer.interface, tok.error_info);
+        return err;
+    };
+
+    var p = try Parser.new(allocator);
+    p.parseFile(tok) catch |err| {
+        try error_message.printErrorMessage(&file_writer.interface, p.error_info);
+        return err;
+    };
+    const measure = timer.read();
+    std.debug.print(
+        "time: {d}ms\n",
+        .{@as(f64, @floatFromInt(measure)) / 1_000_000.0},
+    );
+    p.dump();
+    // _ = p;
 
 }
 pub fn compile(io: std.Io, allocator: Allocator, path: []const u8, error_writer: *std.Io.Writer) Error![]u32 {

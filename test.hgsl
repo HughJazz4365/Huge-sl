@@ -1,7 +1,9 @@
-const a = 1 + 5 * 2 - 1 + 8
-const main = entry_point(1)
-{
-	const b = 3 * 9
+const f1 = 10
+const f2 = f1
+
+in a : f32
+const main = entry_point(1){
+const b = 3 * 9
 }
 
 const c = 3

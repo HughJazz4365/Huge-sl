@@ -27,22 +27,20 @@ error_info: ErrorInfo = .unknown,
 pub fn dump(self: *Parser) void {
     std.debug.print("types:\n", .{});
     for (self.types.items) |t| std.debug.print("--- {any}\n", .{t});
-    std.debug.print("scopes:\n", .{});
-    for (self.scopes.items, 0..) |t, i| {
-        std.debug.print("--- {any}\n", .{t});
-        std.debug.print("--- ---  items:\n", .{});
-        self.current_scope = @enumFromInt(i);
-
-        self.dumpCurrentScope();
-    }
     std.debug.print("structs:\n", .{});
     for (self.structs.items) |t| std.debug.print("--- {any}\n", .{t});
     std.debug.print("entry_points:\n", .{});
     for (self.entry_points.items) |t| std.debug.print("--- {any}\n", .{t});
+
+    std.debug.print("---BODY: \n", .{});
+    self.current_scope = .entry_file;
+    self.dumpCurrentScope(false);
 }
-fn dumpCurrentScope(self: *Parser) void {
+
+fn dumpCurrentScope(self: *Parser, consize: bool) void {
     const scope = self.getScope(self.current_scope);
-    for (scope.body.items) |node| std.debug.print("\t{any}\n", .{node});
+    if (!consize)
+        for (scope.body.items) |node| std.debug.print("\t{any}\n", .{node});
     var node: Node = 0;
     while (node < scope.body.items.len) {
         std.debug.print("\t{f}\n", .{FatNodeEntry{
@@ -67,6 +65,25 @@ pub fn new(allocator: Allocator) Error!Parser {
 
     return self;
 }
+
+fn nodeLength(self: *Parser, node: Node) u32 {
+    var base: u32 = switch (self.getNodeEntry(node).*) {
+        .var_decl => self.nodeSeqenceLength(node, 2),
+        .bin_op => self.nodeSeqenceLength(node, 2),
+        .null => 1,
+        else => 1,
+    };
+    const body = self.getScope(self.current_scope).body.items;
+    while (node + base < body.len and body[node + base] == .pad) base += 1;
+    return base;
+}
+fn nodeSeqenceLength(self: *Parser, node: Node, count: usize) u32 {
+    var len: u32 = 1;
+    for (0..count) |_|
+        len += self.nodeLength(node + len);
+    return len;
+}
+
 pub fn parseFile(self: *Parser, tokenizer: Tokenizer) Error!void {
     self.tokenizer = tokenizer;
 
@@ -80,6 +97,7 @@ pub fn parseFile(self: *Parser, tokenizer: Tokenizer) Error!void {
 
     _ = .{struct_type};
 }
+
 pub fn parseScope(self: *Parser, entry: ScopeEntry) Error!Scope {
     const scope = try self.addScope(entry);
 
@@ -107,7 +125,6 @@ pub fn parseScope(self: *Parser, entry: ScopeEntry) Error!Scope {
 }
 
 fn parseStatement(self: *Parser) Error!void {
-    std.debug.print("TOK: {f}\n", .{self.tokenEntry()});
     const token = self.tokenEntryShift();
     switch (token.kind) {
         .@"const", .@"var", .in, .out, .shared, .push => //
@@ -123,16 +140,25 @@ fn parseVarDecl(self: *Parser, qualifier: Qualifier) Error!void {
         return self.errorOut(.{ .unexpected_token = name_token });
     self.token += 1;
 
-    if (self.tokenEntry().kind != .@"=")
-        return self.errorOut(.{ .unexpected_token = self.token });
-    self.token += 1;
-
     _ = try self.appendNode(.{ .var_decl = .{
         .qualifier = qualifier,
         .name = name_token,
     } });
 
-    _ = try self.parseExpression(defaultShouldStop);
+    if (self.tokenEntry().kind == .@":") {
+        self.token += 1;
+        _ = try self.parseExpressionBase();
+    } else _ = try self.appendNode(.null);
+
+    if (self.tokenEntry().kind != .@"=") {
+        if (!self.defaultShouldStop(self.token))
+            return self.errorOut(.{ .unexpected_token = self.token });
+
+        _ = try self.appendNode(.null);
+    } else {
+        self.token += 1;
+        _ = try self.parseExpression(defaultShouldStop);
+    }
 }
 
 const ShouldStopFn = fn (*Parser, Token) bool;
@@ -221,7 +247,17 @@ fn parseExpressionBase(self: *Parser) Error!u32 {
 
             break :blk 3;
         },
-        else => return self.errorOut(.unknown),
+        .type_literal => blk: {
+            const entry = @as(Tokenizer.TypeLiteral, @bitCast(self.tokenEntry()._len)).entry();
+            self.token += 1;
+            const t = try self.addType(entry);
+            _ = try self.appendNode(.{ .value = .{ .type = .type, .payload = @intFromEnum(t) } });
+            break :blk 1;
+        },
+        else => |e| {
+            std.debug.print("KIND: {}\n", .{e});
+            return self.errorOut(.unknown);
+        },
         // .true => .{ .value = .create(.bool, true) },
         // .false => .{ .value = .create(.bool, false) },
 
@@ -241,7 +277,6 @@ fn parseArguments(self: *Parser) Error!ParseArgumentsResult {
     var result: ParseArgumentsResult = .{};
 
     while (self.tokenEntryPastEndl().kind != .@")") {
-        std.debug.print("ARGTOKEN: {f}\n", .{self.tokenEntry()});
         result.node_consumption += try self.parseExpression(argumentShouldStop);
         result.count += 1;
         if (self.tokenEntry().kind == .@",") {
@@ -404,14 +439,14 @@ pub const NodeEntry = union(enum) {
     null,
 
     identifier: Token,
-    var_ref: Node,
+    // var_ref: Node,
 
-    bin_op: BinaryOperator,
-    u_op: UnaryOperator,
+    bin_op: BinaryOperator, //[bin_op][left][right]
+    u_op: UnaryOperator, //[u_op][operand]
     value: Value,
 
-    entry_point_decl: EntryPoint, //[stage:Node][stage_info:Node]
-    entry_point_type_decl, //[stage:Node]
+    entry_point_decl: EntryPoint, //[h][stage:Node][stage_info:Node]
+    entry_point_type_decl, //[h][stage:Node]
 
     //is there is no else its padded
     branch,
@@ -421,7 +456,7 @@ pub const NodeEntry = union(enum) {
     constructor: Type,
 
     //statement
-    var_decl: VariableDeclaration,
+    var_decl: VariableDeclaration, //[var_decl][type][initializer]
 };
 const VariableDeclaration = struct {
     qualifier: Qualifier,
@@ -472,6 +507,7 @@ pub const TypeEntry = union(enum) {
     // pub const format = @import("debug.zig").formatType;
     pub const Tag = std.meta.Tag(@This());
     pub const eql = std.meta.eql;
+    pub const format = formatType;
 };
 
 pub const Matrix = packed struct {
@@ -520,6 +556,15 @@ pub inline fn errorOut(self: *Parser, error_info: ErrorInfo) Error {
 }
 //debug structs for formatting
 
+fn formatType(self: TypeEntry, writer: *std.Io.Writer) !void {
+    switch (self) {
+        .scalar => |scalar| try writer.print("{c}{s}", .{
+            "fui"[@intFromEnum(scalar.layout)],
+            @tagName(scalar.width)[1..],
+        }),
+        else => {},
+    }
+}
 const FatValueEntry = struct {
     self: *Parser,
     value: Value,
@@ -529,6 +574,7 @@ const FatValueEntry = struct {
             .compint => try writer.print("{d}", .{
                 util.extract(i128, entry.self.getScalarValue(entry.value.payload)),
             }),
+            .type => try writer.print("{f}", .{entry.self.getType(@enumFromInt(entry.value.payload))}),
             else => {},
         }
     }
@@ -541,9 +587,10 @@ const FatNodeEntry = struct {
         switch (scope.body.items[entry.node.*]) {
             .var_decl => |var_decl| {
                 entry.node.* += 1;
-                try writer.print("{s} {s} = {f}", .{
+                try writer.print("{s} {s}: {f} = {f}", .{
                     @tagName(var_decl.qualifier),
                     entry.self.tokenizer.slice(var_decl.name),
+                    entry,
                     entry,
                 });
             },
@@ -560,9 +607,18 @@ const FatNodeEntry = struct {
                 entry.node.* += 1;
             },
             .entry_point_decl => |epd| {
-                _ = epd;
                 entry.node.* += 1;
-                try writer.print("entry_point({f}, {f}){{}}", .{ entry, entry });
+                try writer.print("entry_point({f}, {f}){{\n", .{ entry, entry });
+                const last_cs = entry.self.current_scope;
+                defer entry.self.current_scope = last_cs;
+                entry.self.current_scope = entry.self.getEntryPoint(epd).scope;
+
+                entry.self.dumpCurrentScope(true);
+                try writer.print("\t}}", .{});
+            },
+            .null => {
+                entry.node.* += 1;
+                try writer.print("<null>", .{});
             },
             else => {
                 entry.node.* += 1;
