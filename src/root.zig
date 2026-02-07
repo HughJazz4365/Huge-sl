@@ -16,7 +16,6 @@ pub const Error = error{
 
     SyntaxError,
     ParsingError,
-    CodeGenError,
 };
 
 pub fn test_() !void {
@@ -25,7 +24,7 @@ pub fn test_() !void {
         Parser.StructEntry,
         Parser.ScopeEntry,
         Parser.TypeEntry,
-        Parser.EntryPointEntry,
+        Parser.FunctionEntry,
         Tokenizer.TokenEntry,
     }) |_| {}
     // }) |T|
@@ -45,20 +44,21 @@ pub fn test_() !void {
     var timer = try std.time.Timer.start();
     var tok: Tokenizer = .{ .full_source = source, .path = path };
     tok.tokenize(allocator) catch |err| {
-        try error_message.printErrorMessage(&file_writer.interface, tok.error_info);
+        try error_message.printErrorMessage(&file_writer.interface, tok.error_info, tok);
         return err;
     };
 
     var p = try Parser.new(allocator);
-    p.parseFile(tok) catch |err| {
-        try error_message.printErrorMessage(&file_writer.interface, p.error_info);
+    p.parse(tok) catch |err| {
+        try error_message.printErrorMessage(&file_writer.interface, p.error_info, tok);
         return err;
     };
     const measure = timer.read();
     std.debug.print(
-        "time: {d}ms\n",
-        .{@as(f64, @floatFromInt(measure)) / 1_000_000.0},
+        "time: {d} mcs\n",
+        .{@as(f64, @floatFromInt(measure)) / 1_000.0},
     );
+
     p.dump();
     // _ = p;
 

@@ -77,7 +77,7 @@ fn getNextEntry(self: *Tokenizer) Error!?TokenEntry {
     const bytes = self.source[0..count];
     for ( //
         @intFromEnum(TokenKind.@"=>").. //
-        @intFromEnum(TokenKind.false)) |i|
+        @intFromEnum(TokenKind.false) + 1) |i|
     {
         const tn = @tagName(@as(TokenKind, @enumFromInt(i)));
         if (if (i >= @intFromEnum(TokenKind.@"const"))
@@ -154,7 +154,7 @@ fn getNumericTypeLiteral(bytes: []const u8) ?TypeLiteral {
     return .{
         .scalar = scalar,
         .vector_len = lengthes[0],
-        .column_count = lengthes[0],
+        .column_count = lengthes[1],
     };
 }
 
@@ -179,6 +179,7 @@ fn stripValidIdentifier(self: *Tokenizer, bytes: []const u8) Error![]const u8 {
 }
 fn matchOperator(self: *Tokenizer, bytes: []const u8, bin_priority: bool) ?TokenEntry {
     return for (&[_]@Tuple(&.{ TokenKind, []const u8 }){
+        .{ .indexable_ptr, "[]" },
         .{ .dotsat, "|*|" },
         .{ .shl, "<<" },
         .{ .shr, ">>" },
@@ -189,15 +190,16 @@ fn matchOperator(self: *Tokenizer, bytes: []const u8, bin_priority: bool) ?Token
         .{ .dist, "<>" },
         .{ .cross, "><" },
         .{ .dot, "**" },
+        .{ .xor, "^^" },
 
         .{ .greater, ">" },
         .{ .less, "<" },
-        .{ .mul, "*" },
         .{ .div, "/" },
         .{ .pow, "^" },
         .{ .mod, "%" },
 
         .{ .@"and", "&" },
+        .{ .@"or", "|" },
 
         .{ .not, "!" },
         .{ .sat, ";" },
@@ -207,10 +209,11 @@ fn matchOperator(self: *Tokenizer, bytes: []const u8, bin_priority: bool) ?Token
         .{ .sqrmag, "~~" },
         .{ .mag, "~" },
     }) |pair| {
-        if (strSep(bytes, pair[1])) break self.createEntry(pair[0], bytes[0..pair[1].len]);
+        if (util.strStarts(bytes, pair[1])) break self.createEntry(pair[0], bytes[0..pair[1].len]);
     } else self.createEntry(switch (bytes[0]) {
         '+' => if (bin_priority) .add else .pos,
         '-' => if (bin_priority) .sub else .neg,
+        '*' => if (bin_priority) .mul else .ptr,
         '|' => if (bin_priority) .@"or" else .sat,
         else => return null,
     }, bytes[0..1]);
@@ -327,7 +330,7 @@ pub inline fn uOpFromTokenKind(kind: TokenKind) ?UnaryOperator {
 }
 pub const UnaryOperator = util.EnumSlice(TokenKind, u8, __u_op_from, __u_op_to);
 const __u_op_from: TokenKind = .neg;
-const __u_op_to: TokenKind = .sqrmag;
+const __u_op_to: TokenKind = .indexable_ptr;
 
 pub const TokenKind = enum(u8) {
     eof,
@@ -360,6 +363,11 @@ pub const TokenKind = enum(u8) {
     push,
     shared,
 
+    //shader stage qualifiers
+    vertex,
+    fragment,
+    compute,
+
     @"if",
     @"else",
     @"switch",
@@ -371,7 +379,6 @@ pub const TokenKind = enum(u8) {
     discard,
 
     @"fn",
-    entry_point,
     @"struct",
     @"enum",
 
@@ -421,6 +428,9 @@ pub const TokenKind = enum(u8) {
     norm,
     mag,
     sqrmag,
+
+    ptr,
+    indexable_ptr,
 };
 
 pub fn bindingPower(op: BinaryOperator) u8 {

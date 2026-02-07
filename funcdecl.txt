@@ -1,0 +1,101 @@
+//fragment main = fn{out o: f32x4}
+//function type decls
+fn
+fn()
+fn() f32
+fn : f32
+fn(ArgType) Rtype
+
+fn f32 //INVALID !!!
+
+//function decls
+fn{..}
+fn(){}
+fn(arg) f32{} //@TypeOf(arg)==f32
+fn(arg1, arg2) u32
+fn(arg1, arg2: f32) f32x2
+fn(arg1: f32, arg2: f32) f32x2
+fn(arg) //@TypeOf(arg) == void
+fn(arg1,
+   arg2,
+) f32
+fn(arg : f32,) f32 
+fn(arg : f32,
+) f32 
+
+
+
+//compitme args
+fn(#arg, arg2 : f32) f32x3 //arg1 is comptime, arg2 is not
+fn(T: type, arg) T
+
+const square = fn(x: anytype) @TypeOf(x){
+	return x^2
+}
+const smth = fn(x: anytype) type {
+	return @TypeOf(x)
+}
+//return type, arguments are in/out variables that occupy locations
+//in: from 0 to n , where n is argument count
+//out: location 0
+//global / local io variables get inserted after:
+// first global variables in order of declaration
+// local variables in order of declaration
+
+// rtype is location '0' smooth out variable of type f32x4
+fragment main = fn: f32x4{
+	return .{1}
+
+}
+
+
+//PARSING=PARSING=PARSING=PARSING=PARSING=PARSING=PARSING
+
+mode : {identifiers, values, args}
+
+0: 'fn'
+1: 0: if - '(' parse args
+   1: if - ':' parse rtype(base)
+   2: if - '{' fn decl with type 'fn()void'
+
+1.2: parse scope and return;
+1.1: parse rtype and then check for '{' -> return type or fn decl
+1.0: parse args (AP) then parse rtype and check for '{' (might be an error if there
+is no body) -> return type of fn decl
+
+//node appending
+1.2: add fn_decl node -> parse scope
+1.1: add fn_type_decl node with {count = 0}(replace with fn decl if needed)
+	 -> parse rtype -> parse scope(if needed)
+
+AP:
+var name_list : List(Token)
+var type_list : List(Node)
+
+var quals_buf: usize = 0
+var quals : List(usize) [01][00] 2 bits -> 1 for comptime 1 for anytype
+
+var mode = .identifiers
+while(true):
+const next_mode = if(token == identifer)//dont forget the comptime symbol '#'
+{
+}
+
+if(!mode.compatibleWithNext(next_mode))
+	return error
+mode = next_mode
+
+
+switch(kind)
+.comptime_arg => fn decl
+.identifier => switch(next)
+	.@':' => fn decl
+	.@',' => idk
+	else => invalid
+else => type_expression or invalid
+
+
+
+
+
+

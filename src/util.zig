@@ -16,6 +16,10 @@ pub fn removeAt(T: type, slice_ptr: *[]T, index: usize) void {
     @memmove(slice_ptr.*[index .. slice_ptr.len - 1], slice_ptr.*[index + 1 ..]);
     slice_ptr.len -= 1;
 }
+pub fn enumInRange(Enum: type, a: Enum, from: Enum, to: Enum) bool {
+    return @intFromEnum(from) <= @intFromEnum(a) and
+        @intFromEnum(a) <= @intFromEnum(to);
+}
 pub fn reallocPrependSlice(allocator: Allocator, T: type, slice: []T, elems: []const T) Allocator.Error![]T {
     const l, const el = .{ slice.len, elems.len };
     const new_slice = try allocator.alloc(T, l + el);

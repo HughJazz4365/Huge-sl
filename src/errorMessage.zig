@@ -1,6 +1,7 @@
 const std = @import("std");
 const root = @import("root.zig");
 const Tokenizer = @import("Tokenizer.zig");
+const Parser = @import("Parser.zig");
 pub const ErrorInfo = union(enum) {
     //syntax error
     unexpected_token: Token,
@@ -9,10 +10,17 @@ pub const ErrorInfo = union(enum) {
     entry_point_decl_arg_count,
     entry_point_type_decl_arg_count,
     //
-    undeclared_identifier: []const u8,
+    undeclared_identifier: Token,
+    redeclaration: Token,
     dependency_loop: []const u8,
+    not_a_type: Node,
+    missing_initializer,
+    qualifier_cant_have_initializer,
     unclosed_scope,
     cant_implicitly_cast,
+    invalid_type: Node,
+
+    qualifier_incompatible_with_type: QualifierIncompatibleWithType,
 
     unexpected_return,
     unreachable_statement,
@@ -21,11 +29,19 @@ pub const ErrorInfo = union(enum) {
 
     unknown,
 };
+const QualifierIncompatibleWithType = struct {
+    var_decl: Node,
+    type: Parser.Type,
+};
 
-pub fn printErrorMessage(writer: *std.Io.Writer, error_info: ErrorInfo) Error!void {
+pub fn printErrorMessage(writer: *std.Io.Writer, error_info: ErrorInfo, tokenizer: Tokenizer) Error!void {
     switch (error_info) {
-        // .unexpected_token => |token| //
-        // try writer.print("unexpected token: {f}\n", .{token.token}),
+        .unexpected_token => |token| //
+        try writer.print("unexpected token: {f}\n", .{tokenizer.entry(token)}),
+        .undeclared_identifier => |token| //
+        try writer.print("undeclared identifier: {s}\n", .{tokenizer.slice(token)}),
+        .redeclaration => |rd| //
+        try writer.print("redeclaration: {s}\n", .{tokenizer.slice(rd)}),
         // .unknown => try writer.print("unknown error\n", .{}),
         // .dependency_loop => |dependency_loop| try writer.print("'{s}' depends on itself\n", .{dependency_loop}),
         // .undeclared_identifier => |undeclared_identifier| try writer.print("undeclared identifier '{s}'\n", .{undeclared_identifier}),
@@ -42,3 +58,4 @@ pub fn errorOut(error_info: ErrorInfo) Error {
 const Error = root.Error;
 const Token = Tokenizer.Token;
 const FatToken = Tokenizer.FatToken;
+const Node = Parser.Node;

@@ -1,9 +1,14 @@
-const f1 = 10
-const f2 = f1
+// test ?
 
-in a : f32
-const main = entry_point(1){
-const b = 3 * 9
+vertex vert0 = fn{
+	//push vertex_buffer : []f32x3
+	//out o = vertex_buffer[@vertex_id] 
+	out o : *f32x3= 5
+	fragment frag0 = f32
 }
 
-const c = 3
+fragment frag0 = fn : f32{
+	//in vert: f32x3
+	//out o : f32x4 = .{1}
+}
+
