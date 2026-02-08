@@ -190,16 +190,10 @@ fn getDeclScopeVarRef(self: *Parser, scope: Scope, node: Node, token: Token) Err
     const body = self.getScope(scope).body.items;
     var i: Node = 0;
     while (i < body.len) {
-        const len = self.nodeLength(node);
-        std.debug.print("[{d}]TAGNAME {s}, len : {d}\n", .{ i, @tagName(self.getNodeEntry(i).*), len });
+        const len = self.nodeLength(i);
         defer i += len;
 
         if (i == node) continue;
-
-        std.debug.print("searching for {s} in {s}\n", .{
-            self.tokenizer.slice(token),
-            @tagName(self.getNodeEntry(i).*),
-        });
         switch (self.getNodeEntry(i).*) {
             .var_decl => |vd| if (vd.name == token or util.strEql(
                 self.tokenizer.slice(token),
@@ -211,7 +205,6 @@ fn getDeclScopeVarRef(self: *Parser, scope: Scope, node: Node, token: Token) Err
             else => {},
         }
     }
-    // _ = .{ self, scope, node, token };
     return null;
 }
 fn implicitCast(self: *Parser, node: Node, @"type": Type) Error!void {
@@ -304,8 +297,7 @@ fn nodeLength(self: *Parser, node: Node) u32 {
         .bin_op => 1 + self.nodeSeqenceLength(node + 1, 2),
         .u_op => 1 + self.nodeLength(node + 1),
         .null => 1,
-        .function_decl => |fn_decl| //
-        1 + self.nodeSeqenceLength(node + 1, self.getFunction(fn_decl).arg_count + 1),
+        .function_decl => 1 + self.nodeLength(node + 1), //args
         else => 1,
     };
     const body = self.getScope(self.current_scope).body.items;
