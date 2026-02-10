@@ -1,8 +1,0 @@
-const Vertex = struct{pos: f32x3, normal : f32x3}.@layout(.scalar, .ordered)
-
-const main = entrypoint(.fragment){
-	push vertex_buffer: (*Vertex).@align(8)
-	push other_ptr: *f32
-	const v: Vertex = vertex_buffer[@vertex_id]
-	out output = v * other_ptr.*
-}

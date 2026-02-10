@@ -43,23 +43,24 @@ pub fn test_() !void {
 
     var timer = try std.time.Timer.start();
     var tok: Tokenizer = .{ .full_source = source, .path = path };
-    tok.tokenize(allocator) catch |err| {
-        try error_message.printErrorMessage(&file_writer.interface, tok.error_info, tok);
-        return err;
-    };
+    tok.tokenize(allocator) catch |err| return if (err == Error.SyntaxError)
+        error_message.errorOutTokenizer(tok, &file_writer.interface)
+    else
+        err;
 
-    var p = try Parser.new(allocator);
-    p.parse(tok) catch |err| {
-        try error_message.printErrorMessage(&file_writer.interface, p.error_info, tok);
-        return err;
-    };
+    var parser = try Parser.new(allocator);
+    parser.parse(tok) catch |err| return if (err == Error.ParsingError)
+        error_message.errorOutParser(&parser, &file_writer.interface)
+    else
+        err;
+
     const measure = timer.read();
     std.debug.print(
         "time: {d} mcs\n",
         .{@as(f64, @floatFromInt(measure)) / 1_000.0},
     );
 
-    p.dump();
+    parser.dump();
     // _ = p;
 
 }

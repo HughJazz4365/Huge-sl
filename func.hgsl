@@ -1,5 +1,0 @@
-
-const main = entrypoint(.fragment){out kek: T = 1}
-const T = f32
-
-

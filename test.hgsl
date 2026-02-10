@@ -1,10 +1,7 @@
-// test ?
-
 vertex vert0 = fn{
-	//push vertex_buffer : []f32x3
-	//out o = vertex_buffer[@vertex_id] 
-	out o : f32x3= 5
-}
+	push vertex_buffer : *f32x3
+	out o = vertex_buffer[@vertex_id] 
+}	
 
 fragment frag0 = fn : f32{
 	//in vert: f32x3

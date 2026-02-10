@@ -8,7 +8,6 @@ const error_message = @import("errorMessage.zig");
 
 const comment_symbol = "//";
 
-var current: *Tokenizer = undefined;
 list: List(TokenEntry) = .empty,
 
 source: []const u8 = undefined,
@@ -16,14 +15,12 @@ source: []const u8 = undefined,
 path: []const u8,
 full_source: []const u8,
 
-error_info: ErrorInfo = .unknown,
+error_info: ErrorInfo = undefined,
 
 pub fn deinit(self: *Tokenizer, allocator: std.mem.Allocator) void {
     self.list.deinit(allocator);
 }
 pub fn tokenize(self: *Tokenizer, allocator: std.mem.Allocator) Error!void {
-    current = self;
-
     self.source = self.full_source;
     if (self.source.len == 0) return;
 
@@ -104,7 +101,10 @@ fn getNextEntry(self: *Tokenizer) Error!?TokenEntry {
 
     if (getNumericTypeLiteral(bytes)) |tl| {
         if (tl.scalar.width == ._8 and tl.scalar.layout == .float)
-            return self.errorOut(.float8);
+            return self.errorOut(.{
+                .source_offset = bytes.ptr - self.full_source.ptr,
+                .kind = .float8,
+            });
         return .{
             .offset = @truncate(bytes.ptr - self.full_source.ptr),
             ._len = @bitCast(tl),
@@ -112,9 +112,13 @@ fn getNextEntry(self: *Tokenizer) Error!?TokenEntry {
         };
     }
 
-    const valid_identifier = try self.stripValidIdentifier(bytes[@intFromBool(bytes[0] == '@')..]);
-
-    return self.createEntry(if (bytes[0] == '@') .builtin else .identifier, valid_identifier);
+    const bi: usize = @intFromBool(bytes[0] == '@');
+    const valid_identifier = try self.stripValidIdentifier(bytes[bi..]);
+    return .{
+        .kind = if (bytes[0] == '@') .builtin else .identifier,
+        .offset = @truncate(bytes.ptr - self.full_source.ptr),
+        ._len = @truncate(valid_identifier.len + bi),
+    };
 }
 fn getNumericTypeLiteral(bytes: []const u8) ?TypeLiteral {
     if (bytes.len < 2) return null;
@@ -170,10 +174,11 @@ fn stripValidIdentifier(self: *Tokenizer, bytes: []const u8) Error![]const u8 {
             else => false,
         }) break i;
     } else bytes.len;
-    if (!letter) {
-        //TODO: invalid character error
-        return self.errorOut(.unknown);
-    }
+    if (!letter)
+        return self.errorOut(.{
+            .source_offset = bytes.ptr - self.full_source.ptr,
+            .kind = .invalid_character,
+        });
 
     return bytes[0..end];
 }
@@ -295,15 +300,6 @@ pub const TokenEntry = packed struct(u64) {
             @as(TypeLiteral, @bitCast(self._len)).len()
         else
             self._len;
-    }
-    pub fn format(self: TokenEntry, writer: *std.Io.Writer) !void {
-        try writer.print("'{s}'", .{@tagName(self.kind)});
-        switch (self.kind) {
-            .identifier,
-            .int_literal,
-            => try writer.print(" : {s}", .{self.slice(current.*)}),
-            else => {},
-        }
     }
     pub const eof: TokenEntry = .{ .kind = .eof, .offset = 0, ._len = 0 };
 };
@@ -459,8 +455,8 @@ pub fn bindingPower(op: BinaryOperator) u8 {
 
 pub fn errorOut(self: *Tokenizer, error_info: ErrorInfo) Error {
     self.error_info = error_info;
-    return error_message.errorOut(error_info);
+    return Error.SyntaxError;
 }
 const List = std.ArrayList;
-const ErrorInfo = error_message.ErrorInfo;
+const ErrorInfo = error_message.TokenizerErrorInfo;
 const Error = hgsl.Error;
