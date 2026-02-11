@@ -2,10 +2,10 @@ const std = @import("std");
 const hgsl = @import("root.zig");
 const util = @import("util.zig");
 const Parser = @import("Parser.zig");
-// const tp = @import("type.zig");
 const Tokenizer = @This();
 const error_message = @import("errorMessage.zig");
 
+const use_multi_array_list = false;
 const comment_symbol = "//";
 
 list: List(TokenEntry) = .empty,
@@ -26,19 +26,55 @@ pub fn tokenize(self: *Tokenizer, allocator: std.mem.Allocator) Error!void {
 
     self.list = try .initCapacity(allocator, 32);
 
-    while (try self.getNextEntry()) |e| {
-        try self.list.append(allocator, e);
-        if (e.kind != .endl) self.bump(e.len());
+    while (try self.getNextFatTokenEntry()) |e| {
+        try self.list.append(allocator, .{ .kind = e.kind, .offset = e.offset });
+        if (e.kind != .endl) self.bump(e.len);
     }
 }
-fn createEntry(self: Tokenizer, kind: TokenKind, bytes: []const u8) TokenEntry {
+pub fn parseTypeLiteral(self: Tokenizer, token: Token) Parser.TypeEntry {
+    const bytes = self.slice(token);
+    const scalar: Parser.Scalar = .{
+        .layout = switch (bytes[0]) {
+            'f' => .float,
+            'u' => .uint,
+            'i' => .int,
+            else => unreachable,
+        },
+        .width = switch (bytes[1]) {
+            '8' => ._8,
+            '1' => ._16,
+            '3' => ._32,
+            '6' => ._64,
+            else => unreachable,
+        },
+    };
+    const off: usize = 2 + @as(usize, @intFromBool(scalar.width != ._8));
+    if (bytes.len == off) return .{ .scalar = scalar };
+
+    const vector_len: Parser.Vector.Len = switch (bytes[off + 1]) {
+        '2' => ._2,
+        '3' => ._3,
+        '4' => ._4,
+        else => unreachable,
+    };
+    if (bytes.len == off + 2) return .{ .vector = .{ .len = vector_len, .scalar = scalar } };
+    const column_count: Parser.Vector.Len = switch (bytes[off + 3]) {
+        '2' => ._2,
+        '3' => ._3,
+        '4' => ._4,
+        else => unreachable,
+    };
+    return .{ .matrix = .{ .m = vector_len, .n = column_count, .scalar = scalar } };
+}
+
+fn createFatEntry(self: Tokenizer, token_kind: TokenKind, bytes: []const u8) FatTokenEntry {
     return .{
-        .kind = kind,
+        .kind = token_kind,
         .offset = @truncate(bytes.ptr - self.full_source.ptr),
-        ._len = @truncate(bytes.len),
+        .len = @truncate(bytes.len),
     };
 }
-fn getNextEntry(self: *Tokenizer) Error!?TokenEntry {
+fn getNextFatTokenEntry(self: *Tokenizer) Error!?FatTokenEntry {
     var is_endl = false;
     var in_comment = false;
     var count: usize = 0;
@@ -67,7 +103,7 @@ fn getNextEntry(self: *Tokenizer) Error!?TokenEntry {
         }
     }
     if (count == 0) return if (is_endl)
-        self.createEntry(.endl, self.source[0..0])
+        self.createFatEntry(.endl, self.source[0..0])
     else
         null;
 
@@ -81,33 +117,34 @@ fn getNextEntry(self: *Tokenizer) Error!?TokenEntry {
             strSep(bytes, tn)
         else
             util.strStarts(bytes, tn))
-            return self.createEntry(@enumFromInt(i), bytes[0..tn.len]);
+            return self.createFatEntry(@enumFromInt(i), bytes[0..tn.len]);
     }
 
     switch (bytes[0]) {
-        '0'...'9' => return self.createEntry(.int_literal, bytes[0..1]),
+        '0'...'9' => return self.createFatEntry(.int_literal, bytes[0..1]),
         else => {},
     }
     // if (try self.getNumberLiteralFat(bytes)) |l| return l;
 
     if (self.matchOperator(
         bytes,
-        if (self.list.items.len == 0) false else switch (self.list.items[self.list.items.len - 1].kind) {
+        if (self.tokenCount() == 0) false else switch (self.kind(self.tokenCount() - 1)) {
             .identifier, .int_literal, .float_literal, .true, .false, .@")", .@"]", .@"}" => true,
             //type literal
             else => false,
         },
     )) |t| return t;
 
-    if (getNumericTypeLiteral(bytes)) |tl| {
-        if (tl.scalar.width == ._8 and tl.scalar.layout == .float)
+    const tl_len = getNumericTypeLiteral(bytes);
+    if (tl_len > 0) {
+        if (bytes[0] == 'f' and bytes[1] == '8')
             return self.errorOut(.{
                 .source_offset = bytes.ptr - self.full_source.ptr,
                 .kind = .float8,
             });
         return .{
             .offset = @truncate(bytes.ptr - self.full_source.ptr),
-            ._len = @bitCast(tl),
+            .len = @truncate(tl_len),
             .kind = .type_literal,
         };
     }
@@ -117,49 +154,45 @@ fn getNextEntry(self: *Tokenizer) Error!?TokenEntry {
     return .{
         .kind = if (bytes[0] == '@') .builtin else .identifier,
         .offset = @truncate(bytes.ptr - self.full_source.ptr),
-        ._len = @truncate(valid_identifier.len + bi),
+        .len = @truncate(valid_identifier.len + bi),
     };
 }
-fn getNumericTypeLiteral(bytes: []const u8) ?TypeLiteral {
-    if (bytes.len < 2) return null;
+fn getNumericTypeLiteral(bytes: []const u8) usize {
+    if (bytes.len < 2) return 0;
     const scalar: Parser.Scalar = .{
         .layout = switch (bytes[0]) {
             'i' => .int,
             'u' => .uint,
             'f' => .float,
-            else => return null,
+            else => return 0,
         },
         .width = inline for (@typeInfo(Parser.Scalar.Width).@"enum".fields) |ef| {
             if (util.strStarts(bytes[1..], ef.name[1..]))
                 break @enumFromInt(ef.value);
-        } else return null,
+        } else return 0,
     };
 
     const scalar_off: usize = if (scalar.width == ._8) 2 else 3;
-    if (bytes.len <= scalar_off) return .{ .scalar = scalar };
+    if (bytes.len <= scalar_off) return scalar_off;
 
-    var lengthes: [2]u2 = .{ 0, 0 };
+    var lengthes: [2]usize = .{ 0, 0 };
     var dim: usize = 0;
     for (0..2) |i| {
         const off = scalar_off + i * 2 + 1;
         if (bytes.len <= off) break;
         if (bytes[off - 1] == 'x') {
-            if (bytes.len <= off) return null;
+            if (bytes.len <= off) return 0;
             lengthes[i] = switch (bytes[off]) {
                 '2'...'4' => @intCast(bytes[off] - '1'),
-                else => return null,
+                else => return 0,
             };
             dim += 1;
         }
     }
-    const len = scalar_off + dim * 2;
-    if (bytes.len > len and isIdentifierChar(bytes[len])) return null;
+    const type_len = scalar_off + dim * 2;
+    if (bytes.len > type_len and isIdentifierChar(bytes[type_len])) return 0;
 
-    return .{
-        .scalar = scalar,
-        .vector_len = lengthes[0],
-        .column_count = lengthes[1],
-    };
+    return type_len;
 }
 
 fn stripValidIdentifier(self: *Tokenizer, bytes: []const u8) Error![]const u8 {
@@ -182,7 +215,7 @@ fn stripValidIdentifier(self: *Tokenizer, bytes: []const u8) Error![]const u8 {
 
     return bytes[0..end];
 }
-fn matchOperator(self: *Tokenizer, bytes: []const u8, bin_priority: bool) ?TokenEntry {
+fn matchOperator(self: *Tokenizer, bytes: []const u8, bin_priority: bool) ?FatTokenEntry {
     return for (&[_]@Tuple(&.{ TokenKind, []const u8 }){
         .{ .indexable_ptr, "[]" },
         .{ .dotsat, "|*|" },
@@ -214,8 +247,8 @@ fn matchOperator(self: *Tokenizer, bytes: []const u8, bin_priority: bool) ?Token
         .{ .sqrmag, "~~" },
         .{ .mag, "~" },
     }) |pair| {
-        if (util.strStarts(bytes, pair[1])) break self.createEntry(pair[0], bytes[0..pair[1].len]);
-    } else self.createEntry(switch (bytes[0]) {
+        if (util.strStarts(bytes, pair[1])) break self.createFatEntry(pair[0], bytes[0..pair[1].len]);
+    } else self.createFatEntry(switch (bytes[0]) {
         '+' => if (bin_priority) .add else .pos,
         '-' => if (bin_priority) .sub else .neg,
         '*' => if (bin_priority) .mul else .ptr,
@@ -248,67 +281,72 @@ fn isWhitespace(char: u8) bool {
     return char == ' ' or char == '\t';
 }
 pub const Token = u32;
-pub inline fn entry(self: Tokenizer, token: Token) TokenEntry {
-    return if (token < self.list.items.len)
-        self.list.items[token]
+
+pub const TokenEntry = packed struct {
+    kind: TokenKind,
+    offset: u32,
+    pub const eof: TokenEntry = .{ .kind = .eof, .offset = 0 };
+};
+pub const FatTokenEntry = packed struct(u64) {
+    kind: TokenKind,
+    len: u24,
+    offset: u32,
+};
+pub fn slice(self: Tokenizer, token: Token) []const u8 {
+    const entry = self.getEntry(token);
+    const entry_len: usize = switch (entry.kind) {
+        .identifier, .type_literal, .builtin => return self.rawSlice(token),
+        .int_literal, .float_literal => 1,
+        else => 1,
+    };
+    return self.full_source[entry.offset .. entry.offset + entry_len];
+}
+pub fn rawSlice(self: Tokenizer, token: Token) []const u8 {
+    const off = self.offset(token);
+    const bytes = self.full_source[off..];
+    const count = for (bytes[1..], 1..) |char, i| {
+        if (!isIdentifierChar(char)) break i;
+    } else bytes.len;
+    return self.full_source[off .. off + count];
+}
+
+pub fn offset(self: Tokenizer, token: Token) u32 {
+    return if (use_multi_array_list)
+        self.list.items(.offset)[token]
+    else
+        self.list.items[token].offset;
+}
+pub fn kind(self: Tokenizer, token: Token) TokenKind {
+    return if (token < self.tokenCount())
+        if (use_multi_array_list)
+            self.list.items(.kind)[token]
+        else
+            self.list.items[token].kind
     else blk: {
         @branchHint(.unlikely);
         break :blk .eof;
     };
 }
-pub inline fn slice(self: Tokenizer, token: Token) []const u8 {
-    return self.entry(token).slice(self);
+pub inline fn tokenCount(self: Tokenizer) Token {
+    return @truncate(if (use_multi_array_list) self.list.len else self.list.items.len);
+}
+inline fn getEntry(self: Tokenizer, token: Token) TokenEntry {
+    return if (token < self.tokenCount())
+        if (use_multi_array_list)
+            self.list.get(token)
+        else
+            self.list.items[token]
+    else blk: {
+        @branchHint(.unlikely);
+        break :blk .eof;
+    };
 }
 
-pub const TypeLiteral = packed struct(u24) {
-    scalar: Parser.Scalar,
-
-    vector_len: u2 = 0, //1-4
-    column_count: u2 = 0, //1-4
-
-    rest: u16 = 0,
-    pub fn len(self: TypeLiteral) u32 {
-        return 2 + @as(u32, @intFromBool(self.scalar.width != ._8)) +
-            2 * @as(u32, @intFromBool(self.vector_len != 0)) +
-            2 * @as(u32, @intFromBool(self.column_count != 0));
-    }
-    pub fn entry(self: TypeLiteral) Parser.TypeEntry {
-        return if (self.column_count != 0) //
-            .{ .matrix = .{
-                .scalar = self.scalar,
-                .m = @enumFromInt(self.vector_len - 1),
-                .n = @enumFromInt(self.column_count - 1),
-            } }
-        else if (self.vector_len != 0) //
-            .{ .vector = .{
-                .scalar = self.scalar,
-                .len = @enumFromInt(self.vector_len - 1),
-            } }
-        else
-            .{ .scalar = self.scalar };
-    }
-};
-pub const TokenEntry = packed struct(u64) {
-    offset: u32,
-    _len: u24,
-    kind: TokenKind,
-    pub inline fn slice(self: TokenEntry, tokenizer: Tokenizer) []const u8 {
-        return tokenizer.full_source[self.offset .. self.offset + self.len()];
-    }
-    pub fn len(self: TokenEntry) u32 {
-        return if (self.kind == .type_literal)
-            @as(TypeLiteral, @bitCast(self._len)).len()
-        else
-            self._len;
-    }
-    pub const eof: TokenEntry = .{ .kind = .eof, .offset = 0, ._len = 0 };
-};
-
-pub inline fn binOpFromTokenKind(kind: TokenKind) ?BinaryOperator {
+pub inline fn binOpFromTokenKind(token_kind: TokenKind) ?BinaryOperator {
     const f = @intFromEnum(__bin_op_from);
     const t = @intFromEnum(__bin_op_to);
-    return if (@intFromEnum(kind) >= f and @intFromEnum(kind) <= t) //
-        @enumFromInt(@intFromEnum(kind) - f)
+    return if (@intFromEnum(token_kind) >= f and @intFromEnum(token_kind) <= t) //
+        @enumFromInt(@intFromEnum(token_kind) - f)
     else
         null;
 }
@@ -316,11 +354,11 @@ pub const BinaryOperator = util.EnumSlice(TokenKind, u8, __bin_op_from, __bin_op
 const __bin_op_from: TokenKind = .add;
 const __bin_op_to: TokenKind = .dotsat;
 
-pub inline fn uOpFromTokenKind(kind: TokenKind) ?UnaryOperator {
+pub inline fn uOpFromTokenKind(token_kind: TokenKind) ?UnaryOperator {
     const f = @intFromEnum(__u_op_from);
     const t = @intFromEnum(__u_op_to);
-    return if (@intFromEnum(kind) >= f and @intFromEnum(kind) <= t) //
-        @enumFromInt(@intFromEnum(kind) - f)
+    return if (@intFromEnum(token_kind) >= f and @intFromEnum(token_kind) <= t) //
+        @enumFromInt(@intFromEnum(token_kind) - f)
     else
         null;
 }
@@ -457,6 +495,6 @@ pub fn errorOut(self: *Tokenizer, error_info: ErrorInfo) Error {
     self.error_info = error_info;
     return Error.SyntaxError;
 }
-const List = std.ArrayList;
+const List = if (use_multi_array_list) std.MultiArrayList else std.ArrayList;
 const ErrorInfo = error_message.TokenizerErrorInfo;
 const Error = hgsl.Error;

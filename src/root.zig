@@ -42,27 +42,31 @@ pub fn test_() !void {
         return Error.FileReadFailed;
 
     var timer = try std.time.Timer.start();
-    var tok: Tokenizer = .{ .full_source = source, .path = path };
-    tok.tokenize(allocator) catch |err| return if (err == Error.SyntaxError)
-        error_message.errorOutTokenizer(tok, &file_writer.interface)
-    else
-        err;
+    var measure: u64 = 0;
+    const test_count = 1;
+    for (0..test_count) |_| {
+        var tok: Tokenizer = .{ .full_source = source, .path = path };
+        tok.tokenize(allocator) catch |err| return if (err == Error.SyntaxError)
+            error_message.errorOutTokenizer(tok, &file_writer.interface)
+        else
+            err;
 
-    var parser = try Parser.new(allocator);
-    parser.parse(tok) catch |err| return if (err == Error.ParsingError)
-        error_message.errorOutParser(&parser, &file_writer.interface)
-    else
-        err;
+        // for (0..tok.list.len) |i| {
+        //     std.debug.print("TOKEN: {f}\n", .{Parser.FatToken{ .token = @truncate(i), .self = tok }});
+        // }
+        var parser = try Parser.new(allocator);
+        parser.parse(tok) catch |err| return if (err == Error.ParsingError)
+            error_message.errorOutParser(&parser, &file_writer.interface)
+        else
+            err;
 
-    const measure = timer.read();
+        measure += timer.lap();
+        parser.dump();
+    }
     std.debug.print(
-        "time: {d} mcs\n",
-        .{@as(f64, @floatFromInt(measure)) / 1_000.0},
+        "time: {d} mcs(tc: {d})\n",
+        .{ @as(f64, @floatFromInt(measure)) / 1_000.0 / test_count, test_count },
     );
-
-    parser.dump();
-    // _ = p;
-
 }
 pub fn compile(io: std.Io, allocator: Allocator, path: []const u8, error_writer: *std.Io.Writer) Error![]u32 {
     const source = readFile(io, allocator, path) catch

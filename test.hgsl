@@ -7,4 +7,3 @@ fragment frag0 = fn : f32{
 	//in vert: f32x3
 	//out o : f32x4 = .{1}
 }
-

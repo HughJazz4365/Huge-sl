@@ -1,3 +1,7 @@
+//TODO:
+//one node list for all scopes(
+//scope body goes after declaration
+//)
 const std = @import("std");
 const util = @import("util.zig");
 const zigbuiltin = @import("builtin");
@@ -29,8 +33,6 @@ pub fn dump(self: *Parser) void {
     for (self.types.items) |t| std.debug.print("--- {any}\n", .{t});
     std.debug.print("structs:\n", .{});
     for (self.structs.items) |t| std.debug.print("--- {any}\n", .{t});
-    // std.debug.print("entry_points:\n", .{});
-    // for (self.entry_points.items) |t| std.debug.print("--- {any}\n", .{t});
 
     std.debug.print("---BODY: \n", .{});
     self.current_scope = .entry_file;
@@ -187,6 +189,7 @@ fn getVarRef(self: *Parser, scope: Scope, node: Node, token: Token) Error!?Varia
 fn getDeclScopeVarRef(self: *Parser, scope: Scope, node: Node, token: Token) Error!?Node {
     const body = self.getScope(scope).body.items;
     var i: Node = 0;
+    const name = self.tokenizer.rawSlice(token);
     while (i < body.len) {
         const len = self.nodeLength(i);
         defer i += len;
@@ -194,8 +197,8 @@ fn getDeclScopeVarRef(self: *Parser, scope: Scope, node: Node, token: Token) Err
         if (i == node) continue;
         switch (self.getNodeEntry(i).*) {
             .var_decl => |vd| if (vd.name == token or util.strEql(
-                self.tokenizer.slice(token),
-                self.tokenizer.slice(vd.name),
+                name,
+                self.tokenizer.rawSlice(vd.name),
             )) {
                 try self.foldNode(i);
                 return i;
@@ -335,7 +338,7 @@ fn parseScope(self: *Parser, entry: ScopeEntry) Error!Scope {
 
     while (true) {
         _ = self.skipEndl();
-        const peek = self.tokenEntry().kind;
+        const peek = self.tokenizer.kind(self.token);
         if (!self.isScopeFile(self.current_scope)) {
             if (peek == .eof) return self.errorOut(.{ .payload = .unclosed_scope });
             if (peek == .@"}") {
@@ -353,13 +356,13 @@ fn parseScope(self: *Parser, entry: ScopeEntry) Error!Scope {
 }
 
 fn parseStatement(self: *Parser) Error!void {
-    const entry = self.tokenEntry();
+    const kind = self.tokenizer.kind(self.token);
     self.token += 1;
     const nn = self.nextNode();
-    switch (entry.kind) {
+    switch (kind) {
         .@"const", .@"var", .in, .out, .shared, .push, .fragment, .vertex, .compute => //
         try self.parseVarDecl(
-            @enumFromInt(@intFromEnum(entry.kind) -
+            @enumFromInt(@intFromEnum(kind) -
                 @intFromEnum(Tokenizer.TokenKind.@"const")),
         ),
 
@@ -371,7 +374,7 @@ fn parseStatement(self: *Parser) Error!void {
 }
 fn parseVarDecl(self: *Parser, qualifier: Qualifier) Error!void {
     const name_token = self.token;
-    if (self.tokenEntry().kind != .identifier)
+    if (self.tokenizer.kind(name_token) != .identifier)
         return self.errorOut(.{ .id = name_token, .payload = .unexpected_token });
     self.token += 1;
 
@@ -381,12 +384,12 @@ fn parseVarDecl(self: *Parser, qualifier: Qualifier) Error!void {
     } });
     try self.parseQualifierInfo();
 
-    if (self.tokenEntry().kind == .@":") {
+    if (self.tokenizer.kind(self.token) == .@":") {
         self.token += 1;
         _ = try self.parseExpression1();
     } else _ = try self.appendNode(.null);
 
-    if (self.tokenEntry().kind != .@"=") {
+    if (self.tokenizer.kind(self.token) != .@"=") {
         if (!self.isAtScopeEnd())
             return self.errorOut(.{ .id = self.token, .payload = .unexpected_token });
 
@@ -410,13 +413,13 @@ const ExpressionDelimiter = union(enum) {
     scope_end,
     pub fn shouldStop(delimiter: ExpressionDelimiter, self: *Parser) bool {
         return switch (delimiter) {
-            .kind => |kind| self.tokenEntry().kind == kind,
-            .kind_or_comma => |kind| self.tokenEntry().kind == kind or
-                self.tokenEntry().kind == .@",",
+            .kind => |kind| self.tokenizer.kind(self.token) == kind,
+            .kind_or_comma => |kind| self.tokenizer.kind(self.token) == kind or
+                self.tokenizer.kind(self.token) == .@",",
             .scope_end => //
-            self.tokenEntry().kind == .endl or
-                self.tokenEntry().kind == .eof or
-                self.tokenEntry().kind == .@"}",
+            self.tokenizer.kind(self.token) == .endl or
+                self.tokenizer.kind(self.token) == .eof or
+                self.tokenizer.kind(self.token) == .@"}",
         };
     }
 };
@@ -433,7 +436,7 @@ fn parseExpressionRecursive(self: *Parser, delimiter: ExpressionDelimiter, bp: u
 
     var iter: usize = 0;
     while (!delimiter.shouldStop(self)) {
-        const op = if (Tokenizer.binOpFromTokenKind(self.tokenEntry().kind)) |bop|
+        const op = if (Tokenizer.binOpFromTokenKind(self.tokenizer.kind(self.token))) |bop|
             bop
         else
             return self.errorOut(.{ .id = self.token, .payload = .unexpected_token });
@@ -464,14 +467,14 @@ fn shiftLastNNodes(self: *Parser, count: u32, shift: usize) Error!void {
 fn parseExpression1(self: *Parser) Error!u32 {
     const node = self.nextNode();
     var len = try self.parseExpression0();
-    sw: switch (self.tokenEntry().kind) {
+    sw: switch (self.tokenizer.kind(self.token)) {
         .@"[" => {
             self.token += 1;
             try self.shiftLastNNodes(len, 1);
             self.getNodeEntry(node).* = .indexing;
             len += 1 + try self.parseExpression2(.{ .kind = .@"]" });
             self.token += 1;
-            continue :sw self.tokenEntry().kind;
+            continue :sw self.tokenizer.kind(self.token);
         },
 
         //     else => return expr,
@@ -482,7 +485,7 @@ fn parseExpression1(self: *Parser) Error!u32 {
 
 //returns the node list size not the amount of consumed tokens
 fn parseExpression0(self: *Parser) Error!u32 {
-    return switch (self.tokenEntry().kind) {
+    return switch (self.tokenizer.kind(self.token)) {
         .@"(" => blk: {
             self.token += 1;
             const expr = self.parseExpression2(.{ .kind = .@")" });
@@ -493,7 +496,7 @@ fn parseExpression0(self: *Parser) Error!u32 {
             _ = try self.appendNode(.{ .value = .{
                 .type = try self.addType(.compint),
                 .payload = try self.addScalarValue(
-                    parseIntLiteral(self.tokenEntry().slice(self.tokenizer)),
+                    parseIntLiteral(self.tokenizer.slice(self.token)),
                 ),
             } });
 
@@ -506,10 +509,12 @@ fn parseExpression0(self: *Parser) Error!u32 {
             break :blk try self.parseFunctionTypeOrDecl();
         },
         .type_literal => blk: {
-            const entry = @as(Tokenizer.TypeLiteral, @bitCast(self.tokenEntry()._len)).entry();
+            const type_entry = self.tokenizer.parseTypeLiteral(self.token);
             self.token += 1;
-            const t = try self.addType(entry);
-            _ = try self.appendNode(.{ .value = .{ .type = .type, .payload = @intFromEnum(t) } });
+            _ = try self.appendNode(.{ .value = .{
+                .type = .type,
+                .payload = @intFromEnum(try self.addType(type_entry)),
+            } });
             break :blk 1;
         },
         .identifier => blk: {
@@ -571,7 +576,7 @@ fn parseFunctionTypeOrDecl(self: *Parser) Error!u32 {
     _ = &arg_count;
     const header = try self.appendNode(.{ .function_type_decl = arg_count });
 
-    const entry = self.tokenEntryPastEndl().kind;
+    const entry = self.tokenizer.kind(self.tokenPastEndl());
     const rtype_len: u32 = switch (entry) {
         .@":" => blk: {
             self.token += 1;
@@ -596,7 +601,7 @@ fn parseFunctionTypeOrDecl(self: *Parser) Error!u32 {
     };
     _ = self.skipEndl();
 
-    if (self.tokenEntry().kind == .@"{") {
+    if (self.tokenizer.kind(self.token) == .@"{") {
         self.token += 1;
         const function = try self.addFunction(.{ .node = header, .arg_count = arg_count });
         const scope = try self.parseScope(.{
@@ -612,15 +617,15 @@ fn parseSequence(self: *Parser) Error!ParseArgumentsResult {
     _ = self.skipEndl();
     var result: ParseArgumentsResult = .{};
 
-    while (self.tokenEntryPastEndl().kind != .@")") {
+    while (self.tokenizer.kind(self.tokenPastEndl()) != .@")") {
         result.node_consumption += try self.parseExpression2(.{ .kind_or_comma = .@")" });
         result.count += 1;
-        if (self.tokenEntry().kind == .@",") {
+        if (self.tokenizer.kind(self.token) == .@",") {
             self.token += 1;
             _ = self.skipEndl();
         }
     }
-    self.token += if (self.tokenEntry().kind == .endl) 2 else 1;
+    self.token += if (self.tokenizer.kind(self.token) == .endl) 2 else 1;
     return result;
 }
 
@@ -641,20 +646,15 @@ fn isScopeFile(self: *Parser, scope: Scope) bool {
 }
 
 fn skipEndl(self: *Parser) bool {
-    const is_endl = self.tokenEntry().kind == .endl;
+    const is_endl = self.tokenizer.kind(self.token) == .endl;
     self.token += @intFromBool(is_endl);
     return is_endl;
 }
 
-fn tokenEntryPastEndl(self: *Parser) TokenEntry {
-    return if (self.tokenEntry().kind == .endl)
-        self.tokenizer.entry(self.token + 1)
-    else
-        self.tokenEntry();
+fn tokenPastEndl(self: *Parser) Token {
+    return self.token + @intFromBool(self.tokenizer.kind(self.token) == .endl);
 }
-fn tokenEntry(self: *Parser) TokenEntry {
-    return self.tokenizer.entry(self.token);
-}
+
 fn getScalarValue(self: *Parser, id: u32) u128 {
     return self.scalar_values.items[id];
 }
@@ -789,6 +789,8 @@ pub const NodeEntry = union(enum) {
     value: Value,
 
     indexing, //[target][index]
+
+    array_type_decl,
 
     function_decl: Function, //[fn_decl][args(2)][rtype][body...]
     fn_param: FunctionParameterDescriptor,
@@ -943,18 +945,21 @@ pub inline fn errorOut(self: *Parser, error_info: ErrorInfo) Error {
     self.error_info = error_info;
     return Error.ParsingError;
 }
+
 //debug structs for formatting
 
 pub const FatToken = struct {
     self: Tokenizer,
     token: Token,
     pub fn format(entry: FatToken, writer: *std.Io.Writer) !void {
-        const te = entry.self.entry(entry.token);
-        try writer.print("'{s}'", .{@tagName(te.kind)});
-        switch (te.kind) {
+        const kind = entry.self.kind(entry.token);
+        try writer.print("'{s}'", .{@tagName(kind)});
+        switch (kind) {
             .identifier,
             .int_literal,
-            => try writer.print(" : {s}", .{entry.self.slice(entry.token)}),
+            .float_literal,
+            .type_literal,
+            => try writer.print(" : \"{s}\"", .{entry.self.slice(entry.token)}),
             else => {},
         }
     }
@@ -1023,7 +1028,7 @@ const FatNode = struct {
                 try writer.print("{s}({f}) {s}: {f} = {f}", .{
                     @tagName(var_decl.qualifier),
                     entry,
-                    entry.self.tokenizer.slice(var_decl.name),
+                    entry.self.tokenizer.rawSlice(var_decl.name),
                     entry,
                     entry,
                 });
