@@ -1,7 +1,10 @@
 //TODO:
-//one node list for all scopes(
+//one node list for all scopes in one file???????????????(
 //scope body goes after declaration
 //)
+//TODO: parseStatement function should act differently
+//depending on scope container
+//TODO: REMOVE POINTER FROM FAT NODE(just increment the node)
 const std = @import("std");
 const util = @import("util.zig");
 const zigbuiltin = @import("builtin");
@@ -88,11 +91,16 @@ fn foldScope(self: *Parser, scope: Scope) Error!void {
 fn foldBlockScope(self: *Parser) Error!void {
     const body = self.getScope(self.current_scope).body.items;
 
-    var node_buf: [32]u32 = undefined;
+    var node_buf: [32]Node = undefined;
     var statements: List(Node) = .initBuffer(&node_buf);
     defer if (statements.capacity > node_buf.len) statements.deinit(self.allocator);
     var i: Node = 0;
     while (i < body.len) {
+        if (statements.items.len == node_buf.len) {
+            statements = try .initCapacity(self.allocator, node_buf.len * 2);
+            statements.items.len = node_buf.len;
+            @memcpy(statements.items, &node_buf);
+        }
         try statements.append(self.allocator, i);
         i += self.nodeLength(i);
     }
@@ -115,7 +123,8 @@ fn foldDeclScope(self: *Parser) Error!void {
 
 fn isStatementSignificant(self: *Parser, node: Node) bool {
     return switch (self.getNodeEntry(node).*) {
-        .var_decl => |var_decl| util.enumInRange(Qualifier, var_decl.qualifier, .vertex, .compute),
+        .var_decl => |var_decl| //
+        util.enumInRange(Qualifier, var_decl.qualifier, .in, .compute),
         else => false,
     };
 }
@@ -127,7 +136,9 @@ fn foldNode(self: *Parser, node: Node) Error!void {
             if (try self.getVarRef(self.current_scope, node, var_decl.name)) |_|
                 return self.errorOut(.{ .id = var_decl.name, .payload = .redeclaration });
 
-            // if(try self.getVarRef(scope: Scope, node: u32, token: u32)
+            const qualifier_info_node = node + 1;
+            try self.foldNode(qualifier_info_node);
+
             const qualifier_info_node_len = self.nodeLength(node + 1);
             const type_node = node + 1 + qualifier_info_node_len;
             try self.foldNode(type_node);
@@ -136,8 +147,12 @@ fn foldNode(self: *Parser, node: Node) Error!void {
             const initializer_node = type_node + type_node_len;
             try self.foldNode(initializer_node);
 
+            //if type is <null> inferr type from initializer
+            //else implicitly cast initializer to variable type
             const t: Type = undefined;
             if (self.getNodeEntry(type_node).* != .null) {
+                var tn = type_node;
+                std.debug.print("TYPENODE : {f}\n", .{FatNode{ .self = self, .node = &tn }});
                 if (!self.isNodeTypeValue(type_node))
                     return self.errorOut(.{ .id = type_node, .payload = .not_a_type });
 
@@ -158,13 +173,24 @@ fn foldNode(self: *Parser, node: Node) Error!void {
                 } } });
         },
         .function_decl => |fn_decl| {
+            std.debug.print("FOLD FN DECL SCOPE\n", .{});
             try self.foldScope(self.getFunction(fn_decl).scope);
         },
+        .indexing => {
+            const target_node = node + 1;
+            try self.foldNode(target_node);
+            try self.foldNode(target_node + self.nodeLength(target_node));
+        },
+        .u_op => |op| try self.foldUOp(op, node + 1),
         .identifier => |token| if (try self.getVarRef(self.current_scope, node, token)) |vr| {
             entry.* = .{ .var_ref = vr };
         } else return self.errorOut(.{ .id = token, .payload = .undeclared_identifier }),
         else => {},
     }
+}
+fn foldUOp(self: *Parser, op: UnaryOperator, target: Node) Error!void {
+    _ = .{ self, op, target };
+    @panic("FOLD U OP");
 }
 fn isQualifierCompatibleWithType(self: *Parser, qualifier: Qualifier, q_info: Node, @"type": Type) bool {
     _ = .{ qualifier, q_info, @"type", self };
@@ -177,19 +203,23 @@ fn getVarRef(self: *Parser, scope: Scope, node: Node, token: Token) Error!?Varia
 
     const scope_entry = self.getScope(scope);
     const current = if (scope_entry.container == .@"struct")
-        try self.getDeclScopeVarRef(scope, node, token)
+        try self.getDeclScopeVarRef(node, token)
     else
-        try self.getDeclScopeVarRef(scope, node, token);
+        try self.getBlockScopeVarRef(node, token);
 
     return if (current) |c| .{ .node = c, .scope = scope } else //
     if (self.isScopeFile(scope)) null else //
     try self.getVarRef(scope_entry.parent, scope_entry.getDeclNode(self), token);
 }
+fn getBlockScopeVarRef(self: *Parser, node: Node, token: Token) Error!?Node {
+    return self.getDeclScopeVarRef(node, token);
+}
 
-fn getDeclScopeVarRef(self: *Parser, scope: Scope, node: Node, token: Token) Error!?Node {
-    const body = self.getScope(scope).body.items;
+fn getDeclScopeVarRef(self: *Parser, node: Node, token: Token) Error!?Node {
+    const body = self.getScope(self.current_scope).body.items;
     var i: Node = 0;
     const name = self.tokenizer.rawSlice(token);
+    std.debug.print("GET VAR REF OF: {s}\n", .{name});
     while (i < body.len) {
         const len = self.nodeLength(i);
         defer i += len;
@@ -227,6 +257,8 @@ fn typeOf(self: *Parser, node: Node) Error!Type {
         .u_op => |op| try self.typeOfUOp(op, try self.typeOf(node + 1)),
         .var_ref => |vr| @enumFromInt(self.getNodeEntryScope(vr.scope, vr.node + 1 + self.nodeLength(vr.node + 1)).value.payload),
 
+        //return type of target for now
+        .indexing => try self.typeOf(node + 1),
         .function_decl => |fn_decl| try self.typeOfFunctionDecl(node, fn_decl),
 
         else => |e| {
@@ -296,7 +328,7 @@ fn nodeLength(self: *Parser, node: Node) u32 {
     var base: u32 = switch (self.getNodeEntry(node).*) {
         .var_decl => 1 + self.nodeSeqenceLength(node + 1, 3),
         .bin_op => 1 + self.nodeSeqenceLength(node + 1, 2),
-        .u_op => 1 + self.nodeLength(node + 1),
+        .u_op, .@"return" => 1 + self.nodeLength(node + 1),
         .null => 1,
         .function_decl => 1 + self.nodeLength(node + 1), //args
         else => 1,
@@ -360,12 +392,16 @@ fn parseStatement(self: *Parser) Error!void {
     self.token += 1;
     const nn = self.nextNode();
     switch (kind) {
-        .@"const", .@"var", .in, .out, .shared, .push, .fragment, .vertex, .compute => //
+        .@"const", .@"var", .in, .out, .shared, .push, .env, .fragment, .vertex, .compute => //
         try self.parseVarDecl(
             @enumFromInt(@intFromEnum(kind) -
                 @intFromEnum(Tokenizer.TokenKind.@"const")),
         ),
 
+        .@"return" => {
+            _ = try self.appendNode(.@"return");
+            _ = try self.parseExpression2(.scope_end);
+        },
         else => return self.errorOut(.{ .id = self.token - 1, .payload = .unexpected_token }),
     }
     if (self.getScope(self.current_scope).container == .@"struct" and
@@ -384,6 +420,7 @@ fn parseVarDecl(self: *Parser, qualifier: Qualifier) Error!void {
     } });
     try self.parseQualifierInfo();
 
+    const type_node = self.nextNode();
     if (self.tokenizer.kind(self.token) == .@":") {
         self.token += 1;
         _ = try self.parseExpression1();
@@ -394,7 +431,9 @@ fn parseVarDecl(self: *Parser, qualifier: Qualifier) Error!void {
             return self.errorOut(.{ .id = self.token, .payload = .unexpected_token });
 
         _ = try self.appendNode(.null);
-        if (qualifier == .@"const")
+        //if both type and initializer are null OR
+        //qualifier must have initializer - error out
+        if (qualifier.mustHaveInitializer() or self.getNodeEntry(type_node).* == .null)
             return self.errorOut(.{ .payload = .missing_initializer });
     } else {
         if (!qualifier.canHaveInitializer())
@@ -476,6 +515,14 @@ fn parseExpression1(self: *Parser) Error!u32 {
             self.token += 1;
             continue :sw self.tokenizer.kind(self.token);
         },
+        .@"{" => {
+            self.token += 1;
+            try self.shiftLastNNodes(len, 1);
+            const seq = try self.parseSequence(.@"}");
+            self.getNodeEntry(node).* = .{ .constructor = seq.count };
+            len += 1 + seq.node_consumption;
+            continue :sw self.tokenizer.kind(self.token);
+        },
 
         //     else => return expr,
         // }
@@ -540,6 +587,20 @@ fn parseExpression0(self: *Parser) Error!u32 {
             _ = try self.appendNode(.{ .u_op = u_op });
             self.token += 1;
             break :blk 1 + try self.parseExpression1();
+        },
+        .@"." => switch (self.tokenizer.kind(self.token + 1)) {
+            .@"{" => blk: {
+                self.token += 2;
+                const node = try self.appendNode(.{ .constructor = 0 });
+                _ = try self.appendNode(.null);
+
+                const seq = try self.parseSequence(.@"}");
+
+                self.getNodeEntry(node).constructor = seq.count;
+                break :blk 1 + seq.node_consumption;
+            },
+            .identifier => @panic("enum literal"),
+            else => return self.errorOut(.{ .id = self.token + 1, .payload = .unexpected_token }),
         },
         else => return self.errorOut(.{ .id = self.token, .payload = .unexpected_token }),
     };
@@ -613,12 +674,12 @@ fn parseFunctionTypeOrDecl(self: *Parser) Error!u32 {
     }
     return 1 + arg_len + rtype_len;
 }
-fn parseSequence(self: *Parser) Error!ParseArgumentsResult {
+fn parseSequence(self: *Parser, delimiter: Tokenizer.TokenKind) Error!ParseArgumentsResult {
     _ = self.skipEndl();
     var result: ParseArgumentsResult = .{};
 
-    while (self.tokenizer.kind(self.tokenPastEndl()) != .@")") {
-        result.node_consumption += try self.parseExpression2(.{ .kind_or_comma = .@")" });
+    while (self.tokenizer.kind(self.tokenPastEndl()) != delimiter) {
+        result.node_consumption += try self.parseExpression2(.{ .kind_or_comma = delimiter });
         result.count += 1;
         if (self.tokenizer.kind(self.token) == .@",") {
             self.token += 1;
@@ -769,8 +830,12 @@ pub const FunctionEntry = struct {
 
     arg_count: u32 = 0,
 
-    stage_dependency: StageDependency = .none,
-    pub const StageDependency = enum { any, none, fragment, vertex, compute };
+    stage_dependency: StageDependency = .{},
+    pub const StageDependency = packed struct {
+        vertex: bool = false,
+        fragment: bool = false,
+        compute: bool = false,
+    };
 };
 
 // const CompositeHeader = packed struct(u8);
@@ -788,7 +853,8 @@ pub const NodeEntry = union(enum) {
     u_op: UnaryOperator, //[u_op][operand]
     value: Value,
 
-    indexing, //[target][index]
+    indexing, //[][target][index]
+    constructor: u32, //[count][type][elems..]
 
     array_type_decl,
 
@@ -799,11 +865,11 @@ pub const NodeEntry = union(enum) {
     function_type_decl: u32, //[arg_count][arg_types][rtype]
 
     //is there is no else its padded
+    @"return", //[return][return value]
     branch,
     loop: [11]u8,
 
     cast: Type,
-    constructor: Type,
 
     //statement
     var_decl: VariableDeclaration, //[var_decl][qualifier_info][type][initializer]
@@ -823,6 +889,8 @@ const VariableDeclaration = struct {
 const Qualifier = enum {
     @"const",
     @"var",
+    env,
+
     in, //[interpolation]
     out, //[interpolation]
     push,
@@ -836,7 +904,7 @@ const Qualifier = enum {
     }
     pub fn mustHaveInitializer(self: Qualifier) bool {
         return switch (self) {
-            .fragment, .vertex, .compute, .@"const" => true,
+            .fragment, .vertex, .compute, .@"const", .env => true,
             else => false,
         };
     }
@@ -876,8 +944,7 @@ pub const TypeEntry = union(enum) {
     matrix: Matrix,
 
     array: u32, //length
-
-    device_ptr,
+    pointer: Type,
 
     @"enum": u32,
     @"struct": Struct,
@@ -1010,6 +1077,17 @@ const FatNode = struct {
     pub fn format(entry: FatNode, writer: *std.Io.Writer) !void {
         const scope = entry.self.getScope(entry.self.current_scope);
         switch (scope.body.items[entry.node.*]) {
+            .@"return" => {
+                entry.node.* += 1;
+                try writer.print("return {f}", .{entry});
+            },
+            .constructor => |count| {
+                entry.node.* += 1;
+                try writer.print("{f}{{", .{entry});
+
+                for (0..count) |i| try writer.print("{f}{s}", .{ entry, if (i + 1 == count) "" else ", " });
+                try writer.print("}}", .{});
+            },
             .indexing => {
                 entry.node.* += 1;
                 try writer.print("{f}[{f}]", .{ entry, entry });

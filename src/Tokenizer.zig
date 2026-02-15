@@ -1,3 +1,4 @@
+//TODO: store token payload length? TokenEntry would pack into u64
 const std = @import("std");
 const hgsl = @import("root.zig");
 const util = @import("util.zig");
@@ -392,11 +393,12 @@ pub const TokenKind = enum(u8) {
 
     @"const",
     @"var",
+    env,
+
     in,
     out,
     push,
     shared,
-
     //shader stage qualifiers
     vertex,
     fragment,

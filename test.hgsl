@@ -3,7 +3,8 @@ vertex vert0 = fn{
 	out o = vertex_buffer[@vertex_id] 
 }	
 
-fragment frag0 = fn : f32{
-	//in vert: f32x3
-	//out o : f32x4 = .{1}
+fragment frag0 = fn: f32x4{
+	in vert: f32x3
+	const kek = f32x4
+	return .{1, 2, 3, 4}
 }
