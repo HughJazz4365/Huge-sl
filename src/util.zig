@@ -12,6 +12,21 @@ pub fn last(T: type, slice: []const T) T {
     return slice[slice.len -| 1];
 }
 
+pub fn bufAppend(
+    T: type,
+    list: *std.ArrayList(T),
+    allocator: Allocator,
+    buf: []T,
+    item: T,
+) !void {
+    if (list.items.len == buf.len) {
+        const capacity = buf.len + buf.len / 2;
+        list.* = try .initCapacity(allocator, capacity);
+        list.items.len = buf.len;
+        @memcpy(list.items, buf);
+    }
+    try list.append(allocator, item);
+}
 pub fn removeAt(T: type, slice_ptr: *[]T, index: usize) void {
     @memmove(slice_ptr.*[index .. slice_ptr.len - 1], slice_ptr.*[index + 1 ..]);
     slice_ptr.len -= 1;

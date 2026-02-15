@@ -218,7 +218,6 @@ fn stripValidIdentifier(self: *Tokenizer, bytes: []const u8) Error![]const u8 {
 }
 fn matchOperator(self: *Tokenizer, bytes: []const u8, bin_priority: bool) ?FatTokenEntry {
     return for (&[_]@Tuple(&.{ TokenKind, []const u8 }){
-        .{ .indexable_ptr, "[]" },
         .{ .dotsat, "|*|" },
         .{ .shl, "<<" },
         .{ .shr, ">>" },
@@ -252,7 +251,7 @@ fn matchOperator(self: *Tokenizer, bytes: []const u8, bin_priority: bool) ?FatTo
     } else self.createFatEntry(switch (bytes[0]) {
         '+' => if (bin_priority) .add else .pos,
         '-' => if (bin_priority) .sub else .neg,
-        '*' => if (bin_priority) .mul else .ptr,
+        '*' => if (bin_priority) .mul else .pointer,
         '|' => if (bin_priority) .@"or" else .sat,
         else => return null,
     }, bytes[0..1]);
@@ -365,13 +364,13 @@ pub inline fn uOpFromTokenKind(token_kind: TokenKind) ?UnaryOperator {
 }
 pub const UnaryOperator = util.EnumSlice(TokenKind, u8, __u_op_from, __u_op_to);
 const __u_op_from: TokenKind = .neg;
-const __u_op_to: TokenKind = .indexable_ptr;
+const __u_op_to: TokenKind = .pointer;
 
 pub const TokenKind = enum(u8) {
     eof,
     endl,
 
-    //str literals
+    //token kinds with string payloads
     string,
     identifier,
     builtin,
@@ -379,6 +378,7 @@ pub const TokenKind = enum(u8) {
     float_literal,
     type_literal,
 
+    //keyword start
     @"=>",
     @"=",
     @".",
@@ -395,14 +395,17 @@ pub const TokenKind = enum(u8) {
     @"var",
     env,
 
-    in,
-    out,
     push,
     shared,
     //shader stage qualifiers
     vertex,
     fragment,
     compute,
+
+    //parameter/field qualifier
+    @"comptime",
+    linear,
+    flat,
 
     @"if",
     @"else",
@@ -421,8 +424,10 @@ pub const TokenKind = enum(u8) {
     @"anytype",
     @"defer",
 
+    void,
     true,
     false,
+    //keyword end
 
     //bin_op
     add,
@@ -465,8 +470,7 @@ pub const TokenKind = enum(u8) {
     mag,
     sqrmag,
 
-    ptr,
-    indexable_ptr,
+    pointer,
 };
 
 pub fn bindingPower(op: BinaryOperator) u8 {

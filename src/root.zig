@@ -55,6 +55,7 @@ pub fn test_() !void {
         //     std.debug.print("TOKEN: {f}\n", .{Parser.FatToken{ .token = @truncate(i), .self = tok }});
         // }
         var parser = try Parser.new(allocator);
+        defer parser.deinit();
         parser.parse(tok) catch |err| return if (err == Error.ParsingError)
             error_message.errorOutParser(&parser, &file_writer.interface)
         else

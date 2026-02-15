@@ -1,10 +1,21 @@
-vertex vert0 = fn{
+vertex vert0 = fn() void{
 	push vertex_buffer : *f32x3
-	out o = vertex_buffer[@vertex_id] 
+	push vertex_buffer0 : *f32x3
+	push vertex_buffer1 : *f32x3
+	const T = f32x4x4
+	//@position = .{vertex_buffer[@vertex_id], 1} 
 }	
-
-fragment frag0 = fn: f32x4{
-	in vert: f32x3
-	const kek = f32x4
-	return .{1, 2, 3, 4}
+const func = fn(arg : f32x4, arg2) f32{
 }
+const fn_type = fn(f32, func : f32) void
+
+//const func = fn(flat arg1, comptime arg2: f32, stuff) @TypeOf(arg2){}
+//const func = fn(arg: u32x2, flat arg1, comptime arg2: f32, stuff) f32x4{}
+
+
+//fragment main = fn f32x4{
+//	push albedo_id : u32
+//	const uv = @frag_coord.xy
+//	const col = @sampler(._2d)[albedo_id].sample(uv)
+//	return col.xyz1
+//}
