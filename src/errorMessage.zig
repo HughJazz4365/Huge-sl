@@ -25,10 +25,12 @@ pub const ParserErrorInfo = struct {
         not_a_type,
         missing_initializer,
         missing_function_body,
+        missing_return_type,
         qualifier_cant_have_initializer,
         unclosed_scope,
         cant_implicitly_cast,
         invalid_type,
+        invalid_function_declaration,
 
         qualifier_incompatible_with_type: QualifierIncompatibleWithType,
 

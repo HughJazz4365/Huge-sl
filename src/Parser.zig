@@ -6,6 +6,7 @@
 //)
 //TODO: parseStatement function should act differently
 //depending on scope container
+
 //TODO: REMOVE POINTER FROM FAT NODE(just increment the node)
 const std = @import("std");
 const util = @import("util.zig");
@@ -471,7 +472,6 @@ inline fn parseExpression2(self: *Parser, delimiter: ExpressionDelimiter) Error!
     return self.parseExpressionRecursive(delimiter, 0);
 }
 fn parseExpressionRecursive(self: *Parser, delimiter: ExpressionDelimiter, bp: u8) Error!u32 {
-    const left_node: Node = self.nextNode();
     var left_len = try self.parseExpression1();
 
     var iter: usize = 0;
@@ -486,23 +486,19 @@ fn parseExpressionRecursive(self: *Parser, delimiter: ExpressionDelimiter, bp: u
 
         // try self.tokenizer.skipEndl(); //?
 
-        try self.shiftLastNNodes(left_len, 1); //shift left expression 1 to the right
-        self.getScope(self.current_scope).body.items[left_node] = .{ .bin_op = op };
+        try self.insertNthLastNode(left_len, .{ .bin_op = op });
         iter += 1;
 
         left_len += 1 + try self.parseExpressionRecursive(delimiter, Tokenizer.bindingPower(op));
     }
     return left_len;
 }
-fn shiftLastNNodes(self: *Parser, count: u32, shift: usize) Error!void {
-    const scope = self.getScope(self.current_scope);
-    try scope.body.ensureUnusedCapacity(self.allocator, shift);
-    const len = scope.body.items.len;
-    scope.body.items.len += shift;
-    @memmove(
-        scope.body.items[len - count + shift .. len + shift],
-        scope.body.items[len - count .. len],
-    );
+fn insertNodeAssumeCapacity(self: *Parser, i: u32, entry: NodeEntry) void {
+    self.getScope(self.current_scope).body.insertAssumeCapacity(i, entry);
+}
+fn insertNthLastNode(self: *Parser, n: u32, entry: NodeEntry) Error!void {
+    const body = &self.getScope(self.current_scope).body;
+    try body.insert(self.allocator, body.items.len - n, entry);
 }
 fn parseExpression1(self: *Parser) Error!u32 {
     const node = self.nextNode();
@@ -510,15 +506,14 @@ fn parseExpression1(self: *Parser) Error!u32 {
     sw: switch (self.tokenizer.kind(self.token)) {
         .@"[" => {
             self.token += 1;
-            try self.shiftLastNNodes(len, 1);
-            self.getNodeEntry(node).* = .indexing;
+            try self.insertNthLastNode(len, .indexing);
             len += 1 + try self.parseExpression2(.{ .kind = .@"]" });
             self.token += 1;
             continue :sw self.tokenizer.kind(self.token);
         },
         .@"{" => {
             self.token += 1;
-            try self.shiftLastNNodes(len, 1);
+            try self.insertNthLastNode(len, .null);
             const seq = try self.parseSequence(.@"}");
             self.getNodeEntry(node).* = .{ .constructor = seq.count };
             len += 1 + seq.node_consumption;
@@ -619,31 +614,15 @@ const ParseArgumentsResult = struct {
     node_consumption: u32 = 0,
 };
 fn parseFunctionTypeOrDecl(self: *Parser) Error!u32 {
-
-    //==============================
-    // function_decl: Function, //[fn_decl][args(2)][rtype][body...]
-    // fn_param: FunctionParameterDescriptor,
-    // //[fn_param][type / null(if anytype) / pad(if the same as the next one)]
-    //==============================
-    //[type0][type1]
-    //  [1]--> [1+len(type0)]--->
-    //[head][type0] [head][type1]
-
-    //---| name : Token
-    //---| type : <any node>
-    //---| qualifier : ParameterQualifier
-
     //TODO: in parse sequence put skipEndl() in else block of while loop
     //to allow endl before delimiter
     //TODO: parseExpression1 but without @"{" for function rtype
-
     const header = try self.appendNode(.{ .function_type_decl = 0 });
 
     var arg_count: u32 = 0;
     var arg_node_consumption: Node = 0;
-    var must_be_fn_decl = false; // <- convert this to 'State', then set state to arg_type if its idk after arg parsing
+    var must_be_fn_decl = false;
 
-    //fn Rtype// is valid?
     if (self.tokenizer.kind(self.token) == .@"(") {
         self.token += 1;
         while (self.tokenizer.kind(self.tokenPastEndl()) != .@")") {
@@ -673,8 +652,15 @@ fn parseFunctionTypeOrDecl(self: *Parser) Error!u32 {
             if (self.tokenizer.kind(self.token) == .@":") {
                 state = .param;
                 self.token += 1;
+                _ = self.skipEndl();
+
                 _ = try self.appendNode(.{ .function_param = .{ .name = name, .qualifier = qualifier } });
-                arg_node_consumption += 1 + try self.parseExpression2(.{ .kind_or_comma = .@")" });
+
+                if (self.tokenizer.kind(self.token) == .@"anytype") {
+                    _ = try self.appendNode(.@"anytype");
+                    self.token += 1;
+                    arg_node_consumption += 2;
+                } else arg_node_consumption += 1 + try self.parseExpression2(.{ .kind_or_comma = .@")" });
             } else if (state == .param or must_be_fn_decl) {
                 //parameter with inferred type
                 //change to <pad> later??
@@ -689,10 +675,8 @@ fn parseFunctionTypeOrDecl(self: *Parser) Error!u32 {
 
             if (state == .param) {
                 defer must_be_fn_decl = true;
-                //big reorder
-                if (!must_be_fn_decl and arg_count > 0) {
-                    @panic("convert");
-                }
+                if (!must_be_fn_decl and arg_count > 0)
+                    try self.convertArgTypesToFunctionParameters(header + 1, arg_count);
             }
 
             arg_count += 1;
@@ -703,27 +687,15 @@ fn parseFunctionTypeOrDecl(self: *Parser) Error!u32 {
             }
         }
         self.token += 1;
+        _ = self.skipEndl();
     }
-    // function_type_decl: u32, //[arg_count][arg_types][rtype]
-
-    // bool must_be_fn_decl, found{
-    //if !must_be_fn_decl and found{
-    //  convert all arg to FunctionArgument
-    //  change header to function decl
-    //  output function decl
-    //if must_be_fn_decl and found{
-    //  output function decl
-    //if !must_be_fn_decl and !found{
-    //  output function type decl
-    //if must_be_fn_decl and !found{
-    //  error out missing_body
-
-    _ = self.skipEndl();
+    if (self.isAtScopeEnd()) return self.errorOut(.{ .payload = .missing_return_type });
 
     const rtype_len = try self.parseExpression0();
 
     if (self.tokenizer.kind(self.tokenPastEndl()) == .@"{") {
-        //@convert if !must_be_fn_decl
+        if (!must_be_fn_decl) try self.convertArgTypesToFunctionParameters(header + 1, arg_count);
+
         _ = self.skipEndl();
         self.token += 1;
         const function = try self.addFunction(.{ .node = header, .arg_count = arg_count });
@@ -739,6 +711,25 @@ fn parseFunctionTypeOrDecl(self: *Parser) Error!u32 {
     }
 
     return 1 + arg_node_consumption + rtype_len;
+}
+fn convertArgTypesToFunctionParameters(self: *Parser, node: Node, count: u32) Error!void {
+    const scope = self.getScope(self.current_scope);
+    try scope.body.ensureUnusedCapacity(self.allocator, count);
+
+    for (0..count) |i| {
+        const current = node + 2 * @as(u32, @truncate(i));
+        const name: Token = switch (self.getNodeEntry(current).*) {
+            .identifier => |id| id,
+            else => return self.errorOut(.{ .id = current, .payload = .invalid_function_declaration }),
+        };
+
+        self.insertNodeAssumeCapacity(current, .{ .function_param = .{
+            .name = name,
+            .qualifier = .none,
+        } });
+
+        self.getNodeEntry(current + 1).* = .null;
+    }
 }
 fn parseSequence(self: *Parser, delimiter: Tokenizer.TokenKind) Error!ParseArgumentsResult {
     _ = self.skipEndl();
@@ -924,13 +915,12 @@ pub const NodeEntry = union(enum) {
 
     array_type_decl,
 
-    function_decl: Function, //[fn_decl][args(2)][rtype][body...]
+    function_type_decl: u32, //[fn_type_decl][arg_count][arg_types...][rtype]
+    function_decl: Function, //[fn_decl][args...][rtype][body...]
+    @"anytype",
     function_param: FunctionParameter,
-    //[fn_param][type / null(if anytype) / pad(if the same as the next one)]
+    //[fn_param][type / anytype / null(if the same as the next one)]
 
-    function_type_decl: u32, //[arg_count][arg_types][rtype]
-
-    //is there is no else its padded
     @"return", //[return][return value]
     branch,
     loop: [11]u8,
@@ -1231,6 +1221,11 @@ const FatNode = struct {
                 entry.node.* += 1;
                 try writer.print("<null>", .{});
             },
+            .@"anytype" => {
+                entry.node.* += 1;
+                try writer.print("anytype", .{});
+            },
+
             else => {
                 entry.node.* += 1;
                 if (entry.node.* < scope.body.items.len)

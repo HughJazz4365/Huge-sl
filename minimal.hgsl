@@ -1,10 +1,8 @@
-vertex vert0 = fn{
-	push vertex_buffer : []f32x3
-	out o = vertex_buffer[@vertex_id] 
+vertex vert0 = fn void{
+	push vertex_buffer : *f32x3
+	@position = vertex_buffer[@vertex_id].xyz1 
 }
 
-fragment frag0 = fn {
-	in vert: f32x3
-	out o : f32x4 = .{1}
+fragment frag0 = fn f32x4 {
+	return @frag_coord.xy01
 }
-
