@@ -1,9 +1,9 @@
 vertex vert0 = fn void{
 	push vertex_buffer : *f32x3
-	position = vertex_buffer[vertex_id].xyz1 
+	//position = vertex_buffer[vertex_id].xyz1 
 }
 
 fragment frag0 = fn f32x4 {
-	return frag_coord.xy01
+	return frag_coord//.xy01
 }
 

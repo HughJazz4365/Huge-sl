@@ -220,7 +220,7 @@ fn getBlockScopeVarRef(self: *Parser, node: Node, token: Token) Error!?Node {
 fn getDeclScopeVarRef(self: *Parser, node: Node, token: Token) Error!?Node {
     const body = self.getScope(self.current_scope).body.items;
     var i: Node = 0;
-    const name = self.tokenizer.rawSlice(token);
+    const name = self.tokenizer.slice(token);
     // std.debug.print("GET VAR REF OF: {s}\n", .{name});
     while (i < body.len) {
         const len = self.nodeLength(i);
@@ -230,7 +230,7 @@ fn getDeclScopeVarRef(self: *Parser, node: Node, token: Token) Error!?Node {
         switch (self.getNodeEntry(i).*) {
             .var_decl => |vd| if (vd.name == token or util.strEql(
                 name,
-                self.tokenizer.rawSlice(vd.name),
+                self.tokenizer.slice(vd.name),
             )) {
                 try self.foldNode(i);
                 return i;
@@ -1177,16 +1177,18 @@ const FatNode = struct {
                     if (fn_param.qualifier == .none) "" else switch (fn_param.qualifier) {
                         inline else => |tag| @tagName(tag) ++ " ",
                     },
-                    entry.self.tokenizer.rawSlice(fn_param.name),
+                    entry.self.tokenizer.slice(fn_param.name),
                     entry,
                 });
             },
             .var_decl => |var_decl| {
                 entry.node.* += 1;
-                try writer.print("{s}({f}) {s}: {f} = {f}", .{
-                    @tagName(var_decl.qualifier),
-                    entry,
-                    entry.self.tokenizer.rawSlice(var_decl.name),
+                try writer.print("{s}", .{@tagName(var_decl.qualifier)});
+                if (var_decl.qualifier == .compute) {
+                    try writer.print("({f})", .{entry});
+                } else entry.node.* += 1;
+                try writer.print(" {s}: {f} = {f}", .{
+                    entry.self.tokenizer.slice(var_decl.name),
                     entry,
                     entry,
                 });
