@@ -1,3 +1,6 @@
+//bin op assignments( a *= b, c -= 1 )
+//TODO: valid_...(valid_var_decl) node entry variations for semantically analyzed
+//statements (fold on them would return immediately)
 //TODO: function variants
 //TODO: comptime function full/partial dispatch
 //TODO: @import("i.hgsl")
@@ -156,15 +159,24 @@ fn foldNode(self: *Parser, node: Node) Error!void {
             try self.foldScope(self.getFunction(fn_decl).scope);
         },
         .@"return" => {
-            //fold the returned value
-            //implicitly cast to return type
-            @panic("fold return");
+            try self.foldNode(node + 1);
+            const rt = try self.currentScopeReturnType(node);
+
+            if (self.getNodeEntry(node + 1).* == .null) {
+                if (self.getType(rt) != .void)
+                    return self.errorOut(.{ .payload = .missing_return_value });
+            } else try self.implicitCast(node + 1, rt);
         },
         .assignment => {
-            //fold target + check if its a valid assignment target
-            //fold value
-            //implicitly cast to @TypeOf(target)
-            @panic("fold assignment");
+            const target_node = node + 1;
+            try self.foldNode(target_node);
+            if (!self.isValidAssignmentTarget(target_node))
+                return self.errorOut(.{ .payload = .invalid_assignment_target });
+
+            const value_node = target_node + self.nodeConsumption(target_node);
+            try self.foldNode(value_node);
+            const target_type = try self.typeOf(target_node);
+            try self.implicitCast(value_node, target_type);
         },
         .indexing => {
             const target_node = node + 1;
@@ -176,9 +188,43 @@ fn foldNode(self: *Parser, node: Node) Error!void {
             entry.* = .{ .var_ref = vr };
         } else return self.errorOut(.{ .id = token, .payload = .undeclared_identifier }),
         else => |e| {
-            std.debug.print("idk how to fold {s}\n", .{@tagName(e)});
+            _ = e;
+            // std.debug.print("idk how to fold {s}\n", .{@tagName(e)});
         },
     }
+}
+fn isValidAssignmentTarget(self: *Parser, node: Node) bool {
+    const entry = self.getNodeEntry(node).*;
+    return switch (entry) {
+        else => true,
+    };
+}
+fn currentScopeReturnType(self: *Parser, node: Node) Error!Type {
+    var scope = self.current_scope;
+    while (true) {
+        const entry = self.getScope(scope).*;
+        if (entry.container.isDecl()) return self.errorOut(.{ .id = node, .payload = .return_decl_scope });
+        if (entry.container == .function) {
+            return try self.getFunctionDeclReturnType(entry.container.function, entry.parent);
+        } else {
+            scope = entry.parent;
+            continue;
+        }
+    } else unreachable;
+}
+fn getFunctionDeclReturnType(self: *Parser, function: Function, parent_scope: Scope) Error!Type {
+    const last_scope = self.current_scope;
+    defer self.current_scope = last_scope;
+    self.current_scope = parent_scope;
+
+    const entry = self.getFunction(function).*;
+    const node = entry.node + 1 + self.nodeSeqenceConsumption(entry.node + 1, entry.arg_count);
+    try self.foldNode(node);
+
+    const rtype_node = self.getNodeEntry(node).*;
+    if (rtype_node != .value or rtype_node.value.type != .type)
+        return self.errorOut(.{ .payload = .unable_to_resolve_comptime_value });
+    return @enumFromInt(rtype_node.value.payload);
 }
 fn foldVarDecl(self: *Parser, node: Node, var_decl: VariableDeclaration) Error!void {
     //check for redelaration
@@ -272,6 +318,7 @@ fn getDeclScopeVarRef(self: *Parser, node: Node, token: Token) Error!?Node {
     return null;
 }
 fn implicitCast(self: *Parser, node: Node, @"type": Type) Error!void {
+    std.debug.print("IMPLICIT CAST TO : {f}\n", .{FatType{ .self = self, .type = @"type" }});
     _ = .{ self, node, @"type" };
 }
 fn isNodeTypeValue(self: *Parser, node: Node) bool {
@@ -437,7 +484,10 @@ fn parseStatementBlock(self: *Parser) Error!void {
         .@"return" => {
             self.token += 1;
             _ = try self.appendNode(.@"return");
-            _ = try self.parseExpression2(.scope_end);
+            if (self.isAtScopeEnd())
+                _ = try self.appendNode(.null)
+            else
+                _ = try self.parseExpression2(.scope_end);
         },
         else => {
             const peek = self.token;
