@@ -34,7 +34,7 @@ pub const ParserErrorInfo = struct {
 
         qualifier_incompatible_with_type: QualifierIncompatibleWithType,
 
-        unexpected_return,
+        return_decl_scope,
         unreachable_statement,
         return_type_mismatch,
         non_void_ignore,
