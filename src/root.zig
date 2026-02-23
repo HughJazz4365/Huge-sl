@@ -32,7 +32,8 @@ pub fn test_() !void {
 
     var threaded_io = std.Io.Threaded.init_single_threaded;
     const io = threaded_io.io();
-    const allocator = std.heap.page_allocator;
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const allocator = arena.allocator();
 
     var buf: [128]u8 = undefined;
     var file_writer = std.Io.File.stdout().writer(io, &buf);
@@ -55,7 +56,6 @@ pub fn test_() !void {
         //     std.debug.print("TOKEN: {f}\n", .{Parser.FatToken{ .token = @truncate(i), .self = tok }});
         // }
         var parser = try Parser.new(allocator);
-        defer parser.deinit();
         parser.parse(tok) catch |err| return if (err == Error.ParsingError)
             error_message.errorOutParser(&parser, &file_writer.interface)
         else

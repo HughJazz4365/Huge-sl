@@ -16,7 +16,6 @@ const hgsl = @import("root.zig");
 
 tokenizer: Tokenizer = undefined,
 allocator: Allocator,
-arena: std.heap.ArenaAllocator,
 
 types: List(TypeEntry) = .empty,
 
@@ -68,17 +67,14 @@ fn dumpCurrentScope(self: *Parser, nodes: bool, formatted: bool) void {
     }
 }
 
-pub fn deinit(self: *Parser) void {
-    _ = self.arena.deinit();
-}
 pub fn new(allocator: Allocator) Error!Parser {
     const types_initial_capacity = 16;
     const scalar_values_initial_capacity = 16;
     const composite_values_initial_capacity = 8 * 4 * 4;
     var self: Parser = .{
         .allocator = allocator,
-        .arena = .init(allocator),
     };
+
     self.types = try .initCapacity(allocator, types_initial_capacity);
     self.scalar_values = try .initCapacity(allocator, scalar_values_initial_capacity);
     self.composite_values = try .initCapacity(allocator, composite_values_initial_capacity);
@@ -112,10 +108,10 @@ fn foldBlockScope(self: *Parser) Error!void {
 
     //go through statements in reverse order
     var statements: List(Node) = .empty; //TODO: have one global stack for all nested blocks
-    defer statements.deinit(self.arena.allocator());
+    defer statements.deinit(self.allocator);
     var i: Node = 0;
     while (i < body.len) {
-        try statements.append(self.arena.allocator(), i);
+        try statements.append(self.allocator, i);
         i += self.nodeConsumption(i);
     }
 
@@ -318,7 +314,7 @@ fn getDeclScopeVarRef(self: *Parser, node: Node, token: Token) Error!?Node {
     return null;
 }
 fn implicitCast(self: *Parser, node: Node, @"type": Type) Error!void {
-    std.debug.print("IMPLICIT CAST TO : {f}\n", .{FatType{ .self = self, .type = @"type" }});
+    // std.debug.print("IMPLICIT CAST TO : {f}\n", .{FatType{ .self = self, .type = @"type" }});
     _ = .{ self, node, @"type" };
 }
 fn isNodeTypeValue(self: *Parser, node: Node) bool {
