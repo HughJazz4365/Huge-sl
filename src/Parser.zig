@@ -151,7 +151,6 @@ fn foldNode(self: *Parser, node: Node) Error!void {
     switch (entry.*) {
         .var_decl => |var_decl| try self.foldVarDecl(node, var_decl),
         .function_decl => |fn_decl| {
-            // std.debug.print("FOLD FN DECL SCOPE\n", .{});
             try self.foldScope(self.getFunction(fn_decl).scope);
         },
         .@"return" => {
@@ -179,7 +178,17 @@ fn foldNode(self: *Parser, node: Node) Error!void {
             try self.foldNode(target_node);
             try self.foldNode(target_node + self.nodeConsumption(target_node));
         },
-        .u_op => |op| try self.foldUOp(op, node + 1),
+        .constructor => |elem_count| {
+            const type_node = node + 1;
+            try self.foldNode(type_node);
+
+            var elem = type_node + self.nodeConsumption(type_node);
+            for (0..elem_count) |_| {
+                try self.foldNode(elem);
+                elem += self.nodeConsumption(elem);
+            }
+        },
+        .u_op => |op| try self.foldUOp(op, node),
         .identifier => |token| if (try self.getVarRef(self.current_scope, node, token)) |vr| {
             entry.* = .{ .var_ref = vr };
         } else return self.errorOut(.{ .id = token, .payload = .undeclared_identifier }),
@@ -214,7 +223,7 @@ fn getFunctionDeclReturnType(self: *Parser, function: Function, parent_scope: Sc
     self.current_scope = parent_scope;
 
     const entry = self.getFunction(function).*;
-    const node = entry.node + 1 + self.nodeSeqenceConsumption(entry.node + 1, entry.arg_count);
+    const node = entry.node + 1 + self.nodeSequenceConsumption(entry.node + 1, entry.arg_count);
     try self.foldNode(node);
 
     const rtype_node = self.getNodeEntry(node).*;
@@ -263,9 +272,24 @@ fn foldVarDecl(self: *Parser, node: Node, var_decl: VariableDeclaration) Error!v
             .type = t,
         } } });
 }
-fn foldUOp(self: *Parser, op: UnaryOperator, target: Node) Error!void {
-    _ = .{ self, op, target };
-    @panic("FOLD U OP");
+fn foldUOp(self: *Parser, op: UnaryOperator, node: Node) Error!void {
+    std.debug.print("FOLD UOP: {}\n", .{op});
+    const target = node + 1;
+    try self.foldNode(target);
+    const target_consumption = self.nodeConsumption(target);
+    switch (op) {
+        .pointer => {
+            const as_type = try self.asType(target, false);
+            const pointer_type = try self.appendType(.{ .pointer = as_type });
+            for (0..target_consumption) |i|
+                self.getNodeEntry(target + @as(Node, @truncate(i))).* = .pad;
+            self.getNodeEntry(node).* = .{ .value = .{
+                .type = .type,
+                .payload = @intFromEnum(pointer_type),
+            } };
+        },
+        else => @panic("FOLD U OP"),
+    }
 }
 fn isQualifierCompatibleWithType(self: *Parser, qualifier: Qualifier, q_info: Node, @"type": Type) bool {
     _ = .{ qualifier, q_info, @"type", self };
@@ -401,19 +425,23 @@ fn typeOfUOp(self: *Parser, op: UnaryOperator, operand: Type) Error!Type {
     };
 }
 fn nodeConsumption(self: *Parser, node: Node) u32 {
+    // array_type_decl,
+    // function_decl: Function, //[fn_decl][args...][rtype][body...]
+    // branch,
     var base: u32 = switch (self.getNodeEntry(node).*) {
-        .var_decl => 1 + self.nodeSeqenceConsumption(node + 1, 3),
-        .bin_op => 1 + self.nodeSeqenceConsumption(node + 1, 2),
-        .u_op, .@"return" => 1 + self.nodeConsumption(node + 1),
+        .var_decl => 1 + self.nodeSequenceConsumption(node + 1, 3),
+        .bin_op, .indexing, .assignment => 1 + self.nodeSequenceConsumption(node + 1, 2),
+        .u_op, .@"return", .function_param => 1 + self.nodeConsumption(node + 1),
         .null => 1,
         .function_decl => 1 + self.nodeConsumption(node + 1), //args
+        .constructor, .function_type_decl => |c| 1 + self.nodeSequenceConsumption(node + 1, c + 1),
         else => 1,
     };
     const body = self.getScope(self.current_scope).body.items;
     while (node + base < body.len and body[node + base] == .pad) base += 1;
     return base;
 }
-fn nodeSeqenceConsumption(self: *Parser, node: Node, count: usize) u32 {
+fn nodeSequenceConsumption(self: *Parser, node: Node, count: usize) u32 {
     var len: u32 = 0;
     for (0..count) |_|
         len += self.nodeConsumption(node + len);
@@ -1030,8 +1058,6 @@ pub const NodeEntry = union(enum) {
     @"return", //[return][return value]
     branch,
     loop: [11]u8,
-
-    cast: Type,
 
     //statement
     var_decl: VariableDeclaration, //[var_decl][qualifier_info][type][initializer]
