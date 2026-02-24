@@ -40,7 +40,7 @@ pub fn dump(self: *Parser) void {
 
     std.debug.print("---BODY: \n", .{});
     self.current_scope = .entry_file;
-    self.dumpCurrentScope(true, true);
+    self.dumpCurrentScope(false, true);
 
     // if (true) //
     if (false) //
@@ -53,12 +53,12 @@ pub fn dump(self: *Parser) void {
 }
 
 fn dumpCurrentScope(self: *Parser, nodes: bool, formatted: bool) void {
-    const scope = self.getScope(self.current_scope);
+    const body = self.getBodySlice();
     if (nodes)
-        for (scope.body.items) |node| std.debug.print("\t{any}\n", .{node});
+        for (body) |node| std.debug.print("\t{any}\n", .{node});
     if (formatted) {
         var node: Node = 0;
-        while (node < scope.body.items.len) {
+        while (node < body.len) {
             std.debug.print("\t{f}\n", .{FatNode{
                 .self = self,
                 .node = &node,
@@ -104,7 +104,7 @@ fn foldScope(self: *Parser, scope: Scope) Error!void {
 }
 
 fn foldBlockScope(self: *Parser) Error!void {
-    const body = self.getScope(self.current_scope).body.items;
+    const body = self.getBodySlice();
 
     //go through statements in reverse order
     var statements: List(Node) = .empty; //TODO: have one global stack for all nested blocks
@@ -123,7 +123,7 @@ fn foldBlockScope(self: *Parser) Error!void {
 }
 
 fn foldDeclScope(self: *Parser) Error!void {
-    const body = self.getScope(self.current_scope).body.items;
+    const body = self.getBodySlice();
     var i: Node = 0;
     while (i < body.len) {
         if (self.isStatementSignificantDeclScope(i))
@@ -281,8 +281,7 @@ fn foldUOp(self: *Parser, op: UnaryOperator, node: Node) Error!void {
         .pointer => {
             const as_type = try self.asType(target, false);
             const pointer_type = try self.appendType(.{ .pointer = as_type });
-            for (0..target_consumption) |i|
-                self.getNodeEntry(target + @as(Node, @truncate(i))).* = .pad;
+            @memset(self.getBodySlice()[target .. target + target_consumption], .pad);
             self.getNodeEntry(node).* = .{ .value = .{
                 .type = .type,
                 .payload = @intFromEnum(pointer_type),
@@ -315,7 +314,7 @@ fn getBlockScopeVarRef(self: *Parser, node: Node, token: Token) Error!?Node {
 }
 
 fn getDeclScopeVarRef(self: *Parser, node: Node, token: Token) Error!?Node {
-    const body = self.getScope(self.current_scope).body.items;
+    const body = self.getBodySlice();
     var i: Node = 0;
     const name = self.tokenizer.slice(token);
     // std.debug.print("GET VAR REF OF: {s}\n", .{name});
@@ -339,6 +338,24 @@ fn getDeclScopeVarRef(self: *Parser, node: Node, token: Token) Error!?Node {
 }
 fn implicitCast(self: *Parser, node: Node, @"type": Type) Error!void {
     // std.debug.print("IMPLICIT CAST TO : {f}\n", .{FatType{ .self = self, .type = @"type" }});
+    const entry = self.getNodeEntry(node);
+    switch (entry.*) {
+        .constructor => |elem_count| {
+            _ = elem_count;
+            const type_node = node + 1;
+
+            const type_node_consumption = self.nodeConsumption(type_node);
+            self.getNodeEntry(type_node).* = .{ .value = .{
+                .type = .type,
+                .payload = @intFromEnum(@"type"),
+            } };
+            @memset(self.getScope(self.current_scope).body.items[type_node + 1 .. type_node + type_node_consumption], .pad);
+        },
+        // inline else => |_, tag| @panic("implicit cast ts: " ++ @tagName(tag)),
+        else => {},
+        // constructor: u32, //[count][type][elems..]
+
+    }
     _ = .{ self, node, @"type" };
 }
 fn isNodeTypeValue(self: *Parser, node: Node) bool {
@@ -409,7 +426,7 @@ fn asType(self: *Parser, node: Node, comptime create_ref: bool) Error!Type {
             else
                 @enumFromInt(value.payload);
         },
-        else => @panic("as type idk"),
+        else => return self.errorOut(.{ .payload = .not_a_type }),
     };
 }
 fn typeOfBinOp(self: *Parser, op: BinaryOperator, left: Type, right: Type) Error!Type {
@@ -437,7 +454,7 @@ fn nodeConsumption(self: *Parser, node: Node) u32 {
         .constructor, .function_type_decl => |c| 1 + self.nodeSequenceConsumption(node + 1, c + 1),
         else => 1,
     };
-    const body = self.getScope(self.current_scope).body.items;
+    const body = self.getBodySlice();
     while (node + base < body.len and body[node + base] == .pad) base += 1;
     return base;
 }
@@ -881,7 +898,7 @@ fn parseSequence(self: *Parser, delimiter: Tokenizer.TokenKind) Error!ParseArgum
 }
 
 fn nextNode(self: *Parser) Node {
-    return @truncate(self.getScope(self.current_scope).body.items.len);
+    return @truncate(self.getBodySlice().len);
 }
 
 fn parseIntLiteral(str: []const u8) i128 {
@@ -956,7 +973,10 @@ fn addScope(self: *Parser, entry: ScopeEntry) Error!Scope {
     try self.scopes.append(self.allocator, entry);
     return @enumFromInt(l);
 }
-fn getScope(self: *Parser, handle: Scope) *ScopeEntry {
+inline fn getBodySlice(self: *Parser) []NodeEntry {
+    return self.getScope(self.current_scope).body.items;
+}
+inline fn getScope(self: *Parser, handle: Scope) *ScopeEntry {
     return &self.scopes.items[@intFromEnum(handle)];
 }
 const Scope = enum(u32) { entry_file, _ };
@@ -1240,6 +1260,7 @@ const FatType = struct {
                 }});
             },
             .ref => |ref| try format(.{ .self = entry.self, .type = ref }, writer),
+            .pointer => |pointed_type| try writer.print("*{f}", .{FatType{ .self = entry.self, .type = pointed_type }}),
             else => try TypeEntry.format(te, writer),
         }
     }
@@ -1266,8 +1287,8 @@ const FatNode = struct {
     self: *Parser,
     node: *Node,
     pub fn format(entry: FatNode, writer: *std.Io.Writer) !void {
-        const scope = entry.self.getScope(entry.self.current_scope);
-        switch (scope.body.items[entry.node.*]) {
+        const body = entry.self.getBodySlice();
+        switch (body[entry.node.*]) {
             .@"return" => {
                 entry.node.* += 1;
                 try writer.print("return {f}", .{entry});
@@ -1374,7 +1395,7 @@ const FatNode = struct {
 
             else => {
                 entry.node.* += 1;
-                if (entry.node.* < scope.body.items.len)
+                if (entry.node.* < body.len)
                     try writer.print("{f}", .{entry});
             },
         }
