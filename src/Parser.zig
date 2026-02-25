@@ -1,3 +1,4 @@
+//TODO: proper error messages(store Token in the Node?)
 //bin op assignments( a *= b, c -= 1 )
 //TODO: valid_...(valid_var_decl) node entry variations for semantically analyzed
 //statements (fold on them would return immediately)
@@ -181,6 +182,12 @@ fn foldNode(self: *Parser, node: Node) Error!void {
         .constructor => |elem_count| {
             const type_node = node + 1;
             try self.foldNode(type_node);
+            switch (self.getNodeEntry(type_node).*) {
+                .null => {},
+                .value => |value| if (value.type != .type)
+                    return self.errorOut(.{ .payload = .not_a_type }),
+                else => return self.errorOut(.{ .payload = .not_a_type }),
+            }
 
             var elem = type_node + self.nodeConsumption(type_node);
             for (0..elem_count) |_| {
@@ -343,13 +350,18 @@ fn implicitCast(self: *Parser, node: Node, @"type": Type) Error!void {
         .constructor => |elem_count| {
             _ = elem_count;
             const type_node = node + 1;
-
-            const type_node_consumption = self.nodeConsumption(type_node);
-            self.getNodeEntry(type_node).* = .{ .value = .{
+            const type_node_entry = self.getNodeEntry(type_node);
+            switch (type_node_entry.*) {
+                .null => {},
+                .value => |value| //
+                if (!self.isTypeImplicitlyCastable(@enumFromInt(value.payload), @"type"))
+                    return self.errorOut(.{ .payload = .cant_implicitly_cast }),
+                else => return self.errorOut(.{ .payload = .unknown }),
+            }
+            type_node_entry.* = .{ .value = .{
                 .type = .type,
                 .payload = @intFromEnum(@"type"),
             } };
-            @memset(self.getScope(self.current_scope).body.items[type_node + 1 .. type_node + type_node_consumption], .pad);
         },
         // inline else => |_, tag| @panic("implicit cast ts: " ++ @tagName(tag)),
         else => {},
@@ -357,6 +369,11 @@ fn implicitCast(self: *Parser, node: Node, @"type": Type) Error!void {
 
     }
     _ = .{ self, node, @"type" };
+}
+fn isTypeImplicitlyCastable(self: *Parser, from: Type, to: Type) bool {
+    return if (from == to) true else switch (self.getType(from)) {
+        else => false,
+    };
 }
 fn isNodeTypeValue(self: *Parser, node: Node) bool {
     const entry = self.getNodeEntry(node).*;

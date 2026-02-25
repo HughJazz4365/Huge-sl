@@ -6,6 +6,6 @@ vertex vert0 = fn void{
 }
 
 fragment frag0 = fn f32x4 {
-	return .{@frag_coord, 0, 1}
+	return f32x4{@frag_coord, 0, 1}
 }
 
