@@ -182,17 +182,23 @@ fn foldNode(self: *Parser, node: Node) Error!void {
         .constructor => |elem_count| {
             const type_node = node + 1;
             try self.foldNode(type_node);
-            switch (self.getNodeEntry(type_node).*) {
-                .null => {},
+            const type_opt: ?Type = switch (self.getNodeEntry(type_node).*) {
+                .null => null,
                 .value => |value| if (value.type != .type)
-                    return self.errorOut(.{ .payload = .not_a_type }),
+                    return self.errorOut(.{ .payload = .not_a_type })
+                else
+                    @enumFromInt(value.payload),
                 else => return self.errorOut(.{ .payload = .not_a_type }),
-            }
+            };
 
-            var elem = type_node + self.nodeConsumption(type_node);
-            for (0..elem_count) |_| {
-                try self.foldNode(elem);
-                elem += self.nodeConsumption(elem);
+            switch (elem_count) {
+                0 => {},
+                1 => @panic("fold cast"),
+                else => if (type_opt) |@"type"| try self.foldConstructor(
+                    @"type",
+                    elem_count,
+                    type_node + self.nodeConsumption(type_node),
+                ),
             }
         },
         .u_op => |op| try self.foldUOp(op, node),
@@ -203,6 +209,18 @@ fn foldNode(self: *Parser, node: Node) Error!void {
             _ = e;
             // std.debug.print("idk how to fold {s}\n", .{@tagName(e)});
         },
+    }
+}
+fn foldConstructor(self: *Parser, @"type": Type, elem_count: u32, first: Node) Error!void {
+    //elem_count > 1
+    const constructor_structure = try self.constructorStructure(@"type");
+    if (!constructor_structure.canHaveConstructor())
+        return self.errorOut(.{ .payload = .type_cant_have_constructor });
+
+    var elem = first;
+    for (0..elem_count) |_| {
+        try self.foldNode(elem);
+        elem += self.nodeConsumption(elem);
     }
 }
 fn isValidAssignmentTarget(self: *Parser, node: Node) bool {
@@ -290,7 +308,7 @@ fn foldUOp(self: *Parser, op: UnaryOperator, node: Node) Error!void {
     switch (op) {
         .pointer => {
             const as_type = try self.asType(target, false);
-            const pointer_type = try self.appendType(.{ .pointer = as_type });
+            const pointer_type = try self.addType(.{ .pointer = as_type });
             @memset(self.getBodySlice()[target .. target + target_consumption], .pad);
             self.getNodeEntry(node).* = .{ .value = .{
                 .type = .type,
@@ -358,17 +376,20 @@ fn implicitCast(self: *Parser, node: Node, @"type": Type) Error!void {
             _ = elem_count;
             const type_node = node + 1;
             const type_node_entry = self.getNodeEntry(type_node);
-            switch (type_node_entry.*) {
-                .null => {},
+            const changed: bool = switch (type_node_entry.*) {
+                .null => true,
                 .value => |value| //
                 if (!self.isTypeImplicitlyCastable(@enumFromInt(value.payload), @"type"))
-                    return self.errorOut(.{ .payload = .cant_implicitly_cast }),
+                    return self.errorOut(.{ .payload = .cant_implicitly_cast })
+                else
+                    true,
                 else => return self.errorOut(.{ .payload = .unknown }),
-            }
+            };
             type_node_entry.* = .{ .value = .{
                 .type = .type,
                 .payload = @intFromEnum(@"type"),
             } };
+            if (changed) try self.foldNode(node);
         },
         // inline else => |_, tag| @panic("implicit cast ts: " ++ @tagName(tag)),
         else => {},
@@ -389,6 +410,7 @@ fn isNodeTypeValue(self: *Parser, node: Node) bool {
 
 fn typeOf(self: *Parser, node: Node) Error!Type {
     return switch (self.getNodeEntry(node).*) {
+        .builtin => try self.addType(.{ .vector = .{ .len = ._4, .scalar = .{ .layout = .float, .width = ._32 } } }),
         .value => |value| value.type,
         .bin_op => |op| try self.typeOfBinOp(
             op,
@@ -1166,6 +1188,28 @@ fn typeSequenceLength(self: *Parser, @"type": Type, count: usize) u32 {
     for (0..count) |_| len += self.typeLength(@enumFromInt(@intFromEnum(@"type") + len));
     return len;
 }
+const ConstructorStructure = struct {
+    element: Type,
+    len: u32 = 1,
+    pub inline fn canHaveConstructor(self: ConstructorStructure) bool {
+        return self.len > 1;
+    }
+};
+pub fn constructorStructure(self: *Parser, @"type": Type) Error!ConstructorStructure {
+    const entry = self.getType(@"type");
+    return switch (entry) {
+        .vector => |vector| .{
+            .len = vector.len.value(),
+            .element = try self.addType(.{ .scalar = vector.scalar }),
+        },
+        .matrix => |matrix| .{
+            .len = matrix.n.value(),
+            .element = try self.addType(.{ .vector = .{ .len = matrix.m, .scalar = matrix.scalar } }),
+        },
+        else => .{ .element = @"type" },
+    };
+}
+
 pub const Type = enum(u32) { type, _ };
 pub const TypeEntry = union(enum) {
     void,
@@ -1217,7 +1261,14 @@ pub const Matrix = packed struct {
 pub const Vector = packed struct {
     scalar: Scalar,
     len: Len,
-    pub const Len = enum(u2) { _2, _3, _4 };
+    pub const Len = enum(u2) {
+        _2,
+        _3,
+        _4,
+        pub fn value(self: Len) u32 {
+            return 2 + @as(u32, @intFromEnum(self));
+        }
+    };
 };
 pub const Scalar = packed struct {
     width: Width,

@@ -1,8 +1,6 @@
 vertex vert0 = fn void{
 	push vertex_buffer : *f32x3
-	const kek = 1
-	kek = .{vertex_buffer[@vertex_id], kek}
-	//FOLDED: @position = f32x4{vertex_buffer[@vertex_id], 1}
+	@position = .{vertex_buffer[@vertex_id], 1}
 }
 
 fragment frag0 = fn f32x4 {
