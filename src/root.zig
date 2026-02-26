@@ -42,10 +42,12 @@ pub fn test_() !void {
     const source = readFile(io, allocator, path) catch
         return Error.FileReadFailed;
 
-    var timer = try std.time.Timer.start();
+    const clock = std.Io.Clock.awake;
+    var timestamp = clock.now(io);
     var measure: u64 = 0;
     const test_count = 1;
     for (0..test_count) |_| {
+        timestamp = clock.now(io);
         var tok: Tokenizer = .{ .full_source = source, .path = path };
         tok.tokenize(allocator) catch |err| return if (err == Error.SyntaxError)
             error_message.errorOutTokenizer(tok, &file_writer.interface)
@@ -61,7 +63,9 @@ pub fn test_() !void {
         else
             err;
 
-        measure += timer.lap();
+        const new_timestamp = clock.now(io);
+        measure += @intCast(timestamp.durationTo(new_timestamp).nanoseconds);
+        timestamp = new_timestamp;
         parser.dump();
     }
     std.debug.print(
