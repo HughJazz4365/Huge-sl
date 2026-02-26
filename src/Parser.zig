@@ -250,16 +250,17 @@ fn foldVarDecl(self: *Parser, node: Node, var_decl: VariableDeclaration) Error!v
     const type_node = node + 1 + qualifier_info_node_consumption;
     try self.foldNode(type_node);
 
+    const type_node_entry = self.getNodeEntry(type_node).*;
+    if (type_node_entry != .null and (type_node_entry != .value or type_node_entry.value.type != .type))
+        return self.errorOut(.{ .payload = .unable_to_resolve_comptime_value });
+
     const type_node_consumption = self.nodeConsumption(type_node);
     const initializer_node = type_node + type_node_consumption;
     try self.foldNode(initializer_node);
 
     //if type is <null> inferr type from initializer
     //else implicitly cast initializer to variable type
-    const t: Type = undefined;
     if (self.getNodeEntry(type_node).* != .null) {
-        // var tn = type_node;
-        // std.debug.print("TYPENODE : {f}\n", .{FatNode{ .self = self, .node = &tn }});
         if (!self.isNodeTypeValue(type_node))
             return self.errorOut(.{ .id = type_node, .payload = .not_a_type });
 
@@ -273,7 +274,9 @@ fn foldVarDecl(self: *Parser, node: Node, var_decl: VariableDeclaration) Error!v
             .payload = @intFromEnum(try self.typeOf(initializer_node)),
         } };
     }
-    if (!self.isQualifierCompatibleWithType(var_decl.qualifier, node + 1, t))
+    const t: Type = @enumFromInt(self.getNodeEntry(type_node).value.payload);
+
+    if (!self.isQualifierCompatibleWithType(var_decl.qualifier, t))
         return self.errorOut(.{ .payload = .{ .qualifier_incompatible_with_type = .{
             .var_decl = node,
             .type = t,
@@ -297,9 +300,13 @@ fn foldUOp(self: *Parser, op: UnaryOperator, node: Node) Error!void {
         else => @panic("FOLD U OP"),
     }
 }
-fn isQualifierCompatibleWithType(self: *Parser, qualifier: Qualifier, q_info: Node, @"type": Type) bool {
-    _ = .{ qualifier, q_info, @"type", self };
-    return true;
+fn isQualifierCompatibleWithType(self: *Parser, qualifier: Qualifier, @"type": Type) bool {
+    const entry = self.getType(@"type");
+    return switch (qualifier) {
+        .env, .push, .shared => !entry.isComptime(),
+        .vertex, .fragment, .compute => entry == .function,
+        else => true,
+    };
 }
 fn getVarRef(self: *Parser, scope: Scope, node: Node, token: Token) Error!?VariableReference {
     const last_scope = self.current_scope;
@@ -1180,6 +1187,12 @@ pub const TypeEntry = union(enum) {
 
     ref: Type,
     pub const Tag = std.meta.Tag(@This());
+    pub fn isComptime(self: TypeEntry) bool {
+        return switch (self) {
+            .void, .type, .compint, .compfloat, .function => true,
+            else => false,
+        };
+    }
     pub fn format(self: TypeEntry, writer: *std.Io.Writer) !void {
         switch (self) {
             .scalar => |scalar| try writer.print("{c}{s}", .{
