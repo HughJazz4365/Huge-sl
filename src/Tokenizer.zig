@@ -86,7 +86,7 @@ fn getNextTokenEntry(self: *Tokenizer) Error!?TokenEntry {
                 in_comment = true;
                 break :blk .{ false, comment_symbol.len };
             }
-            if (util.startingEndlLength(self.source)) |l| {
+            if (startingEndlLength(self.source)) |l| {
                 is_endl = true;
                 in_comment = false;
                 break :blk .{ false, l };
@@ -214,6 +214,11 @@ fn stripValidIdentifier(self: *Tokenizer, bytes: []const u8) Error![]const u8 {
 
     return bytes[0..end];
 }
+pub fn startingEndlLength(bytes: []const u8) ?usize {
+    if (bytes.len > 1 and bytes[0] == '\r' and bytes[1] == '\n')
+        return 2;
+    return if (bytes[0] == '\n') 1 else null;
+}
 fn matchOperator(self: *Tokenizer, bytes: []const u8, bin_priority: bool) ?TokenEntry {
     return for (&[_]@Tuple(&.{ TokenKind, []const u8 }){
         .{ .dotsat, "|*|" },
@@ -275,7 +280,7 @@ fn isIdentifierChar(char: u8) bool {
 fn bump(self: *Tokenizer, amount: usize) void {
     self.source = self.source[amount..];
 }
-fn isWhitespace(char: u8) bool {
+pub fn isWhitespace(char: u8) bool {
     return char == ' ' or char == '\t';
 }
 pub const Token = u32;
@@ -286,6 +291,10 @@ pub const TokenEntry = packed struct(u64) {
     offset: u32,
     pub const eof: TokenEntry = .{ .kind = .eof, .offset = 0 };
 };
+pub fn offset(self: Tokenizer, token: Token) usize {
+    const entry = self.getEntry(token);
+    return entry.offset;
+}
 pub fn slice(self: Tokenizer, token: Token) []const u8 {
     const entry = self.getEntry(token);
     return self.full_source[entry.offset .. entry.offset + entry.len];

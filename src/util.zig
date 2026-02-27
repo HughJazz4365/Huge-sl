@@ -165,11 +165,6 @@ inline fn uintCast(T: type, from: anytype) T {
 pub fn strEql(a: []const u8, b: []const u8) bool {
     return if (a.len != b.len) false else std.mem.eql(u8, a, b);
 }
-pub fn startingEndlLength(slice: []const u8) ?usize {
-    if (strStartsComp(slice, "\r\n")) return 2;
-    return if (slice[0] == '\n') 1 else null;
-    // if (char == '\n' or util.strStartsComp(self.state.source[count..], "\r\n")) {
-}
 pub inline fn strStarts(haystack: []const u8, needle: []const u8) bool {
     return startsWith(u8, haystack, needle);
 }

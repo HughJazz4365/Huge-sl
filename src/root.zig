@@ -11,13 +11,15 @@ pub const Stage = enum { fragment, vertex, compute };
 
 pub const Error = error{
     OutOfMemory,
-    FileReadFailed,
     WriteFailed,
 
-    SyntaxError,
-    ParsingError,
-};
+    FileReadFailed, //handled?
 
+    //==============
+
+    SyntaxError,
+    CompilationError,
+};
 pub fn test_() !void {
     inline for (&[_]type{
         Parser.NodeEntry,
@@ -28,7 +30,7 @@ pub fn test_() !void {
         Tokenizer.TokenEntry,
     }) |_| {}
     // }) |T|
-    // std.debug.print("size of {s}: {d}\n", .{ @typeName(T), @sizeOf(T) });
+    // std.debug.print("size of {s}: {d}, align: {d}\n", .{ @typeName(T), @sizeOf(T), @alignOf(T) });
 
     var threaded_io = std.Io.Threaded.init_single_threaded;
     const io = threaded_io.io();
@@ -58,7 +60,7 @@ pub fn test_() !void {
         //     std.debug.print("TOKEN: {f}\n", .{Parser.FatToken{ .token = @truncate(i), .self = tok }});
         // }
         var parser = try Parser.new(allocator);
-        parser.parse(tok) catch |err| return if (err == Error.ParsingError)
+        parser.parse(tok) catch |err| return if (err == Error.CompilationError)
             error_message.errorOutParser(&parser, &file_writer.interface)
         else
             err;
