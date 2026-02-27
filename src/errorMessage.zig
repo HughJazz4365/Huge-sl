@@ -88,8 +88,22 @@ pub const ParserErrorInfo = struct {
         //value of type '{type}' ignored:
         //<line>
 
+        wrong_constructor_element_type: //
+        WrongConstructorElementType,
+        non_matching_constructor_element_count: //
+        NonMatchingConstructorElementCount,
+
         unknown,
     };
+};
+const WrongConstructorElementType = struct {
+    constructor_type: Parser.Type,
+    element_type: Parser.Type,
+};
+const NonMatchingConstructorElementCount = struct {
+    constructor_type: Parser.Type,
+    expected_count: u32,
+    got_count: u32,
 };
 const Redeclaration = struct {
     statement: Token,
@@ -124,6 +138,13 @@ pub fn errorOutParser(parser: *Parser, writer: *std.Io.Writer) Error {
 
             try writer.print(" originally declared:\n", .{});
             try other_loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
+        },
+        .non_matching_constructor_element_count => |ec| {
+            try writer.print("non matching constructor element count, expected {d} - got {d}:\n", .{
+                ec.expected_count,
+                ec.got_count,
+            });
+            try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
         },
 
         else => |payload| try writer.print("error: {s}\n", .{@tagName(payload)}),

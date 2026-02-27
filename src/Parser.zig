@@ -233,10 +233,43 @@ fn foldConstructor(self: *Parser, @"type": Type, constructor: ConstructorNode, f
         });
 
     var elem = first;
+    var occupied: u32 = 0;
     for (0..constructor.elem_count) |_| {
         try self.foldNode(elem);
-        elem += self.nodeConsumption(elem);
+        const elem_consumption = self.nodeConsumption(elem);
+        defer elem += elem_consumption;
+
+        const elem_type = try self.typeOf(elem);
+        if (self.isTypeExplicitlyCastable(elem_type, constructor_structure.element)) {
+            occupied += 1;
+        } else {
+            const elem_constructor_structure = try self.constructorStructure(elem_type);
+            //check if elem_cs.element and cs.element have the same type depth??
+            if (self.isTypeExplicitlyCastable(
+                elem_constructor_structure.element,
+                constructor_structure.element,
+            )) {
+                occupied += elem_constructor_structure.len;
+                //'TYPE' cannot be an element of a 'CType' consstructor
+            } else return self.errorOut(.{
+                .token = self.getNodeEntry(elem).token(),
+                .payload = .{ .wrong_constructor_element_type = .{
+                    .constructor_type = @"type",
+                    .element_type = elem_type,
+                } },
+            });
+        }
     }
+    //non matching constructor element count
+    if (occupied != constructor_structure.len)
+        return self.errorOut(.{
+            .token = constructor.token,
+            .payload = .{ .non_matching_constructor_element_count = .{
+                .constructor_type = @"type",
+                .expected_count = constructor_structure.len,
+                .got_count = occupied,
+            } },
+        });
 }
 fn isValidAssignmentTarget(self: *Parser, node: Node) bool {
     const entry = self.getNodeEntry(node).*;
@@ -446,6 +479,11 @@ fn implicitCast(self: *Parser, node: Node, @"type": Type) Error!void {
 
     }
     _ = .{ self, node, @"type" };
+}
+fn isTypeExplicitlyCastable(self: *Parser, from: Type, to: Type) bool {
+    return if (from == to) true else switch (self.getType(from)) {
+        else => true,
+    };
 }
 fn isTypeImplicitlyCastable(self: *Parser, from: Type, to: Type) bool {
     return if (from == to) true else switch (self.getType(from)) {
