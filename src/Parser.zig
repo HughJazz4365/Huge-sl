@@ -34,8 +34,8 @@ token: Token = 0,
 error_info: ErrorInfo = .unknown,
 
 pub fn dump(self: *Parser) void {
-    // std.debug.print("types:\n", .{});
-    // for (self.types.items) |t| std.debug.print("--- {any}\n", .{t});
+    std.debug.print("types:\n", .{});
+    for (self.types.items) |t| std.debug.print("--- {any}\n", .{t});
     // std.debug.print("structs:\n", .{});
     // for (self.structs.items) |t| std.debug.print("--- {any}\n", .{t});
 
@@ -250,7 +250,6 @@ fn foldConstructor(self: *Parser, @"type": Type, constructor: ConstructorNode, f
                 constructor_structure.element,
             )) {
                 occupied += elem_constructor_structure.len;
-                //'TYPE' cannot be an element of a 'CType' consstructor
             } else return self.errorOut(.{
                 .token = self.getNodeEntry(elem).token(),
                 .payload = .{ .wrong_constructor_element_type = .{
@@ -481,12 +480,23 @@ fn implicitCast(self: *Parser, node: Node, @"type": Type) Error!void {
     _ = .{ self, node, @"type" };
 }
 fn isTypeExplicitlyCastable(self: *Parser, from: Type, to: Type) bool {
-    return if (from == to) true else switch (self.getType(from)) {
-        else => true,
-    };
+    if (from == to) return true;
+    const from_entry = self.getType(from);
+    const to_entry = self.getType(to);
+
+    return switch (from_entry) {
+        else => std.meta.activeTag(from_entry) == std.meta.activeTag(to_entry),
+    } or self.isTypeImplicitlyCastable(from, to);
 }
 fn isTypeImplicitlyCastable(self: *Parser, from: Type, to: Type) bool {
-    return if (from == to) true else switch (self.getType(from)) {
+    if (from == to) return true;
+    const from_entry = self.getType(from);
+    const to_entry = self.getType(to);
+
+    return switch (to_entry) {
+        .scalar => from_entry == .scalar or
+            from_entry == .compint or
+            from_entry == .compfloat,
         else => false,
     };
 }
@@ -504,7 +514,15 @@ fn typeOf(self: *Parser, node: Node) Error!Type {
         .var_ref => |vr| @enumFromInt(self.getNodeEntryScope(vr.scope, vr.node + 1 + self.nodeConsumption(vr.node + 1)).value.payload),
 
         //return type of target for now
-        .indexing => try self.typeOf(node + 1),
+        .indexing => blk: {
+            //fold indexing
+            const target_type = try self.typeOf(node + 1);
+            const entry = self.getType(target_type);
+            break :blk switch (entry) {
+                .pointer => |pointed| pointed,
+                else => target_type,
+            };
+        },
         .function_decl => |fn_decl| try self.typeOfFunctionDecl(node, fn_decl.function),
 
         else => |e| {
@@ -520,7 +538,7 @@ fn typeOfFunctionDecl(self: *Parser, node: Node, function: Function) Error!Type 
     const arg_offset: Node = 0;
     const prev_types_len = self.types.items.len;
 
-    const type_header = try self.appendType(.{ .function = entry.arg_count });
+    const type_header = try self.appendTypeRaw(.{ .function = entry.arg_count });
     const rtype = try self.asType(node + 1 + arg_offset, true);
     const only_references = self.getType(rtype) == .ref;
     if (!only_references) return type_header;
@@ -555,7 +573,7 @@ fn asType(self: *Parser, node: Node, comptime create_ref: bool) Error!Type {
                 .payload = .{ .not_a_type = value.type },
             });
             break :blk if (create_ref)
-                try self.appendType(.{ .ref = @enumFromInt(value.payload) })
+                try self.appendTypeRaw(.{ .ref = @enumFromInt(value.payload) })
             else
                 @enumFromInt(value.payload);
         },
@@ -1114,13 +1132,13 @@ fn addTypeOpt(self: *Parser, entry: TypeEntry, comptime create_ref: bool) Error!
         for (0..self.types.items.len) |i| {
             if (std.meta.eql(entry, self.getType(@enumFromInt(i))))
                 return if (create_ref)
-                    self.appendType(.{ .ref = @enumFromInt(i) })
+                    self.appendTypeRaw(.{ .ref = @enumFromInt(i) })
                 else
                     @enumFromInt(i);
         };
-    return self.appendType(entry);
+    return self.appendTypeRaw(entry);
 }
-fn appendType(self: *Parser, entry: TypeEntry) Error!Type {
+fn appendTypeRaw(self: *Parser, entry: TypeEntry) Error!Type {
     const l = self.types.items.len;
     try self.types.append(self.allocator, entry);
     return @enumFromInt(l);
@@ -1512,7 +1530,7 @@ const FatType = struct {
                 }});
             },
             .ref => |ref| try format(.{ .self = entry.self, .type = ref }, writer),
-            .pointer => |pointed_type| try writer.print("*{f}", .{FatType{ .self = entry.self, .type = pointed_type }}),
+            .pointer => |pointed| try writer.print("*{f}", .{FatType{ .self = entry.self, .type = pointed }}),
             else => try TypeEntry.format(te, writer),
         }
     }
