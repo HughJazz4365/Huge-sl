@@ -286,7 +286,10 @@ fn foldVarDecl(self: *Parser, node: Node, var_decl: VariableDeclaration) Error!v
     if (try self.getVarRef(self.current_scope, node, var_decl.name)) |vr|
         return self.errorOut(.{
             .token = var_decl.qualifier_token,
-            .payload = .{ .redeclaration = self.getNodeEntryScope(vr.scope, vr.node).token() },
+            .payload = .{ .redeclaration = .{
+                .statement = self.getNodeEntryScope(vr.scope, vr.node).token(),
+                .name = var_decl.name,
+            } },
         });
 
     const qualifier_info_node = node + 1;

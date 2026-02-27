@@ -8,7 +8,7 @@ const Parser = @import("Parser.zig");
 pub const TokenizerErrorInfo = struct {
     source_offset: usize,
     kind: Kind,
-    const Kind = enum { invalid_character, float8 };
+    const Kind = enum { unexpected_character, float8 };
 };
 pub const ParserErrorInfo = struct {
     pub const unknown: ParserErrorInfo = .{ .payload = .unknown, .token = 0 };
@@ -21,11 +21,7 @@ pub const ParserErrorInfo = struct {
         undeclared_identifier, //UseToken
         //undeclared identifer {id}:
         // <line thing>
-        redeclaration: Token, //UseToken, DeclToken
-        //redeclaration of identifier {token}
-        // <usage line>
-        // declared at line {line}:
-        // <declaration line>
+        redeclaration: Redeclaration,
         dependency_loop, //DeclToken
         //dependency loop:
         //<line>
@@ -95,6 +91,10 @@ pub const ParserErrorInfo = struct {
         unknown,
     };
 };
+const Redeclaration = struct {
+    statement: Token,
+    name: Token,
+};
 const QualifierIncompatibleWithType = struct {
     qualifier: Parser.Qualifier,
     type: Parser.Type,
@@ -102,15 +102,28 @@ const QualifierIncompatibleWithType = struct {
 
 pub fn errorOutParser(parser: *Parser, writer: *std.Io.Writer) Error {
     const error_info = parser.error_info;
-    const loc = getSourceLocation(parser.tokenizer, parser.tokenizer.offset(error_info.token));
+    const loc: TokenSourceLocation = .get(parser.tokenizer, error_info.token);
+    try loc.printWithPath(parser.tokenizer, writer);
+    try writer.writeAll(comptime Color.red.ec() ++ " error: " ++ Color.default.ec());
+
     switch (error_info.payload) {
         .unclosed_scope => {
-            try writer.print("unclosed scope, declared at line {d}:\n", .{loc.line_number + 1});
-            try loc.printLineToken(.pointer, parser.tokenizer, error_info.token, writer);
+            try writer.print("unclosed scope:\n", .{});
+            try loc.printLineToken(.pointer, parser.tokenizer, writer);
         },
         .unexpected_token => {
             try writer.print("unexpected token '{s}':\n", .{@tagName(parser.tokenizer.kind(error_info.token))});
-            try loc.printLineToken(.pointer_underline, parser.tokenizer, error_info.token, writer);
+            try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
+        },
+        .redeclaration => |redeclaration| {
+            try writer.print("redeclaration of '{s}':\n", .{parser.tokenizer.slice(redeclaration.name)});
+            try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
+
+            const other_loc: TokenSourceLocation = .get(parser.tokenizer, redeclaration.statement);
+            try other_loc.printWithPath(parser.tokenizer, writer);
+
+            try writer.print(" originally declared:\n", .{});
+            try other_loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
         },
 
         else => |payload| try writer.print("error: {s}\n", .{@tagName(payload)}),
@@ -122,10 +135,10 @@ const Color = enum {
     green,
     red,
     default,
-    pub fn escapeCode(self: Color) []const u8 {
+    pub fn ec(self: Color) []const u8 {
         return switch (self) {
             .green => "\x1b[32m",
-            .red => "\x1b[f31m",
+            .red => "\x1b[31m",
             .default => "\x1b[39m",
         };
     }
@@ -138,46 +151,38 @@ const HighlightType = enum {
     squiggly_undeline,
 };
 
-const SourceLocation = struct {
+const TokenSourceLocation = struct {
     line_number: usize = 0,
     line_start: usize = 0,
     line_end: usize = 0,
     line_offset: usize = 0,
+    token_length: usize = 0,
+
+    pub fn printWithPath(self: TokenSourceLocation, tokenizer: Tokenizer, writer: *std.Io.Writer) !void {
+        try writer.print("[{s}:{d}:{d}]", .{
+            tokenizer.path,
+            self.line_number + 1,
+            self.line_offset + 1,
+        });
+    }
     pub inline fn printLineToken(
-        self: SourceLocation,
+        self: TokenSourceLocation,
         highlight_type: HighlightType,
         tokenizer: Tokenizer,
-        token: Token,
-        writer: *std.Io.Writer,
-    ) !void {
-        try self.printHighlightedLine(
-            highlight_type,
-            tokenizer.full_source,
-            tokenizer.slice(token).len,
-            writer,
-        );
-    }
-    pub fn printHighlightedLine(
-        self: SourceLocation,
-        highlight_type: HighlightType,
-        full_source: []const u8,
-        token_length: usize,
         writer: *std.Io.Writer,
     ) !void {
         var skip: usize = 0;
-        while (self.line_start + skip < full_source.len and
-            Tokenizer.isWhitespace(full_source[self.line_start + skip]))
+        while (self.line_start + skip < tokenizer.full_source.len and
+            Tokenizer.isWhitespace(tokenizer.full_source[self.line_start + skip]))
             skip += 1;
 
         const gap = 2;
-        const max_len = 100 - gap;
-        const s = full_source[self.line_start + skip .. self.line_end];
+        const max_len = 85 - gap;
+        const s = tokenizer.full_source[self.line_start + skip .. self.line_end];
         const clamped = s[0..@min(max_len, s.len)];
 
         inline for (0..gap) |_| try writer.writeByte(' ');
-        try writer.writeByte('|');
         try writer.writeAll(clamped);
-        try writer.writeByte('|');
         try writer.writeByte('\n');
 
         const highlight_offset = self.line_offset - skip + gap;
@@ -186,61 +191,74 @@ const SourceLocation = struct {
         if (highlight_type != .none) {
             var splats: [1][]const u8 = .{" "};
             try writer.writeSplatAll(&splats, highlight_offset);
-            // try writer.writeAll(Color.green.escapeCode());
+            try writer.writeAll(Color.green.ec());
             switch (highlight_type) {
                 .pointer => try writer.writeByte('^'),
                 .pointer_underline => {
                     var sp: [1][]const u8 = .{"^"};
-                    try writer.writeSplatAll(&sp, token_length);
+                    try writer.writeSplatAll(&sp, self.token_length);
                 },
                 .squiggly_undeline => {
                     var sp: [1][]const u8 = .{"~"};
-                    try writer.writeSplatAll(&sp, token_length);
+                    try writer.writeSplatAll(&sp, self.token_length);
                 },
                 else => unreachable,
             }
-            // try writer.writeAll(Color.default.escapeCode());
+            try writer.writeAll(Color.default.ec());
             try writer.writeByte('\n');
         }
     }
-};
-pub fn getSourceLocation(tokenizer: Tokenizer, offset: usize) SourceLocation {
-    var loc: SourceLocation = .{};
-    var count: usize = 0;
-    const source = tokenizer.full_source;
-    while (count < offset)
-        if (Tokenizer.startingEndlLength(source[count..])) |endl_length| {
-            count += endl_length;
-            loc.line_number += 1;
-            loc.line_offset = 0;
-            loc.line_start = count;
-        } else {
-            count += 1;
-            loc.line_offset += 1;
-        };
-    var line_end = loc.line_start;
-    while (true) {
-        if (source.len <= line_end) break;
-        if (Tokenizer.startingEndlLength(source[line_end..])) |_| {
-            break;
-        } else line_end += 1;
+    pub fn get(tokenizer: Tokenizer, token: Token) TokenSourceLocation {
+        const entry = tokenizer.getEntry(token);
+        return getRaw(tokenizer.full_source, entry.offset, entry.len);
     }
-    loc.line_end = line_end;
+    pub fn getRaw(source: []const u8, offset: usize, len: usize) TokenSourceLocation {
+        var loc: TokenSourceLocation = .{ .token_length = len };
+        var count: usize = 0;
 
-    return loc;
-}
+        while (count < offset)
+            if (Tokenizer.startingEndlLength(source[count..])) |endl_length| {
+                count += endl_length;
+                loc.line_number += 1;
+                loc.line_offset = 0;
+                loc.line_start = count;
+            } else {
+                count += 1;
+                loc.line_offset += 1;
+            };
+        var line_end = loc.line_start;
+        while (true) {
+            if (source.len <= line_end) break;
+            if (Tokenizer.startingEndlLength(source[line_end..])) |_| {
+                break;
+            } else line_end += 1;
+        }
+        loc.line_end = line_end;
+
+        return loc;
+    }
+};
 pub fn errorOutTokenizer(tokenizer: Tokenizer, writer: *std.Io.Writer) Error {
     const error_info = tokenizer.error_info;
+    const loc: TokenSourceLocation = .getRaw(
+        tokenizer.full_source,
+        tokenizer.error_info.source_offset,
+        if (tokenizer.error_info.kind == .float8) 2 else 1,
+    );
+    try loc.printWithPath(tokenizer, writer);
+    try writer.writeAll(comptime Color.red.ec() ++ " error: " ++ Color.default.ec());
+
     switch (error_info.kind) {
-        .invalid_character => try writer.print(
-            "invalid source character: {c}({d})\n",
+        .unexpected_character => try writer.print(
+            "unexpected source character: {c}({d})\n",
             .{
                 tokenizer.full_source[error_info.source_offset],
                 tokenizer.full_source[error_info.source_offset],
             },
         ),
-        .float8 => try writer.print("floats cant have bit width of 8\n", .{}),
+        .float8 => try writer.print("floats cant have bit width of 8:\n", .{}),
     }
+    try loc.printLineToken(.pointer_underline, tokenizer, writer);
     try writer.flush();
     return Error.SyntaxError;
 }

@@ -149,7 +149,13 @@ fn getNextTokenEntry(self: *Tokenizer) Error!?TokenEntry {
     }
 
     const bi: usize = @intFromBool(bytes[0] == '@');
+
     const valid_identifier = try self.stripValidIdentifier(bytes[bi..]);
+    if (bytes[0] == '@' and valid_identifier.len == 0)
+        return self.errorOut(.{
+            .source_offset = bytes.ptr - self.full_source.ptr,
+            .kind = .unexpected_character,
+        });
     return .{
         .kind = if (bytes[0] == '@') .builtin else .identifier,
         .offset = @truncate(bytes.ptr - self.full_source.ptr),
@@ -209,7 +215,7 @@ fn stripValidIdentifier(self: *Tokenizer, bytes: []const u8) Error![]const u8 {
     if (!letter)
         return self.errorOut(.{
             .source_offset = bytes.ptr - self.full_source.ptr,
-            .kind = .invalid_character,
+            .kind = .unexpected_character,
         });
 
     return bytes[0..end];
@@ -311,7 +317,7 @@ pub fn kind(self: Tokenizer, token: Token) TokenKind {
 pub inline fn tokenCount(self: Tokenizer) Token {
     return @truncate(self.list.items.len);
 }
-inline fn getEntry(self: Tokenizer, token: Token) TokenEntry {
+pub inline fn getEntry(self: Tokenizer, token: Token) TokenEntry {
     return if (token < self.tokenCount())
         self.list.items[token]
     else blk: {

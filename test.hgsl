@@ -1,11 +1,9 @@
-//const vertex_buffer : i32x4 = .{1, 1}
-vertex vert0 = fn void{
+vertex vert = fn void{
 	push vertex_buffer : *f32x3
-	@position = .{vertex_buffer[@vertex_id], 1}
+	@position = .{vertex_buffer[@vertex_id], 1} 
 }
-
-fragment frag0 = fn f32x4 {
-	return f32x4{@frag_coord, 0, 1} @e
+fragment frag = fn f32x4 {
+	return f32x4{@frag_coord, 0, 1} 
 }
 
 
