@@ -484,9 +484,44 @@ fn isTypeExplicitlyCastable(self: *Parser, from: Type, to: Type) bool {
     const from_entry = self.getType(from);
     const to_entry = self.getType(to);
 
-    return switch (from_entry) {
-        else => std.meta.activeTag(from_entry) == std.meta.activeTag(to_entry),
-    } or self.isTypeImplicitlyCastable(from, to);
+    const from_is_number = switch (from_entry) {
+        .bool, .compint, .compfloat, .scalar => true,
+        else => false,
+    };
+    return switch (to_entry) {
+        //TODO: allow pointers to cast to u32x2
+        .bool,
+        .compint,
+        .compfloat,
+        => from_is_number,
+        .scalar => |scalar| from_is_number or //
+            blk: {
+                //check for '*T -> u64' cast
+                if (scalar.layout == .uint and
+                    scalar.width == ._64 and
+                    from_entry == .pointer) break :blk true;
+
+                //check for 'enum{...} -> integer' cast
+                break :blk scalar.layout != .float and
+                    from_entry == .@"enum";
+            },
+        .vector => |to_vec| from_is_number or
+            (from_entry == .vector and from_entry.vector.len == to_vec.len),
+        .matrix => |to_mat| from_is_number or
+            from_entry == .matrix or
+            (to_mat.m == to_mat.n and from_entry == .vector and from_entry.vector.len == to_mat.m),
+
+        .pointer => (from_entry == .scalar and
+            from_entry.scalar.layout == .uint and
+            from_entry.scalar.width == ._64),
+        .@"enum" => switch (from_entry) {
+            .bool, .compint => true,
+            .scalar => |scalar| scalar.layout != .float,
+            else => false,
+        },
+
+        else => false,
+    };
 }
 fn isTypeImplicitlyCastable(self: *Parser, from: Type, to: Type) bool {
     if (from == to) return true;
@@ -524,6 +559,13 @@ fn typeOf(self: *Parser, node: Node) Error!Type {
             };
         },
         .function_decl => |fn_decl| try self.typeOfFunctionDecl(node, fn_decl.function),
+        .constructor => switch (self.getNodeEntry(node + 1).*) {
+            .value => |value| if (value.type == .type)
+                @enumFromInt(value.payload)
+            else
+                return self.errorOut(.unknown),
+            else => return self.errorOut(.unknown),
+        },
 
         else => |e| {
             std.debug.print("idk type of '{s}'\n", .{@tagName(e)});
