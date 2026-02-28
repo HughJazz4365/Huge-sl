@@ -28,6 +28,8 @@ pub const ParserErrorInfo = struct {
 
         return_type_mismatch,
         cant_implicitly_cast,
+        invalid_cast: InvalidCast,
+        //'FROM' cannot be casted into 'TO': line
         not_a_type: Parser.Type, //AType, BType, Token
         //expected {a}, found {b}:
         //<line>
@@ -96,6 +98,10 @@ pub const ParserErrorInfo = struct {
         unknown,
     };
 };
+const InvalidCast = struct {
+    from: Parser.Type,
+    to: Parser.Type,
+};
 const WrongConstructorElementType = struct {
     constructor_type: Parser.Type,
     element_type: Parser.Type,
@@ -143,6 +149,13 @@ pub fn errorOutParser(parser: *Parser, writer: *std.Io.Writer) Error {
             try writer.print("non matching constructor element count, expected {d} - got {d}:\n", .{
                 ec.expected_count,
                 ec.got_count,
+            });
+            try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
+        },
+        .qualifier_incompatible_with_type => |q| {
+            try writer.print("{s} variables cant have type '{f}'\n", .{
+                @tagName(q.qualifier),
+                Parser.FatType{ .self = parser, .type = q.type },
             });
             try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
         },

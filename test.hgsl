@@ -3,7 +3,7 @@ vertex vert = fn void{
 	@position = .{vertex_buffer[@vertex_id], 1} 
 }
 fragment frag = fn f32x4 {
-	return .{1, 1, 1, 1}
+	return .{1}
 }
 
 

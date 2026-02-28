@@ -1,4 +1,3 @@
-//TODO: proper error messages(store Token in the Node?)
 //bin op assignments( a *= b, c -= 1 )
 //TODO: valid_...(valid_var_decl) node entry variations for semantically analyzed
 //statements (fold on them would return immediately)
@@ -6,7 +5,6 @@
 //TODO: comptime function full/partial dispatch
 //TODO: @import("i.hgsl")
 
-//after we can fold everything we try generating ir
 const std = @import("std");
 const util = @import("util.zig");
 const zigbuiltin = @import("builtin");
@@ -203,19 +201,19 @@ fn foldNode(self: *Parser, node: Node) Error!void {
                 }),
             };
 
-            switch (constructor.elem_count) {
+            const first_elem_node = type_node + self.nodeConsumption(type_node);
+            if (type_opt) |@"type"| switch (constructor.elem_count) {
                 0 => {},
-                1 => @panic("fold cast"),
-                else => if (type_opt) |@"type"| try self.foldConstructor(
-                    @"type",
-                    constructor,
-                    type_node + self.nodeConsumption(type_node),
-                ),
-            }
+                1 => try self.foldCast(@"type", first_elem_node, constructor.token),
+                else => try self.foldConstructor(@"type", constructor, first_elem_node),
+            };
         },
         .u_op => |op| try self.foldUOp(op, node),
-        .identifier => |token| if (try self.getVarRef(self.current_scope, node, token)) |vr| {
-            entry.* = .{ .var_ref = vr };
+        .identifier => |token| if (try self.getVariableReference(self.current_scope, node, token)) |vr| {
+            entry.* = if (self.getVariableReferenceValue(vr)) |value|
+                .{ .value = value }
+            else
+                .{ .var_ref = vr };
         } else return self.errorOut(.{ .token = token, .payload = .undeclared_identifier }),
         else => |e| {
             _ = e;
@@ -223,8 +221,16 @@ fn foldNode(self: *Parser, node: Node) Error!void {
         },
     }
 }
+fn foldCast(self: *Parser, @"type": Type, value: Node, token: Token) Error!void {
+    try self.foldNode(value);
+    const value_type = try self.typeOf(value);
+
+    if (!self.isTypeExplicitlyCastable(value_type, @"type"))
+        return self.errorOut(.{ .token = token, .payload = .{
+            .invalid_cast = .{ .from = value_type, .to = @"type" },
+        } });
+}
 fn foldConstructor(self: *Parser, @"type": Type, constructor: ConstructorNode, first: Node) Error!void {
-    //elem_count > 1
     const constructor_structure = try self.constructorStructure(@"type");
     if (!constructor_structure.canHaveConstructor())
         return self.errorOut(.{
@@ -302,7 +308,7 @@ fn getFunctionDeclReturnType(self: *Parser, function: Function, parent_scope: Sc
     self.current_scope = parent_scope;
 
     const entry = self.getFunction(function).*;
-    const node = entry.node + 1 + self.nodeSequenceConsumption(entry.node + 1, entry.arg_count);
+    const node = entry.node + 1 + self.nodeSequenceConsumption(self.current_scope, entry.node + 1, entry.arg_count);
     try self.foldNode(node);
 
     const rtype_node = self.getNodeEntry(node).*;
@@ -315,7 +321,7 @@ fn getFunctionDeclReturnType(self: *Parser, function: Function, parent_scope: Sc
 }
 fn foldVarDecl(self: *Parser, node: Node, var_decl: VariableDeclaration) Error!void {
     //check for redelaration
-    if (try self.getVarRef(self.current_scope, node, var_decl.name)) |vr|
+    if (try self.getVariableReference(self.current_scope, node, var_decl.name)) |vr|
         return self.errorOut(.{
             .token = var_decl.qualifier_token,
             .payload = .{ .redeclaration = .{
@@ -404,7 +410,21 @@ fn isQualifierCompatibleWithType(self: *Parser, qualifier: Qualifier, @"type": T
         else => true,
     };
 }
-fn getVarRef(self: *Parser, scope: Scope, node: Node, token: Token) Error!?VariableReference {
+
+fn getVariableReferenceValue(self: *Parser, var_ref: VariableReference) ?Value {
+    const value_node = switch (self.getNodeEntryScope(var_ref.scope, var_ref.node).*) {
+        .var_decl => |vd| if (vd.qualifier == .@"const")
+            var_ref.node + 1 + self.nodeSequenceConsumption(var_ref.scope, var_ref.node + 1, 2)
+        else
+            return null,
+        else => var_ref.node,
+    };
+    return switch (self.getNodeEntryScope(var_ref.scope, value_node).*) {
+        .value => |value| value,
+        else => null,
+    };
+}
+fn getVariableReference(self: *Parser, scope: Scope, node: Node, token: Token) Error!?VariableReference {
     const last_scope = self.current_scope;
     defer self.current_scope = last_scope;
     self.current_scope = scope;
@@ -417,8 +437,10 @@ fn getVarRef(self: *Parser, scope: Scope, node: Node, token: Token) Error!?Varia
 
     return if (current) |c| .{ .node = c, .scope = scope } else //
     if (self.isScopeFile(scope)) null else //
-    try self.getVarRef(scope_entry.parent, scope_entry.getDeclNode(self), token);
+    try self.getVariableReference(scope_entry.parent, scope_entry.getDeclNode(self), token);
 }
+//both those functions should return VariableReference
+//get block scope var ref should loop statements while < node: and check
 fn getBlockScopeVarRef(self: *Parser, node: Node, token: Token) Error!?Node {
     return self.getDeclScopeVarRef(node, token);
 }
@@ -637,28 +659,31 @@ fn typeOfUOp(self: *Parser, op: UnaryOperator, operand: Type) Error!Type {
         else => operand,
     };
 }
-fn nodeConsumption(self: *Parser, node: Node) u32 {
+fn nodeConsumptionScope(self: *Parser, scope: Scope, node: u32) u32 {
     // array_type_decl,
     // function_decl: Function, //[fn_decl][args...][rtype][body...]
     // branch,
-    var base: u32 = switch (self.getNodeEntry(node).*) {
-        .var_decl => 1 + self.nodeSequenceConsumption(node + 1, 3),
-        .bin_op, .indexing, .assignment => 1 + self.nodeSequenceConsumption(node + 1, 2),
+    var base: u32 = switch (self.getNodeEntryScope(scope, node).*) {
+        .var_decl => 1 + self.nodeSequenceConsumption(scope, node + 1, 3),
+        .bin_op, .indexing, .assignment => 1 + self.nodeSequenceConsumption(scope, node + 1, 2),
         .u_op, .@"return", .function_param => 1 + self.nodeConsumption(node + 1),
         .null => 1,
         .function_decl => 1 + self.nodeConsumption(node + 1), //args
-        .constructor => |constructor| 1 + self.nodeSequenceConsumption(node + 1, constructor.elem_count + 1),
-        .function_type_decl => |fn_type_decl| 1 + self.nodeSequenceConsumption(node + 1, fn_type_decl.arg_count + 1),
+        .constructor => |constructor| 1 + self.nodeSequenceConsumption(scope, node + 1, constructor.elem_count + 1),
+        .function_type_decl => |fn_type_decl| 1 + self.nodeSequenceConsumption(scope, node + 1, fn_type_decl.arg_count + 1),
         else => 1,
     };
-    const body = self.getBodySlice();
+    const body = self.getScope(scope).body.items;
     while (node + base < body.len and body[node + base] == .pad) base += 1;
     return base;
 }
-fn nodeSequenceConsumption(self: *Parser, node: Node, count: usize) u32 {
+fn nodeConsumption(self: *Parser, node: Node) u32 {
+    return self.nodeConsumptionScope(self.current_scope, node);
+}
+fn nodeSequenceConsumption(self: *Parser, scope: Scope, node: Node, count: usize) u32 {
     var len: u32 = 0;
     for (0..count) |_|
-        len += self.nodeConsumption(node + len);
+        len += self.nodeConsumptionScope(scope, node + len);
     return len;
 }
 
@@ -1369,6 +1394,7 @@ pub const ParameterQualifier = enum {
 const VariableReference = struct {
     scope: Scope,
     node: Node,
+    value: Node = 0,
 };
 const VariableDeclaration = struct {
     qualifier: Qualifier,
@@ -1554,7 +1580,7 @@ pub const FatToken = struct {
         }
     }
 };
-const FatType = struct {
+pub const FatType = struct {
     self: *Parser,
     type: Type,
     pub fn format(entry: FatType, writer: *std.Io.Writer) !void {
