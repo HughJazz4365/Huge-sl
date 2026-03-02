@@ -483,7 +483,7 @@ pub fn bindingPower(op: BinaryOperator) u8 {
 
 pub fn errorOut(self: *Tokenizer, error_info: ErrorInfo) Error {
     self.error_info = error_info;
-    return Error.SyntaxError;
+    return Error.CompilationError;
 }
 const List = std.ArrayList;
 const ErrorInfo = error_message.TokenizerErrorInfo;

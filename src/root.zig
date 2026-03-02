@@ -3,6 +3,7 @@ const util = @import("util.zig");
 const error_message = @import("errorMessage.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
+const IR = @import("IR.zig");
 
 pub const CI = i128;
 pub const CF = f64;
@@ -17,7 +18,6 @@ pub const Error = error{
 
     //==============
 
-    SyntaxError,
     CompilationError,
 };
 pub fn test_() !void {
@@ -35,6 +35,7 @@ pub fn test_() !void {
     var threaded_io = std.Io.Threaded.init_single_threaded;
     const io = threaded_io.io();
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
     const allocator = arena.allocator();
 
     var buf: [128]u8 = undefined;
@@ -50,25 +51,34 @@ pub fn test_() !void {
     const test_count = 1;
     for (0..test_count) |_| {
         timestamp = clock.now(io);
-        var tok: Tokenizer = .{ .full_source = source, .path = path };
-        tok.tokenize(allocator) catch |err| return if (err == Error.SyntaxError)
-            error_message.errorOutTokenizer(tok, &file_writer.interface)
-        else
-            err;
 
-        // for (0..tok.list.len) |i| {
-        //     std.debug.print("TOKEN: {f}\n", .{Parser.FatToken{ .token = @truncate(i), .self = tok }});
-        // }
+        //============================
+        var tok: Tokenizer = .{ .full_source = source, .path = path };
+        tok.tokenize(allocator) catch |err| {
+            if (err == Error.CompilationError)
+                try error_message.printErrorMessageTokenizer(tok, &file_writer.interface);
+            return err;
+        };
+
         var parser = try Parser.new(allocator);
-        parser.parse(tok) catch |err| return if (err == Error.CompilationError)
-            error_message.errorOutParser(&parser, &file_writer.interface)
-        else
-            err;
+        parser.parse(tok) catch |err| {
+            if (err == Error.CompilationError)
+                try error_message.printErrorMessageParser(&parser, &file_writer.interface);
+            return err;
+        };
+        var ir = IR.new(&parser, allocator);
+        defer ir.deinit();
+
+        try ir.lower();
+
+        // parser.deinit();
+        //============================
 
         const new_timestamp = clock.now(io);
         measure += @intCast(timestamp.durationTo(new_timestamp).nanoseconds);
         timestamp = new_timestamp;
         parser.dump();
+        parser.deinit();
     }
     std.debug.print(
         "time: {d} mcs(tc: {d})\n",

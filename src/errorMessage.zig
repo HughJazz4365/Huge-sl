@@ -120,7 +120,7 @@ const QualifierIncompatibleWithType = struct {
     type: Parser.Type,
 };
 
-pub fn errorOutParser(parser: *Parser, writer: *std.Io.Writer) Error {
+pub fn printErrorMessageParser(parser: *Parser, writer: *std.Io.Writer) Error!void {
     const error_info = parser.error_info;
     const loc: TokenSourceLocation = .get(parser.tokenizer, error_info.token);
     try loc.printWithPath(parser.tokenizer, writer);
@@ -163,7 +163,6 @@ pub fn errorOutParser(parser: *Parser, writer: *std.Io.Writer) Error {
         else => |payload| try writer.print("error: {s}\n", .{@tagName(payload)}),
     }
     try writer.flush();
-    return Error.CompilationError;
 }
 const Color = enum {
     green,
@@ -272,7 +271,7 @@ const TokenSourceLocation = struct {
         return loc;
     }
 };
-pub fn errorOutTokenizer(tokenizer: Tokenizer, writer: *std.Io.Writer) Error {
+pub fn printErrorMessageTokenizer(tokenizer: Tokenizer, writer: *std.Io.Writer) Error!void {
     const error_info = tokenizer.error_info;
     const loc: TokenSourceLocation = .getRaw(
         tokenizer.full_source,
@@ -294,7 +293,6 @@ pub fn errorOutTokenizer(tokenizer: Tokenizer, writer: *std.Io.Writer) Error {
     }
     try loc.printLineToken(.pointer_underline, tokenizer, writer);
     try writer.flush();
-    return Error.SyntaxError;
 }
 const Error = root.Error;
 const Token = Tokenizer.Token;

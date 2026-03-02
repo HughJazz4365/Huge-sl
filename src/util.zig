@@ -61,6 +61,13 @@ pub fn pow(T: type, left: T, right: T) T {
     else
         std.math.pow(T, left, right);
 }
+pub fn allEnumValues(Enum: type) [@typeInfo(Enum).@"enum".fields.len]Enum {
+    var arr: [@typeInfo(Enum).@"enum".fields.len]Enum = undefined;
+    for (@typeInfo(Enum).@"enum".fields, 0..) |ef, i| {
+        arr[i] = @enumFromInt(ef.value);
+    }
+    return arr;
+}
 pub fn EnumSlice(
     Enum: type,
     I: type,
@@ -132,10 +139,10 @@ pub fn FlagStructFromUnion(Union: type, comptime dv: bool) type {
         &sturct_field_attributes,
     );
 }
-pub fn numericCast(T: type, from: anytype) T {
+pub fn numberCast(T: type, from: anytype) T {
     const F = @TypeOf(from);
-    if (T == bool) return numericCast(u1, from) > 0;
-    if (F == bool) return numericCast(T, @intFromBool(from));
+    if (T == bool) return numberCast(u1, from) > 0;
+    if (F == bool) return numberCast(T, @intFromBool(from));
 
     const from_tinfo = @typeInfo(F);
     const to_tinfo = @typeInfo(T);

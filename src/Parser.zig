@@ -13,13 +13,21 @@ const Tokenizer = @import("Tokenizer.zig");
 const error_message = @import("errorMessage.zig");
 const hgsl = @import("root.zig");
 
+const u8x4 = @Vector(4, u8);
+const u16x4 = @Vector(4, u16);
+const u32x4 = @Vector(4, u32);
+const u64x4 = @Vector(4, u64);
 tokenizer: Tokenizer = undefined,
 allocator: Allocator,
 
 types: List(TypeEntry) = .empty,
 
-scalar_values: List(u128) = .empty,
-composite_values: List(u8) = .empty,
+number_values: List(u128) = .empty,
+x8_vectors: List(u8x4) = .empty,
+x16_vectors: List(u16x4) = .empty,
+x32_vectors: List(u32x4) = .empty,
+x64_vectors: List(u64x4) = .empty,
+matrix_values: List(u8) = .empty,
 
 functions: List(FunctionEntry) = .empty,
 structs: List(StructEntry) = .empty,
@@ -32,8 +40,8 @@ token: Token = 0,
 error_info: ErrorInfo = .unknown,
 
 pub fn dump(self: *Parser) void {
-    std.debug.print("types:\n", .{});
-    for (self.types.items) |t| std.debug.print("--- {any}\n", .{t});
+    // std.debug.print("types:\n", .{});
+    // for (self.types.items) |t| std.debug.print("--- {any}\n", .{t});
     // std.debug.print("structs:\n", .{});
     // for (self.structs.items) |t| std.debug.print("--- {any}\n", .{t});
 
@@ -46,7 +54,7 @@ pub fn dump(self: *Parser) void {
         for (1..self.scopes.items.len) |i| {
             const s: Scope = @enumFromInt(i);
             self.current_scope = s;
-            std.debug.print("SCOPE[{d}], nodes: {d}\n", .{ i, self.getScope(s).body.items.len });
+            std.debug.print("SCOPE[{d}], nodes: {d}\n", .{ i, self.getScopeEntry(s).body.items.len });
             self.dumpCurrentScope(true, false);
         };
 }
@@ -69,25 +77,36 @@ fn dumpCurrentScope(self: *Parser, nodes: bool, formatted: bool) void {
 pub fn new(allocator: Allocator) Error!Parser {
     const types_initial_capacity = 16;
     const scalar_values_initial_capacity = 16;
-    const composite_values_initial_capacity = 8 * 4 * 4;
     var self: Parser = .{
         .allocator = allocator,
     };
 
     self.types = try .initCapacity(allocator, types_initial_capacity);
-    self.scalar_values = try .initCapacity(allocator, scalar_values_initial_capacity);
-    self.composite_values = try .initCapacity(allocator, composite_values_initial_capacity);
+    self.number_values = try .initCapacity(allocator, scalar_values_initial_capacity);
 
     self.types.appendAssumeCapacity(.type);
 
     return self;
+}
+pub fn deinit(self: *Parser) void {
+    self.types.deinit(self.allocator);
+    self.functions.deinit(self.allocator);
+    self.structs.deinit(self.allocator);
+    self.scopes.deinit(self.allocator);
+
+    self.number_values.deinit(self.allocator);
+    self.x8_vectors.deinit(self.allocator);
+    self.x16_vectors.deinit(self.allocator);
+    self.x32_vectors.deinit(self.allocator);
+    self.x64_vectors.deinit(self.allocator);
+    self.matrix_values.deinit(self.allocator);
 }
 
 pub fn parse(self: *Parser, tokenizer: Tokenizer) Error!void {
     self.tokenizer = tokenizer;
 
     const s = try self.parseFile(tokenizer);
-    self.current_scope = self.getStruct(s).scope;
+    self.current_scope = self.getStructEntry(s).scope;
     try self.foldScope(self.current_scope);
 }
 
@@ -96,7 +115,7 @@ fn foldScope(self: *Parser, scope: Scope) Error!void {
     defer self.current_scope = last_scope;
     self.current_scope = scope;
 
-    if (self.getScope(self.current_scope).container.isDecl())
+    if (self.getScopeEntry(self.current_scope).container.isDecl())
         try self.foldDeclScope()
     else
         try self.foldBlockScope();
@@ -106,7 +125,7 @@ fn foldBlockScope(self: *Parser) Error!void {
     const body = self.getBodySlice();
 
     //go through statements in reverse order
-    var statements: List(Node) = .empty; //TODO: have one global stack for all nested blocks
+    var statements: List(Node) = .empty;
     defer statements.deinit(self.allocator);
     var i: Node = 0;
     while (i < body.len) {
@@ -144,6 +163,17 @@ fn isStatementSignificantBlockScope(self: *Parser, node: Node) bool {
         else => false,
     };
 }
+fn getValue(self: *Parser, node: Node) Error!?Value {
+    return switch (self.getNodeEntry(node).*) {
+        .value => |value| value,
+        .function_decl => |fn_decl| .{
+            .type = try self.typeOfFunctionDecl(node, fn_decl.function),
+            .payload = @intFromEnum(fn_decl.function),
+            .token = fn_decl.token,
+        },
+        else => null,
+    };
+}
 
 fn foldNode(self: *Parser, node: Node) Error!void {
     const entry = self.getNodeEntry(node);
@@ -157,7 +187,7 @@ fn foldNode(self: *Parser, node: Node) Error!void {
             const rt = try self.currentScopeReturnTypeAndDeclLocation(node);
 
             if (self.getNodeEntry(node + 1).* == .null) {
-                if (self.getType(rt[0]) != .void)
+                if (self.getTypeEntry(rt[0]) != .void)
                     return self.errorOut(.{
                         .token = token,
                         .payload = .{ .missing_return_value = rt[1] },
@@ -204,13 +234,13 @@ fn foldNode(self: *Parser, node: Node) Error!void {
             const first_elem_node = type_node + self.nodeConsumption(type_node);
             if (type_opt) |@"type"| switch (constructor.elem_count) {
                 0 => {},
-                1 => try self.foldCast(@"type", first_elem_node, constructor.token),
+                1 => try self.foldCast(@"type", first_elem_node, constructor.token, node),
                 else => try self.foldConstructor(@"type", constructor, first_elem_node),
             };
         },
         .u_op => |op| try self.foldUOp(op, node),
         .identifier => |token| if (try self.getVariableReference(self.current_scope, node, token)) |vr| {
-            entry.* = if (self.getVariableReferenceValue(vr)) |value|
+            entry.* = if (try self.getVariableReferenceValue(vr)) |value|
                 .{ .value = value }
             else
                 .{ .var_ref = vr };
@@ -221,15 +251,86 @@ fn foldNode(self: *Parser, node: Node) Error!void {
         },
     }
 }
-fn foldCast(self: *Parser, @"type": Type, value: Node, token: Token) Error!void {
-    try self.foldNode(value);
-    const value_type = try self.typeOf(value);
+fn foldCast(self: *Parser, @"type": Type, value_node: Node, token: Token, node: Node) Error!void {
+    try self.foldNode(value_node);
+    const value_type = try self.typeOf(value_node);
 
     if (!self.isTypeExplicitlyCastable(value_type, @"type"))
         return self.errorOut(.{ .token = token, .payload = .{
             .invalid_cast = .{ .from = value_type, .to = @"type" },
         } });
+
+    //if value is comptime known cast it to the desired type
+    if (try self.getValue(value_node)) |value| {
+        self.replaceNodeWithValue(
+            node,
+            self.nodeConsumption(node),
+            try self.castValue(@"type", value),
+        );
+    }
 }
+fn castValue(self: *Parser, @"type": Type, value: Value) Error!Value {
+    const to_entry = self.getTypeEntry(@"type");
+    const from_entry = self.getTypeEntry(value.type);
+    return if (value.type == @"type") value else .{
+        .type = @"type",
+        .token = value.token,
+        .payload = switch (to_entry) {
+            //TODO: enum, ptr values to scalar
+            .bool, .compint, .compfloat, .scalar => //
+            try self.addScalarValue(self.numberValueCast(
+                value.payload,
+                from_entry,
+                to_entry,
+            )),
+            .vector => |vector| switch (from_entry) {
+                .vector => unreachable,
+                else => try self.addVectorValueSplat(
+                    vector,
+                    (try self.castValue(
+                        try self.addType(.{ .scalar = vector.scalar }),
+                        value,
+                    )).payload,
+                ),
+            },
+            //if from - vector => element wise
+            //else splat the value
+            else => unreachable,
+        },
+    };
+}
+fn numberValueCast(self: *Parser, id: u32, from_entry: TypeEntry, to_entry: TypeEntry) u128 {
+    @setEvalBranchQuota(10_000);
+    const bits = self.getScalarValue(id);
+    inline for (all_number_type_entries) |fe| {
+        if (activeTag(from_entry) == activeTag(fe) and (fe != .scalar or from_entry.scalar.eql(fe.scalar))) {
+            inline for (all_number_type_entries) |te| {
+                if (activeTag(to_entry) == activeTag(te) and (te != .scalar or to_entry.scalar.eql(te.scalar))) {
+                    return util.fit(
+                        u128,
+                        util.numberCast(
+                            te.ToZig(),
+                            util.extract(fe.ToZig(), bits),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    unreachable;
+}
+const all_scalar_type_entries: []const TypeEntry = blk: {
+    var slice: []const TypeEntry = &.{ .bool, .compint, .compfloat };
+    for (&util.allEnumValues(Scalar.Layout)) |sl|
+        for (&util.allEnumValues(Scalar.Width)) |sw| {
+            if (!(sl == .float and sw == ._8))
+                slice = slice ++ &[_]TypeEntry{.{ .scalar = .{ .layout = sl, .width = sw } }};
+        };
+    break :blk slice;
+};
+const all_number_type_entries: []const TypeEntry = //
+    &[_]TypeEntry{ .bool, .compint, .compfloat } ++ all_scalar_type_entries;
+
 fn foldConstructor(self: *Parser, @"type": Type, constructor: ConstructorNode, first: Node) Error!void {
     const constructor_structure = try self.constructorStructure(@"type");
     if (!constructor_structure.canHaveConstructor())
@@ -248,6 +349,9 @@ fn foldConstructor(self: *Parser, @"type": Type, constructor: ConstructorNode, f
         const elem_type = try self.typeOf(elem);
         if (self.isTypeExplicitlyCastable(elem_type, constructor_structure.element)) {
             occupied += 1;
+            const elem_entry = self.getNodeEntry(elem);
+            if (elem_entry.* == .value)
+                elem_entry.* = .{ .value = try self.castValue(constructor_structure.element, elem_entry.value) };
         } else {
             const elem_constructor_structure = try self.constructorStructure(elem_type);
             //check if elem_cs.element and cs.element have the same type depth??
@@ -285,7 +389,7 @@ fn isValidAssignmentTarget(self: *Parser, node: Node) bool {
 fn currentScopeReturnTypeAndDeclLocation(self: *Parser, node: Node) Error!@Tuple(&.{ Type, Token }) {
     var scope = self.current_scope;
     while (true) {
-        const entry = self.getScope(scope).*;
+        const entry = self.getScopeEntry(scope).*;
         if (entry.container.isDecl()) return self.errorOut(.{
             .token = self.getNodeEntry(node).token(),
             .payload = .return_outside_function,
@@ -385,7 +489,7 @@ fn foldVarDecl(self: *Parser, node: Node, var_decl: VariableDeclaration) Error!v
         });
 }
 fn foldUOp(self: *Parser, u_op: UOpNode, node: Node) Error!void {
-    std.debug.print("FOLD UOP: {}\n", .{u_op.op});
+    // std.debug.print("FOLD UOP: {}\n", .{u_op.op});
     const target = node + 1;
     try self.foldNode(target);
     const target_consumption = self.nodeConsumption(target);
@@ -393,17 +497,16 @@ fn foldUOp(self: *Parser, u_op: UOpNode, node: Node) Error!void {
         .pointer => {
             const as_type = try self.asType(target, false);
             const pointer_type = try self.addType(.{ .pointer = as_type });
-            @memset(self.getBodySlice()[target .. target + target_consumption], .pad);
-            self.getNodeEntry(node).* = .{ .value = .{
+            self.replaceNodeWithValue(node, target_consumption + 1, .{
                 .type = .type,
                 .payload = @intFromEnum(pointer_type),
-            } };
+            });
         },
         else => @panic("FOLD U OP"),
     }
 }
 fn isQualifierCompatibleWithType(self: *Parser, qualifier: Qualifier, @"type": Type) bool {
-    const entry = self.getType(@"type");
+    const entry = self.getTypeEntry(@"type");
     return switch (qualifier) {
         .env, .push, .shared => !entry.isComptime(),
         .vertex, .fragment, .compute => entry == .function,
@@ -411,7 +514,7 @@ fn isQualifierCompatibleWithType(self: *Parser, qualifier: Qualifier, @"type": T
     };
 }
 
-fn getVariableReferenceValue(self: *Parser, var_ref: VariableReference) ?Value {
+fn getVariableReferenceValue(self: *Parser, var_ref: VariableReference) Error!?Value {
     const value_node = switch (self.getNodeEntryScope(var_ref.scope, var_ref.node).*) {
         .var_decl => |vd| if (vd.qualifier == .@"const")
             var_ref.node + 1 + self.nodeSequenceConsumption(var_ref.scope, var_ref.node + 1, 2)
@@ -419,17 +522,14 @@ fn getVariableReferenceValue(self: *Parser, var_ref: VariableReference) ?Value {
             return null,
         else => var_ref.node,
     };
-    return switch (self.getNodeEntryScope(var_ref.scope, value_node).*) {
-        .value => |value| value,
-        else => null,
-    };
+    return try self.getValue(value_node);
 }
 fn getVariableReference(self: *Parser, scope: Scope, node: Node, token: Token) Error!?VariableReference {
     const last_scope = self.current_scope;
     defer self.current_scope = last_scope;
     self.current_scope = scope;
 
-    const scope_entry = self.getScope(scope);
+    const scope_entry = self.getScopeEntry(scope);
     const current = if (scope_entry.container == .@"struct")
         try self.getDeclScopeVarRef(node, token)
     else
@@ -503,8 +603,8 @@ fn implicitCast(self: *Parser, node: Node, @"type": Type) Error!void {
 }
 fn isTypeExplicitlyCastable(self: *Parser, from: Type, to: Type) bool {
     if (from == to) return true;
-    const from_entry = self.getType(from);
-    const to_entry = self.getType(to);
+    const from_entry = self.getTypeEntry(from);
+    const to_entry = self.getTypeEntry(to);
 
     const from_is_number = switch (from_entry) {
         .bool, .compint, .compfloat, .scalar => true,
@@ -527,8 +627,8 @@ fn isTypeExplicitlyCastable(self: *Parser, from: Type, to: Type) bool {
                 break :blk scalar.layout != .float and
                     from_entry == .@"enum";
             },
-        .vector => |to_vec| from_is_number or
-            (from_entry == .vector and from_entry.vector.len == to_vec.len),
+        .vector => from_is_number or
+            from_entry == .vector,
         .matrix => |to_mat| from_is_number or
             from_entry == .matrix or
             (to_mat.m == to_mat.n and from_entry == .vector and from_entry.vector.len == to_mat.m),
@@ -547,8 +647,8 @@ fn isTypeExplicitlyCastable(self: *Parser, from: Type, to: Type) bool {
 }
 fn isTypeImplicitlyCastable(self: *Parser, from: Type, to: Type) bool {
     if (from == to) return true;
-    const from_entry = self.getType(from);
-    const to_entry = self.getType(to);
+    const from_entry = self.getTypeEntry(from);
+    const to_entry = self.getTypeEntry(to);
 
     return switch (to_entry) {
         .scalar => from_entry == .scalar or
@@ -574,7 +674,7 @@ fn typeOf(self: *Parser, node: Node) Error!Type {
         .indexing => blk: {
             //fold indexing
             const target_type = try self.typeOf(node + 1);
-            const entry = self.getType(target_type);
+            const entry = self.getTypeEntry(target_type);
             break :blk switch (entry) {
                 .pointer => |pointed| pointed,
                 else => target_type,
@@ -604,7 +704,7 @@ fn typeOfFunctionDecl(self: *Parser, node: Node, function: Function) Error!Type 
 
     const type_header = try self.appendTypeRaw(.{ .function = entry.arg_count });
     const rtype = try self.asType(node + 1 + arg_offset, true);
-    const only_references = self.getType(rtype) == .ref;
+    const only_references = self.getTypeEntry(rtype) == .ref;
     if (!only_references) return type_header;
 
     if (self.findFunctionType(type_header)) |ft| {
@@ -613,7 +713,7 @@ fn typeOfFunctionDecl(self: *Parser, node: Node, function: Function) Error!Type 
     } else return type_header;
 }
 fn findFunctionType(self: *Parser, ft: Type) ?Type {
-    const arg_count = self.getType(ft).function;
+    const arg_count = self.getTypeEntry(ft).function;
     return for (self.types.items[0..@intFromEnum(ft)], 0..) |entry, i| {
         var target_arg_offset: u32 = 0;
         if (entry == .function and entry.function == arg_count and for (0..arg_count + 1) |j| {
@@ -673,7 +773,7 @@ fn nodeConsumptionScope(self: *Parser, scope: Scope, node: u32) u32 {
         .function_type_decl => |fn_type_decl| 1 + self.nodeSequenceConsumption(scope, node + 1, fn_type_decl.arg_count + 1),
         else => 1,
     };
-    const body = self.getScope(scope).body.items;
+    const body = self.getScopeEntry(scope).body.items;
     while (node + base < body.len and body[node + base] == .pad) base += 1;
     return base;
 }
@@ -696,7 +796,7 @@ fn parseFile(self: *Parser, tokenizer: Tokenizer) Error!Struct {
     const struct_type = try self.addType(.{ .@"struct" = struct_handle });
     _ = .{struct_type};
 
-    self.getStruct(struct_handle).scope = try self.parseScope(.{
+    self.getStructEntry(struct_handle).scope = try self.parseScope(.{
         .container = .{ .@"struct" = struct_handle },
         .parent = self.current_scope,
     });
@@ -716,7 +816,7 @@ fn parseScope(self: *Parser, entry: ScopeEntry) Error!Scope {
         const peek = self.tokenizer.kind(self.token);
         if (!self.isScopeFile(self.current_scope)) {
             if (peek == .eof) return self.errorOut(.{
-                .token = self.getNodeEntryScope(last_scope, self.getScope(self.current_scope).getDeclNode(self)).token(),
+                .token = self.getNodeEntryScope(last_scope, self.getScopeEntry(self.current_scope).getDeclNode(self)).token(),
                 .payload = .unclosed_scope,
             });
             if (peek == .@"}") {
@@ -734,7 +834,7 @@ fn parseScope(self: *Parser, entry: ScopeEntry) Error!Scope {
 }
 
 fn parseStatement(self: *Parser) Error!void {
-    switch (self.getScope(self.current_scope).container) {
+    switch (self.getScopeEntry(self.current_scope).container) {
         .@"struct" => try self.parseStatementStructDecl(),
         .function => try self.parseStatementBlock(),
         // else => @panic("parse statement unknown container"),
@@ -882,11 +982,15 @@ fn parseExpressionRecursive(self: *Parser, delimiter: ExpressionDelimiter, bp: u
     }
     return left_len;
 }
+fn replaceNodeWithValue(self: *Parser, node: Node, consumption: u32, value: Value) void {
+    @memset(self.getBodySlice()[node + 1 .. node + consumption], .pad);
+    self.getNodeEntry(node).* = .{ .value = value };
+}
 fn insertNodeAssumeCapacity(self: *Parser, i: u32, entry: NodeEntry) void {
-    self.getScope(self.current_scope).body.insertAssumeCapacity(i, entry);
+    self.getScopeEntry(self.current_scope).body.insertAssumeCapacity(i, entry);
 }
 fn insertNthLastNode(self: *Parser, n: u32, entry: NodeEntry) Error!void {
-    const body = &self.getScope(self.current_scope).body;
+    const body = &self.getScopeEntry(self.current_scope).body;
     try body.insert(self.allocator, body.items.len - n, entry);
 }
 fn parseExpression1(self: *Parser) Error!u32 {
@@ -1122,7 +1226,7 @@ fn parseFunctionTypeOrDecl(self: *Parser) Error!u32 {
     return 1 + arg_node_consumption + rtype_len;
 }
 fn convertArgTypesToFunctionParameters(self: *Parser, node: Node, count: u32, fn_decl_token: Token) Error!void {
-    const scope = self.getScope(self.current_scope);
+    const scope = self.getScopeEntry(self.current_scope);
     try scope.body.ensureUnusedCapacity(self.allocator, count);
 
     for (0..count) |i| {
@@ -1168,9 +1272,9 @@ fn parseIntLiteral(str: []const u8) i128 {
 }
 
 fn isScopeFile(self: *Parser, scope: Scope) bool {
-    const entry = self.getScope(scope);
+    const entry = self.getScopeEntry(scope);
     return if (entry.container == .@"struct")
-        self.getStruct(entry.container.@"struct").is_file
+        self.getStructEntry(entry.container.@"struct").is_file
     else
         false;
 }
@@ -1186,9 +1290,9 @@ fn tokenPastEndl(self: *Parser) Token {
 }
 
 fn getScalarValue(self: *Parser, id: u32) u128 {
-    return self.scalar_values.items[id];
+    return self.number_values.items[id];
 }
-fn getType(self: *Parser, @"type": Type) TypeEntry {
+fn getTypeEntry(self: *Parser, @"type": Type) TypeEntry {
     return self.types.items[@intFromEnum(@"type")];
 }
 fn addType(self: *Parser, entry: TypeEntry) Error!Type {
@@ -1197,7 +1301,7 @@ fn addType(self: *Parser, entry: TypeEntry) Error!Type {
 fn addTypeOpt(self: *Parser, entry: TypeEntry, comptime create_ref: bool) Error!Type {
     if (entry != .ref)
         for (0..self.types.items.len) |i| {
-            if (std.meta.eql(entry, self.getType(@enumFromInt(i))))
+            if (std.meta.eql(entry, self.getTypeEntry(@enumFromInt(i))))
                 return if (create_ref)
                     self.appendTypeRaw(.{ .ref = @enumFromInt(i) })
                 else
@@ -1214,19 +1318,59 @@ fn getNodeEntry(self: *Parser, node: Node) *NodeEntry {
     return self.getNodeEntryScope(self.current_scope, node);
 }
 fn getNodeEntryScope(self: *Parser, scope: Scope, node: Node) *NodeEntry {
-    return &self.getScope(scope).body.items[node];
+    return &self.getScopeEntry(scope).body.items[node];
 }
 fn appendNode(self: *Parser, entry: NodeEntry) Error!Node {
-    const scope = self.getScope(self.current_scope);
+    const scope = self.getScopeEntry(self.current_scope);
     const l: Node = @truncate(scope.body.items.len);
     try scope.body.append(self.allocator, entry);
     return l;
 }
 
+fn addVectorValueSplat(self: *Parser, vector: Vector, elem_id: u32) Error!u32 {
+    const bits = self.getScalarValue(elem_id);
+    return switch (vector.scalar.width) {
+        inline else => |width| blk: {
+            const list = self.getVectorList(width.value());
+            const U = @Int(.unsigned, @truncate(width.value()));
+            var vec: @Vector(4, U) = @splat(0);
+            const ptr: [*]U = @ptrCast(&vec);
+            for (0..vector.len.value()) |i| ptr[i] = util.extract(U, bits);
+            try list.append(self.allocator, vec);
+            break :blk @truncate(list.items.len - 1);
+        },
+    };
+}
+
+fn addVectorValue(self: *Parser, V: type, value: V) Error!u32 {
+    const T = @typeInfo(V).vector.child;
+    const len = @typeInfo(V).vector.len;
+    const width = @bitSizeOf(T);
+    const list = self.getVectorList(width);
+    const mask = blk: {
+        var m: @Vector(4, i32) = @splat(-1);
+        for (0..len) |i| m[i] = i;
+        break :blk m;
+    };
+    const padded = @shuffle(T, value, @as(@Vector(2, T), @splat(0)), mask);
+    try list.append(self.allocator, @bitCast(padded));
+    return @truncate(list.items.len - 1);
+}
+
+fn getVectorList(self: *Parser, comptime width: comptime_int) *List(@Vector(4, @Int(.unsigned, width))) {
+    return switch (width) {
+        8 => &self.x8_vectors,
+        16 => &self.x16_vectors,
+        32 => &self.x32_vectors,
+        64 => &self.x64_vectors,
+        else => comptime unreachable,
+    };
+}
+
 fn addScalarValue(self: *Parser, scalar: anytype) Error!u32 {
-    for (self.scalar_values.items, 0..) |s, i| if (s == util.fit(u128, scalar)) return @truncate(i);
-    const l: u32 = @truncate(self.scalar_values.items.len);
-    try self.scalar_values.append(self.allocator, util.fit(u128, scalar));
+    for (self.number_values.items, 0..) |s, i| if (s == util.fit(u128, scalar)) return @truncate(i);
+    const l: u32 = @truncate(self.number_values.items.len);
+    try self.number_values.append(self.allocator, util.fit(u128, scalar));
     return l;
 }
 
@@ -1236,9 +1380,9 @@ fn addScope(self: *Parser, entry: ScopeEntry) Error!Scope {
     return @enumFromInt(l);
 }
 inline fn getBodySlice(self: *Parser) []NodeEntry {
-    return self.getScope(self.current_scope).body.items;
+    return self.getScopeEntry(self.current_scope).body.items;
 }
-inline fn getScope(self: *Parser, handle: Scope) *ScopeEntry {
+inline fn getScopeEntry(self: *Parser, handle: Scope) *ScopeEntry {
     return &self.scopes.items[@intFromEnum(handle)];
 }
 const Scope = enum(u32) { entry_file, _ };
@@ -1255,7 +1399,7 @@ pub const ScopeEntry = struct {
     };
     pub fn getDeclNode(entry: ScopeEntry, self: *Parser) Node {
         return switch (entry.container) {
-            .@"struct" => |s| self.getStruct(s).node,
+            .@"struct" => |s| self.getStructEntry(s).node,
             .function => |f| self.getFunction(f).node,
         };
     }
@@ -1266,7 +1410,7 @@ fn addStruct(self: *Parser, entry: StructEntry) Error!Struct {
     try self.structs.append(self.allocator, entry);
     return @enumFromInt(l);
 }
-fn getStruct(self: *Parser, handle: Struct) *StructEntry {
+fn getStructEntry(self: *Parser, handle: Struct) *StructEntry {
     return &self.structs.items[@intFromEnum(handle)];
 }
 pub const Struct = enum(u32) { entry_file = 0, _ };
@@ -1434,7 +1578,7 @@ const Value = struct {
 };
 
 fn typeLength(self: *Parser, @"type": Type) u32 {
-    return switch (self.getType(@"type")) {
+    return switch (self.getTypeEntry(@"type")) {
         .function => |function| //
         1 + self.typeSequenceLength(@enumFromInt(@intFromEnum(@"type") + 1), function + 1),
         else => 1,
@@ -1453,7 +1597,7 @@ const ConstructorStructure = struct {
     }
 };
 pub fn constructorStructure(self: *Parser, @"type": Type) Error!ConstructorStructure {
-    const entry = self.getType(@"type");
+    const entry = self.getTypeEntry(@"type");
     return switch (entry) {
         .vector => |vector| .{
             .len = vector.len.value(),
@@ -1508,6 +1652,15 @@ pub const TypeEntry = union(enum) {
             else => try writer.print("{s}", .{@tagName(self)}),
         }
     }
+    pub fn ToZig(comptime self: TypeEntry) type {
+        return switch (self) {
+            .scalar => |scalar| scalar.ToZig(),
+            .compint => hgsl.CI,
+            .compfloat => hgsl.CF,
+            .bool => bool,
+            else => @compileError("cannot cast to zig - " ++ @tagName(self)),
+        };
+    }
 };
 
 pub const Matrix = packed struct {
@@ -1530,31 +1683,25 @@ pub const Vector = packed struct {
 pub const Scalar = packed struct {
     width: Width,
     layout: Layout,
-    pub const Width = enum(u2) { _8, _16, _32, _64 };
     pub const Layout = enum(u2) { float, uint, int };
-
-    pub const all: [4 * 3 - 1]Scalar = blk: {
-        const len = 4 * 3 - 1;
-        var result: [len]Scalar = undefined;
-        var count: usize = 0;
-        for (@typeInfo(Width).@"enum".fields) |wef| {
-            for (@typeInfo(Layout).@"enum".fields) |lef| {
-                const s: Scalar = .{
-                    .width = @as(Width, @enumFromInt(wef.value)),
-                    .layout = @as(Layout, @enumFromInt(lef.value)),
-                };
-                if (s.width == ._8 and s.layout == .float) continue;
-                result[count] = s;
-                count += 1;
-            }
+    pub const Width = enum(u2) {
+        _8,
+        _16,
+        _32,
+        _64,
+        pub fn value(width: Width) u32 {
+            return (1 << 3) << @intFromEnum(width);
         }
-        break :blk result;
     };
+
     pub fn ToZig(comptime scalar: Scalar) type {
         return if (scalar.layout == .float)
-            std.meta.Float(@max(16, @intFromEnum(scalar.width)))
+            std.meta.Float(@max(16, scalar.width.value()))
         else
-            @Int(if (scalar.layout == .int) .signed else .unsigned, @intFromEnum(scalar.width));
+            @Int(if (scalar.layout == .int) .signed else .unsigned, scalar.width.value());
+    }
+    pub inline fn eql(a: Scalar, b: Scalar) bool {
+        return a.width == b.width and a.layout == b.layout;
     }
 };
 pub fn errorOut(self: *Parser, error_info: ErrorInfo) Error {
@@ -1584,7 +1731,7 @@ pub const FatType = struct {
     self: *Parser,
     type: Type,
     pub fn format(entry: FatType, writer: *std.Io.Writer) !void {
-        const te = entry.self.getType(entry.type);
+        const te = entry.self.getTypeEntry(entry.type);
         switch (te) {
             .function => |function| {
                 try writer.print("fn(", .{});
@@ -1607,7 +1754,7 @@ const FatValue = struct {
     self: *Parser,
     value: Value,
     pub fn format(entry: FatValue, writer: *std.Io.Writer) !void {
-        const type_entry = entry.self.getType(entry.value.type);
+        const type_entry = entry.self.getTypeEntry(entry.value.type);
         switch (type_entry) {
             .compint => try writer.print("{d}", .{
                 util.extract(i128, entry.self.getScalarValue(entry.value.payload)),
@@ -1617,6 +1764,33 @@ const FatValue = struct {
                 .self = entry.self,
                 .type = @enumFromInt(entry.value.payload),
             }}),
+            .scalar => |scalar| switch (scalar.layout) {
+                inline else => |sl| switch (scalar.width) {
+                    inline else => |sw| {
+                        const T = (Scalar{ .layout = sl, .width = sw }).ToZig();
+                        try writer.print("{s}[{}]", .{
+                            @typeName(T),
+                            util.extract(T, entry.self.getScalarValue(entry.value.payload)),
+                        });
+                    },
+                },
+            },
+            .vector => |vector| switch (vector.len) {
+                inline else => |len| switch (vector.scalar.layout) {
+                    inline else => |sl| switch (vector.scalar.width) {
+                        inline else => |sw| {
+                            const uvec = entry.self.getVectorList(sw.value()).items[entry.value.payload];
+
+                            const T = (Scalar{ .layout = sl, .width = sw }).ToZig();
+                            try writer.print("{s}x{}[", .{ @typeName(T), vector.len.value() });
+                            inline for (0..comptime len.value()) |i| {
+                                try writer.print("{d}", .{util.extract(T, uvec[i])});
+                                try writer.writeAll(if (i + 1 >= len.value()) "]" else ", ");
+                            }
+                        },
+                    },
+                },
+            },
             else => {},
         }
     }
@@ -1748,3 +1922,4 @@ const BinaryOperator = Tokenizer.BinaryOperator;
 const UnaryOperator = Tokenizer.UnaryOperator;
 const Token = Tokenizer.Token;
 const TokenEntry = Tokenizer.TokenEntry;
+const activeTag = std.meta.activeTag;

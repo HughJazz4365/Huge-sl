@@ -9,6 +9,8 @@ pub fn build(b: *std.Build) !void {
     const lib_mod = b.addModule("hgsl", .{
         .target = target,
         .optimize = optimize,
+        // .single_threaded = true,
+        // .strip = true,
         .root_source_file = b.path("src/root.zig"),
     });
 
