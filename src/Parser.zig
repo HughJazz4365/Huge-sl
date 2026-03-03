@@ -1285,7 +1285,7 @@ fn tokenPastEndl(self: *Parser) Token {
 fn getScalarValue(self: *Parser, id: u32) u128 {
     return self.number_values.items[id];
 }
-fn getTypeEntry(self: *Parser, @"type": Type) TypeEntry {
+pub fn getTypeEntry(self: *Parser, @"type": Type) TypeEntry {
     return self.types.items[@intFromEnum(@"type")];
 }
 fn addType(self: *Parser, entry: TypeEntry) Error!Type {
@@ -1533,7 +1533,7 @@ const VariableReference = struct {
     node: Node,
     value: Node = 0,
 };
-const VariableDeclaration = struct {
+pub const VariableDeclaration = struct {
     qualifier: Qualifier,
     qualifier_token: Token,
 

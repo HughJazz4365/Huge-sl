@@ -21,6 +21,21 @@ constants: List(ConstantEntry) = .empty,
 //extension information?
 
 //create valid_ variations of statement NodeEntries
+pub fn dump(self: *IR) void {
+    // for (self.entry_points.items) |ep|
+    // std.debug.print("EP:name: {s}, kind: {}\n", .{ ep.name, ep.kind });
+
+    std.debug.print("INSTRUCTION POOL: {d}\n", .{self.pool.count});
+    for (0..self.pool.count) |i| {
+        const block_index = i / InstructionPool.block_size;
+        const local_index = i % InstructionPool.block_size;
+        std.debug.print(
+            "{f}\n",
+            .{self.pool.blocks.items[block_index][local_index]},
+        );
+    }
+}
+
 pub fn lower(self: *IR) Error!void {
     const body = self.parser.getScopeEntry(.root_source_file).body.items;
     var node: Parser.Node = 0;
@@ -40,7 +55,7 @@ pub fn lower(self: *IR) Error!void {
             try self.entry_points.append(self.arena.allocator(), .{
                 .parser_id = function,
                 .body = try self.lowerScope(entry_point_scope),
-                .name = self.parser.getFunctionEntry(function).name,
+                .name = try self.dupeFunctionName(function),
                 .kind = switch (node_entry.var_decl.qualifier) {
                     .vertex => .vertex,
                     .fragment => .fragment,
@@ -51,6 +66,7 @@ pub fn lower(self: *IR) Error!void {
         }
     }
 }
+
 pub fn new(parser: *Parser, allocator: std.mem.Allocator) IR {
     return .{
         .parser = parser,
@@ -65,41 +81,77 @@ pub fn lowerScope(self: *IR, scope: Parser.Scope) Error!Instruction.ID {
     const len = self.parser.getScopeEntry(scope).body.items.len;
     if (len == 0) return Instruction.null_id;
     const first_consumption = self.parser.nodeConsumptionScope(scope, 0);
-    const root = try self.lowerStatement(0, scope);
+    const root = try self.lowerStatement(scope, 0);
     var node: Parser.Node = first_consumption;
 
     var inst_id = root;
     while (len > node) {
         const consumption = self.parser.nodeConsumptionScope(scope, node);
         defer node += consumption;
-        const new_inst = try self.lowerStatement(node, scope);
-        if (new_inst) |n| {
-            if (inst_id) |old| self.pool.get(old).next = n;
-            inst_id = n;
+        const new_inst = try self.lowerStatement(scope, node);
+        if (~new_inst != 0) {
+            if (~inst_id != 0) self.pool.get(inst_id).next = new_inst;
+            inst_id = new_inst;
         }
     }
-    return if (inst_id) |scope_inst| scope_inst else Instruction.null_id;
+    return inst_id;
 }
-pub fn lowerStatement(self: *IR, node: Parser.Node, scope: Parser.Scope) Error!?Instruction.ID {
+pub fn lowerStatement(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction.ID {
     // const root = try self.pool.new(self.arena.allocator());
     const entry = self.parser.getNodeEntryScope(scope, node).*;
     return switch (entry) {
-        .var_decl => |vd| switch (vd.qualifier) {
-            .push => null,
-            else => null,
-            //if constant we skip
-            //if push constant we skip for now
-            //else -> add local variable
-        },
-
-        else => null,
+        .var_decl => |vd| try self.lowerVarDecl(scope, vd, node),
+        else => Instruction.null_id,
     };
-
-    // return root;
 }
-fn addLocalVariable(self: *IR, entry: VariableEntry) Error!void {
-    const entry_point = self.entry_points.items[self.current_entry_point];
+
+fn lowerVarDecl(self: *IR, scope: Parser.Scope, var_decl: Parser.VariableDeclaration, node: Parser.Node) Error!Instruction.ID {
+    return switch (var_decl.qualifier) {
+        .@"var", .shared => blk: {
+            const var_kind: VariableEntry.Kind = //
+                if (var_decl.qualifier == .@"var") .regular else .shared;
+            const type_node = node + 2;
+            const var_type: Parser.Type = @enumFromInt((try self.parser.getValue(type_node)).?.payload);
+
+            if (self.parser.getTypeEntry(var_type).isComptime())
+                break :blk Instruction.null_id;
+
+            const initializer_node = type_node + self.parser.nodeConsumptionScope(scope, type_node);
+            //put value.payload into VariableEntry.initalizer field
+            if (try self.parser.getValue(initializer_node)) |iv| {
+                _ = try self.addLocalVariable(.{ .kind = var_kind, .type = var_type, .initializer = iv.payload });
+                break :blk Instruction.null_id;
+            } else {
+                //calculate variable initializer and
+                //emit initializer_local_variable instruction
+                //inside target scope
+                const local_var_id = try self.addLocalVariable(.{ .kind = var_kind, .type = var_type });
+                const initializer_id: u32 = 0;
+                if (initializer_id == 0)
+                    @panic("emit non comptime local variable_initializer");
+                break :blk try self.pool.append(.{
+                    .operands = try self.arena.allocator().dupe(u32, &.{
+                        @intFromEnum(local_var_id),
+                        initializer_id,
+                    }),
+                    .op = .initialize_local_variable,
+                });
+            }
+        },
+        .push => Instruction.null_id,
+        else => Instruction.null_id,
+        //if constant we skip
+        //if push constant we skip for now
+        //else -> add local variable
+    };
+}
+fn addLocalVariable(self: *IR, entry: VariableEntry) Error!Variable {
+    const entry_point = &self.entry_points.items[self.current_entry_point];
     try entry_point.local_variables.append(self.arena.allocator(), entry);
+    return .{
+        .id = @truncate(entry_point.local_variables.items.len),
+        .kind = .local,
+    };
 }
 
 // pub fn newInstNode(self: *IR, inst: Instruction) InstructionNode.Ptr {}
@@ -107,7 +159,7 @@ const EntryPoint = struct {
     parser_id: Parser.Function,
     body: Instruction.ID,
 
-    name: Token,
+    name: []const u8,
     kind: Kind,
     compute_workgroup_size: u32, //??
     //some push constant info
@@ -140,15 +192,22 @@ const ConstantEntry = struct {
 const Instruction = struct {
     operands: []u32 = &.{},
     op: OpCode = undefined,
-    result: u32 = undefined,
     next: ID = null_id,
     const null_id = ~@as(ID, 0);
     pub const ID = u32;
+    pub fn format(self: Instruction, writer: *std.Io.Writer) !void {
+        try writer.print("{s}({d}) -> {d}:{any}", .{
+            @tagName(self.op),
+            self.operands.len,
+            self.next,
+            self.operands,
+        });
+    }
 };
 
 const OpCode = enum(u32) {
-    umul, //[left][right]
-    uadd,
+    mul, //[left][right]
+    add,
 
     //??
 
@@ -160,6 +219,8 @@ const OpCode = enum(u32) {
     store, //[var][value]
 
     @"return",
+
+    initialize_local_variable, //[localvarid][id]
 };
 
 const InstructionPool = struct {
@@ -195,6 +256,12 @@ const InstructionPool = struct {
         return @ptrCast(new_block.ptr);
     }
 };
+
+fn dupeFunctionName(self: *IR, function: Parser.Function) Error![]const u8 {
+    const token = self.parser.getFunctionEntry(function).name;
+    const slice = self.parser.tokenizer.slice(token);
+    return try self.arena.allocator().dupe(u8, slice);
+}
 
 // vertex vert: fn():void = fn () void{
 //    push vertex_buffer: *f32x3 = <null>

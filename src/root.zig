@@ -78,6 +78,7 @@ pub fn test_() !void {
         measure += @intCast(timestamp.durationTo(new_timestamp).nanoseconds);
         timestamp = new_timestamp;
         parser.dump();
+        ir.dump();
         parser.deinit();
     }
     std.debug.print(
