@@ -1056,7 +1056,16 @@ fn parseExpression0(self: *Parser) Error!u32 {
             break :blk 1;
         },
         .builtin => blk: {
-            _ = try self.appendNode(.{ .builtin = self.token });
+            if (util.matchToEnum(
+                Builtin,
+                self.tokenizer.slice(self.token)[1..],
+            )) |valid_builtin|
+                _ = try self.appendNode(.{ .builtin = .{
+                    .builtin = valid_builtin,
+                    .token = self.token,
+                } })
+            else
+                return self.errorOut(.{ .token = self.token, .payload = .invalid_builtin });
             self.token += 1;
             break :blk 1;
         },
@@ -1448,6 +1457,14 @@ pub const FunctionEntry = struct {
 };
 
 // const CompositeHeader = packed struct(u8);
+const BuiltinNode = struct {
+    builtin: Builtin,
+    token: Token,
+};
+const Builtin = enum {
+    position, // f32x4
+    vertex_id, // u32
+};
 
 pub const Node = u32;
 pub const NodeEntry = union(enum) {
@@ -1455,7 +1472,7 @@ pub const NodeEntry = union(enum) {
     null,
 
     identifier: Token,
-    builtin: Token,
+    builtin: BuiltinNode,
 
     bin_op: BinOpNode, //[bin_op][left][right]
     u_op: UOpNode, //[u_op][operand]
@@ -1488,7 +1505,6 @@ pub const NodeEntry = union(enum) {
             .function_param => |fp| fp.name,
             .var_decl => |vd| vd.qualifier_token,
             .identifier,
-            .builtin,
             .assignment,
             .indexing,
             .@"return",
@@ -1883,7 +1899,7 @@ const FatNode = struct {
                 entry.node.* += 1;
             },
             .builtin => |builtin| {
-                try writer.print("{s}", .{entry.self.tokenizer.slice(builtin)});
+                try writer.print("@{s}", .{@tagName(builtin.builtin)});
                 entry.node.* += 1;
             },
             .var_ref => |vr| {

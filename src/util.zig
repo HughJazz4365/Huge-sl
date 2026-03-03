@@ -203,6 +203,6 @@ pub fn SortEnumDecending(Enum: type) type {
 }
 pub fn matchToEnum(Enum: type, str: []const u8) ?Enum {
     return inline for (@typeInfo(Enum).@"enum".fields) |ef| {
-        if (strStarts(str, ef.name)) break @enumFromInt(ef.value);
+        if (strEql(str, ef.name)) break @enumFromInt(ef.value);
     } else null;
 }

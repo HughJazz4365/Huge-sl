@@ -14,7 +14,7 @@ pub const Error = error{
     OutOfMemory,
     WriteFailed,
 
-    FileReadFailed, //handled?
+    FileReadFailed,
 
     //==============
 
@@ -28,6 +28,7 @@ pub fn test_() !void {
         Parser.TypeEntry,
         Parser.FunctionEntry,
         Tokenizer.TokenEntry,
+        IR.Instruction,
     }) |_| {}
     // }) |T|
     // std.debug.print("size of {s}: {d}, align: {d}\n", .{ @typeName(T), @sizeOf(T), @alignOf(T) });

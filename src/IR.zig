@@ -14,6 +14,7 @@ entry_points: List(EntryPoint) = .empty,
 entry_point_aliases: void = undefined,
 
 variables: List(VariableEntry) = .empty,
+builtin_variables: List(VariableEntry) = .empty,
 constants: List(ConstantEntry) = .empty,
 
 //list of functions
@@ -96,11 +97,26 @@ pub fn lowerScope(self: *IR, scope: Parser.Scope) Error!Instruction.ID {
     }
     return inst_id;
 }
+fn lowerExpression(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction.ID {
+    const entry = self.parser.getNodeEntryScope(scope, node).*;
+    return switch (entry) {
+        //how do we differentiate between constants
+        // and intermediate ids from instructions
+        else => Instruction.null_id,
+    };
+}
 pub fn lowerStatement(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction.ID {
-    // const root = try self.pool.new(self.arena.allocator());
     const entry = self.parser.getNodeEntryScope(scope, node).*;
     return switch (entry) {
         .var_decl => |vd| try self.lowerVarDecl(scope, vd, node),
+        .@"return" => if (self.parser.getNodeEntryScope(scope, node + 1).* == .null)
+            try self.pool.append(self.arena.allocator(), .{ .op = .@"return" })
+        else
+            try self.pool.append(self.arena.allocator(), .{
+                .op = .return_value,
+                .operands = try self.arena.allocator().dupe(u32, &.{try self.lowerExpression(scope, node + 1)}),
+            }),
+
         else => Instruction.null_id,
     };
 }
@@ -126,12 +142,12 @@ fn lowerVarDecl(self: *IR, scope: Parser.Scope, var_decl: Parser.VariableDeclara
                 //emit initializer_local_variable instruction
                 //inside target scope
                 const local_var_id = try self.addLocalVariable(.{ .kind = var_kind, .type = var_type });
-                const initializer_id: u32 = 0;
+                const initializer_id = try self.lowerExpression(scope, initializer_node);
                 if (initializer_id == 0)
                     @panic("emit non comptime local variable_initializer");
-                break :blk try self.pool.append(.{
+                break :blk try self.pool.append(self.arena.allocator(), .{
                     .operands = try self.arena.allocator().dupe(u32, &.{
-                        @intFromEnum(local_var_id),
+                        @bitCast(local_var_id),
                         initializer_id,
                     }),
                     .op = .initialize_local_variable,
@@ -143,6 +159,13 @@ fn lowerVarDecl(self: *IR, scope: Parser.Scope, var_decl: Parser.VariableDeclara
         //if constant we skip
         //if push constant we skip for now
         //else -> add local variable
+    };
+}
+fn getVariableEntry(self: *IR, id: Variable) Error!*VariableEntry {
+    return switch (id.kind) {
+        .global => &self.variables.items[id.id],
+        .builtin => &self.builtin_variables.items[id.id],
+        .local => &self.entry_points.items[self.current_entry_point].local_variables.items[id.id],
     };
 }
 fn addLocalVariable(self: *IR, entry: VariableEntry) Error!Variable {
@@ -171,9 +194,9 @@ const EntryPoint = struct {
 };
 
 const Variable = packed struct {
-    id: u31,
+    id: u30,
     kind: Kind,
-    const Kind = enum(u1) { local, global };
+    const Kind = enum(u2) { local, global, builtin };
 };
 const VariableEntry = struct {
     kind: Kind,
@@ -189,7 +212,7 @@ const ConstantEntry = struct {
     type: Parser.Type,
 };
 
-const Instruction = struct {
+pub const Instruction = struct {
     operands: []u32 = &.{},
     op: OpCode = undefined,
     next: ID = null_id,
@@ -219,6 +242,7 @@ const OpCode = enum(u32) {
     store, //[var][value]
 
     @"return",
+    return_value,
 
     initialize_local_variable, //[localvarid][id]
 };
@@ -226,7 +250,7 @@ const OpCode = enum(u32) {
 const InstructionPool = struct {
     blocks: List([]Instruction) = .empty,
     count: u32 = 0,
-    const block_size = 16;
+    const block_size = 32;
 
     pub fn append(self: *InstructionPool, allocator: Allocator, inst: Instruction) !Instruction.ID {
         const ptr = try self.alloc(allocator);
