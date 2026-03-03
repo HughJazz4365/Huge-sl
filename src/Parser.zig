@@ -1,4 +1,7 @@
 //bin op assignments( a *= b, c -= 1 )
+//TODO: foldInsignificant
+//(to avoid 'const a = undecl_id' in the middle of the function)
+
 //TODO: valid_...(valid_var_decl) node entry variations for semantically analyzed
 //statements (fold on them would return immediately)
 //TODO: function variants
@@ -33,7 +36,7 @@ functions: List(FunctionEntry) = .empty,
 structs: List(StructEntry) = .empty,
 
 scopes: List(ScopeEntry) = .empty,
-current_scope: Scope = .entry_file,
+current_scope: Scope = .root_source_file,
 
 token: Token = 0,
 
@@ -46,7 +49,7 @@ pub fn dump(self: *Parser) void {
     // for (self.structs.items) |t| std.debug.print("--- {any}\n", .{t});
 
     std.debug.print("---BODY: \n", .{});
-    self.current_scope = .entry_file;
+    self.current_scope = .root_source_file;
     self.dumpCurrentScope(false, true);
 
     // if (true) //
@@ -118,26 +121,17 @@ fn foldScope(self: *Parser, scope: Scope) Error!void {
     if (self.getScopeEntry(self.current_scope).container.isDecl())
         try self.foldDeclScope()
     else
-        try self.foldBlockScope();
+        try self.foldBlockScope(0);
 }
 
-fn foldBlockScope(self: *Parser) Error!void {
-    const body = self.getBodySlice();
+fn foldBlockScope(self: *Parser, node: Node) Error!void {
+    //fold in reverse order
+    const consumption = self.nodeConsumption(node);
+    const next_node = node + consumption;
+    if (self.getBodySlice().len > next_node) try self.foldBlockScope(next_node);
 
-    //go through statements in reverse order
-    var statements: List(Node) = .empty;
-    defer statements.deinit(self.allocator);
-    var i: Node = 0;
-    while (i < body.len) {
-        try statements.append(self.allocator, i);
-        i += self.nodeConsumption(i);
-    }
-
-    for (0..statements.items.len) |index| {
-        const node = statements.items[statements.items.len - index - 1];
-        if (self.isStatementSignificantBlockScope(node))
-            try self.foldNode(node);
-    }
+    if (self.isStatementSignificantBlockScope(node))
+        try self.foldNode(node);
 }
 
 fn foldDeclScope(self: *Parser) Error!void {
@@ -152,8 +146,7 @@ fn foldDeclScope(self: *Parser) Error!void {
 
 fn isStatementSignificantDeclScope(self: *Parser, node: Node) bool {
     return switch (self.getNodeEntry(node).*) {
-        .var_decl => |var_decl| //
-        util.enumInRange(Qualifier, var_decl.qualifier, .vertex, .compute),
+        .var_decl => |var_decl| var_decl.qualifier.isEntryPoint(),
         else => false,
     };
 }
@@ -163,7 +156,7 @@ fn isStatementSignificantBlockScope(self: *Parser, node: Node) bool {
         else => false,
     };
 }
-fn getValue(self: *Parser, node: Node) Error!?Value {
+pub fn getValue(self: *Parser, node: Node) Error!?Value {
     return switch (self.getNodeEntry(node).*) {
         .value => |value| value,
         .function_decl => |fn_decl| .{
@@ -180,7 +173,7 @@ fn foldNode(self: *Parser, node: Node) Error!void {
     switch (entry.*) {
         .var_decl => |var_decl| try self.foldVarDecl(node, var_decl),
         .function_decl => |fn_decl| {
-            try self.foldScope(self.getFunction(fn_decl.function).scope);
+            try self.foldScope(self.getFunctionEntry(fn_decl.function).scope);
         },
         .@"return" => |token| {
             try self.foldNode(node + 1);
@@ -397,7 +390,7 @@ fn currentScopeReturnTypeAndDeclLocation(self: *Parser, node: Node) Error!@Tuple
         if (entry.container == .function) {
             const decl_token = self.getNodeEntryScope(
                 entry.parent,
-                self.getFunction(entry.container.function).node,
+                self.getFunctionEntry(entry.container.function).node,
             ).token();
             return .{ try self.getFunctionDeclReturnType(entry.container.function, entry.parent), decl_token };
         } else {
@@ -411,7 +404,7 @@ fn getFunctionDeclReturnType(self: *Parser, function: Function, parent_scope: Sc
     defer self.current_scope = last_scope;
     self.current_scope = parent_scope;
 
-    const entry = self.getFunction(function).*;
+    const entry = self.getFunctionEntry(function).*;
     const node = entry.node + 1 + self.nodeSequenceConsumption(self.current_scope, entry.node + 1, entry.arg_count);
     try self.foldNode(node);
 
@@ -696,7 +689,7 @@ fn typeOf(self: *Parser, node: Node) Error!Type {
     };
 }
 fn typeOfFunctionDecl(self: *Parser, node: Node, function: Function) Error!Type {
-    const entry = self.getFunction(function);
+    const entry = self.getFunctionEntry(function);
     if (entry.arg_count != 0) @panic("type of function decl with args!");
 
     const arg_offset: Node = 0;
@@ -759,7 +752,7 @@ fn typeOfUOp(self: *Parser, op: UnaryOperator, operand: Type) Error!Type {
         else => operand,
     };
 }
-fn nodeConsumptionScope(self: *Parser, scope: Scope, node: u32) u32 {
+pub fn nodeConsumptionScope(self: *Parser, scope: Scope, node: u32) u32 {
     // array_type_decl,
     // function_decl: Function, //[fn_decl][args...][rtype][body...]
     // branch,
@@ -777,10 +770,10 @@ fn nodeConsumptionScope(self: *Parser, scope: Scope, node: u32) u32 {
     while (node + base < body.len and body[node + base] == .pad) base += 1;
     return base;
 }
-fn nodeConsumption(self: *Parser, node: Node) u32 {
+pub fn nodeConsumption(self: *Parser, node: Node) u32 {
     return self.nodeConsumptionScope(self.current_scope, node);
 }
-fn nodeSequenceConsumption(self: *Parser, scope: Scope, node: Node, count: usize) u32 {
+pub fn nodeSequenceConsumption(self: *Parser, scope: Scope, node: Node, count: usize) u32 {
     var len: u32 = 0;
     for (0..count) |_|
         len += self.nodeConsumptionScope(scope, node + len);
@@ -1210,7 +1203,7 @@ fn parseFunctionTypeOrDecl(self: *Parser) Error!u32 {
             .parent = self.current_scope,
             .container = .{ .function = function },
         });
-        self.getFunction(function).scope = scope;
+        self.getFunctionEntry(function).scope = scope;
         self.getNodeEntry(header).* = .{ .function_decl = .{
             .function = function,
             .token = header_token,
@@ -1314,10 +1307,10 @@ fn appendTypeRaw(self: *Parser, entry: TypeEntry) Error!Type {
     try self.types.append(self.allocator, entry);
     return @enumFromInt(l);
 }
-fn getNodeEntry(self: *Parser, node: Node) *NodeEntry {
+pub fn getNodeEntry(self: *Parser, node: Node) *NodeEntry {
     return self.getNodeEntryScope(self.current_scope, node);
 }
-fn getNodeEntryScope(self: *Parser, scope: Scope, node: Node) *NodeEntry {
+pub fn getNodeEntryScope(self: *Parser, scope: Scope, node: Node) *NodeEntry {
     return &self.getScopeEntry(scope).body.items[node];
 }
 fn appendNode(self: *Parser, entry: NodeEntry) Error!Node {
@@ -1382,13 +1375,13 @@ fn addScope(self: *Parser, entry: ScopeEntry) Error!Scope {
 inline fn getBodySlice(self: *Parser) []NodeEntry {
     return self.getScopeEntry(self.current_scope).body.items;
 }
-inline fn getScopeEntry(self: *Parser, handle: Scope) *ScopeEntry {
+pub inline fn getScopeEntry(self: *Parser, handle: Scope) *ScopeEntry {
     return &self.scopes.items[@intFromEnum(handle)];
 }
-const Scope = enum(u32) { entry_file, _ };
+pub const Scope = enum(u32) { root_source_file, _ };
 pub const ScopeEntry = struct {
     body: List(NodeEntry) = .empty,
-    parent: Scope = .entry_file,
+    parent: Scope = .root_source_file,
     container: Container,
     const Container = union(enum) {
         @"struct": Struct,
@@ -1400,7 +1393,7 @@ pub const ScopeEntry = struct {
     pub fn getDeclNode(entry: ScopeEntry, self: *Parser) Node {
         return switch (entry.container) {
             .@"struct" => |s| self.getStructEntry(s).node,
-            .function => |f| self.getFunction(f).node,
+            .function => |f| self.getFunctionEntry(f).node,
         };
     }
 };
@@ -1433,7 +1426,7 @@ fn addFunction(self: *Parser, entry: FunctionEntry) Error!Function {
     try self.functions.append(self.allocator, entry);
     return @enumFromInt(l);
 }
-fn getFunction(self: *Parser, handle: Function) *FunctionEntry {
+pub fn getFunctionEntry(self: *Parser, handle: Function) *FunctionEntry {
     return &self.functions.items[@intFromEnum(handle)];
 }
 pub const Function = enum(u32) { _ };
@@ -1557,6 +1550,9 @@ pub const Qualifier = enum {
     vertex,
     fragment,
     compute, //[workgroup size]
+    pub fn isEntryPoint(self: Qualifier) bool {
+        return util.enumInRange(Qualifier, self, .vertex, .compute);
+    }
     pub fn canHaveInitializer(self: Qualifier) bool {
         return self != .push;
     }
@@ -1827,7 +1823,7 @@ const FatNode = struct {
             },
             .function_decl => |fn_decl| {
                 entry.node.* += 1;
-                const arg_count = entry.self.getFunction(fn_decl.function).arg_count;
+                const arg_count = entry.self.getFunctionEntry(fn_decl.function).arg_count;
                 try writer.print("fn (", .{});
 
                 for (0..arg_count) |i|
@@ -1835,7 +1831,7 @@ const FatNode = struct {
                 try writer.print(") {f}{{\n", .{entry});
 
                 const last_scope = entry.self.current_scope;
-                entry.self.current_scope = entry.self.getFunction(fn_decl.function).scope;
+                entry.self.current_scope = entry.self.getFunctionEntry(fn_decl.function).scope;
                 defer entry.self.current_scope = last_scope;
 
                 entry.self.dumpCurrentScope(false, true);
