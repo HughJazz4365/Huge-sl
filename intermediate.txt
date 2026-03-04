@@ -1,0 +1,29 @@
+
+
+%variable%, 
+
+vb_ptr = load(%vertex_buffer%)
+vertex_id = load(@vertex_id)
+
+elem_ptr_offset = mul([PTR.ALIGN], vertex_id)
+elem_pointer = add(vb_ptr, elem_ptr_offset)
+vertex_load = load_device_ptr(elem_pointer)
+pos = shuffle_literal(vertex_load, M:0001, 0, 1, 2, [1])
+_ = store(@position, pos)
+
+//not only variables can be loaded()
+//(access_chain result)
+//unified ids for every kind of data/
+//operand storing its kind
+
+//own Types in IR(dont use Parser.Type)
+//shuffle_literal||| 0 in mask - vector index, 1 - literal
+DATA:{
+  local variable
+  global variable
+  builtin variable
+  parser_constant
+  ir_constant
+  intermediate
+
+

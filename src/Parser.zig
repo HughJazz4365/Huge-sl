@@ -1,6 +1,7 @@
 //bin op assignments( a *= b, c -= 1 )
 //TODO: foldInsignificant
 //(to avoid 'const a = undecl_id' in the middle of the function)
+//(dont go into inner functions)
 
 //TODO: valid_...(valid_var_decl) node entry variations for semantically analyzed
 //statements (fold on them would return immediately)
@@ -271,7 +272,7 @@ fn castValue(self: *Parser, @"type": Type, value: Value) Error!Value {
         .payload = switch (to_entry) {
             //TODO: enum, ptr values to scalar
             .bool, .compint, .compfloat, .scalar => //
-            try self.addScalarValue(self.numberValueCast(
+            try self.addNumberValue(self.numberValueCast(
                 value.payload,
                 from_entry,
                 to_entry,
@@ -294,7 +295,7 @@ fn castValue(self: *Parser, @"type": Type, value: Value) Error!Value {
 }
 fn numberValueCast(self: *Parser, id: u32, from_entry: TypeEntry, to_entry: TypeEntry) u128 {
     @setEvalBranchQuota(10_000);
-    const bits = self.getScalarValue(id);
+    const bits = self.getNumberValue(id);
     inline for (all_number_type_entries) |fe| {
         if (activeTag(from_entry) == activeTag(fe) and (fe != .scalar or from_entry.scalar.eql(fe.scalar))) {
             inline for (all_number_type_entries) |te| {
@@ -1028,7 +1029,7 @@ fn parseExpression0(self: *Parser) Error!u32 {
         .int_literal => blk: {
             _ = try self.appendNode(.{ .value = .{
                 .type = try self.addType(.compint),
-                .payload = try self.addScalarValue(
+                .payload = try self.addNumberValue(
                     parseIntLiteral(self.tokenizer.slice(self.token)),
                 ),
             } });
@@ -1072,7 +1073,7 @@ fn parseExpression0(self: *Parser) Error!u32 {
         .true, .false => |tf| blk: {
             _ = try self.appendNode(.{ .value = .{
                 .type = try self.addType(.bool),
-                .payload = try self.addScalarValue(util.fit(u128, tf == .true)),
+                .payload = try self.addNumberValue(util.fit(u128, tf == .true)),
             } });
             self.token += 1;
             break :blk 1;
@@ -1291,9 +1292,16 @@ fn tokenPastEndl(self: *Parser) Token {
     return self.token + @intFromBool(self.tokenizer.kind(self.token) == .endl);
 }
 
-fn getScalarValue(self: *Parser, id: u32) u128 {
+fn getNumberValue(self: *Parser, id: u32) u128 {
     return self.number_values.items[id];
 }
+fn addNumberValue(self: *Parser, scalar: anytype) Error!u32 {
+    for (self.number_values.items, 0..) |s, i| if (s == util.fit(u128, scalar)) return @truncate(i);
+    const l: u32 = @truncate(self.number_values.items.len);
+    try self.number_values.append(self.allocator, util.fit(u128, scalar));
+    return l;
+}
+
 pub fn getTypeEntry(self: *Parser, @"type": Type) TypeEntry {
     return self.types.items[@intFromEnum(@"type")];
 }
@@ -1330,7 +1338,7 @@ fn appendNode(self: *Parser, entry: NodeEntry) Error!Node {
 }
 
 fn addVectorValueSplat(self: *Parser, vector: Vector, elem_id: u32) Error!u32 {
-    const bits = self.getScalarValue(elem_id);
+    const bits = self.getNumberValue(elem_id);
     return switch (vector.scalar.width) {
         inline else => |width| blk: {
             const list = self.getVectorList(width.value());
@@ -1367,13 +1375,6 @@ fn getVectorList(self: *Parser, comptime width: comptime_int) *List(@Vector(4, @
         64 => &self.x64_vectors,
         else => comptime unreachable,
     };
-}
-
-fn addScalarValue(self: *Parser, scalar: anytype) Error!u32 {
-    for (self.number_values.items, 0..) |s, i| if (s == util.fit(u128, scalar)) return @truncate(i);
-    const l: u32 = @truncate(self.number_values.items.len);
-    try self.number_values.append(self.allocator, util.fit(u128, scalar));
-    return l;
 }
 
 fn addScope(self: *Parser, entry: ScopeEntry) Error!Scope {
@@ -1769,9 +1770,9 @@ const FatValue = struct {
         const type_entry = entry.self.getTypeEntry(entry.value.type);
         switch (type_entry) {
             .compint => try writer.print("{d}", .{
-                util.extract(i128, entry.self.getScalarValue(entry.value.payload)),
+                util.extract(i128, entry.self.getNumberValue(entry.value.payload)),
             }),
-            .bool => try writer.print("{}", .{util.extract(bool, entry.self.getScalarValue(entry.value.payload))}),
+            .bool => try writer.print("{}", .{util.extract(bool, entry.self.getNumberValue(entry.value.payload))}),
             .type => try writer.print("{f}", .{FatType{
                 .self = entry.self,
                 .type = @enumFromInt(entry.value.payload),
@@ -1782,7 +1783,7 @@ const FatValue = struct {
                         const T = (Scalar{ .layout = sl, .width = sw }).ToZig();
                         try writer.print("{s}[{}]", .{
                             @typeName(T),
-                            util.extract(T, entry.self.getScalarValue(entry.value.payload)),
+                            util.extract(T, entry.self.getNumberValue(entry.value.payload)),
                         });
                     },
                 },
