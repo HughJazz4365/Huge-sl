@@ -3,7 +3,9 @@ vertex vert = fn void{
 	@position = .{vertex_buffer[@vertex_id], 1} 
 }
 
-fragment frag: fn f32x4  = fn(arg) f32x4 {
+const B = 3
+const A = 4
+fragment frag = fn f32x4 {
 	return .{1}
 }
 

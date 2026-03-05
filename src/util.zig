@@ -169,8 +169,11 @@ inline fn uintCast(T: type, from: anytype) T {
     return if (@sizeOf(F) > @sizeOf(T)) @truncate(from) else @as(T, from);
 }
 
+pub fn sliceEql(T: type, a: []const T, b: []const T) bool {
+    return if (a.len != b.len) false else std.mem.eql(T, a, b);
+}
 pub fn strEql(a: []const u8, b: []const u8) bool {
-    return if (a.len != b.len) false else std.mem.eql(u8, a, b);
+    return sliceEql(u8, a, b);
 }
 pub inline fn strStarts(haystack: []const u8, needle: []const u8) bool {
     return startsWith(u8, haystack, needle);

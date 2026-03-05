@@ -1,3 +1,7 @@
+//TODO: dependency loops
+//TODO: if arg_count=0 function_type.id could just be Type
+//with no function_type_elems involved
+
 //there is no checks for typeOf(var_decl.intializer)
 //being compatible with var_decl.type????????????????????
 //TODO:  anytype in TypeEntry.function
@@ -51,6 +55,8 @@ token: Token = 0,
 error_info: ErrorInfo = .unknown,
 
 pub fn dump(self: *Parser) void {
+    std.debug.print("function type elem:\n", .{});
+    for (self.function_type_elems.items) |t| std.debug.print("--- {}\n", .{t});
     // std.debug.print("types:\n", .{});
     // for (self.types.items) |t| std.debug.print("--- {any}\n", .{t});
     // std.debug.print("structs:\n", .{});
@@ -183,35 +189,10 @@ fn foldNode(self: *Parser, node: Node) Error!void {
     switch (entry.*) {
         .var_decl => |var_decl| try self.foldVarDecl(var_decl, node),
         .function_decl => |fn_decl| try self.foldFunctionDecl(fn_decl, node),
-        .function_type_decl => |fn_type_decl| {
-            var type_node = node + 1;
-            for (0..fn_type_decl.arg_count + 1) |_| {
-                try self.foldNode(type_node);
-                _ = try self.asType(type_node);
-                type_node += self.nodeConsumption(type_node);
-            }
+        .function_type_decl => |fn_type_decl| try self.foldFunctionTypeDecl(fn_type_decl, node),
 
-            type_node = node + 1;
-            try self.function_type_elems.ensureUnusedCapacity(self.allocator, fn_type_decl.arg_count + 1);
-            const function_type_id: u32 = @truncate(self.function_type_elems.items.len);
-            for (0..fn_type_decl.arg_count + 1) |_| {
-                self.function_type_elems.appendAssumeCapacity(try self.asType(type_node));
-                type_node += self.nodeConsumption(type_node);
-            }
-            self.replaceNodeWithValue(
-                node,
-                type_node - node,
-                .{ .type = .type, .payload = @intFromEnum(try self.addType(.{ .function = .{
-                    .id = function_type_id,
-                    .arg_count = fn_type_decl.arg_count,
-                } })) },
-            );
-            //find existing fnd type decl bla bla id
-            // for(
-
-        },
-
-        .@"return" => |token| {
+        .@"return",
+        => |token| {
             try self.foldNode(node + 1);
             const rt = try self.currentScopeReturnTypeAndDeclLocation(node);
 
@@ -268,17 +249,60 @@ fn foldNode(self: *Parser, node: Node) Error!void {
             };
         },
         .u_op => |op| try self.foldUOp(op, node),
-        .identifier => |token| if (try self.getVariableReference(self.current_scope, node, token)) |vr| {
+        .identifier => |token| {
+            var dependency_stack: List(Token) = .empty;
+            defer dependency_stack.deinit(self.allocator);
+            const vr = try self.getVariableReference(self.current_scope, node, token, &dependency_stack) orelse
+                return self.errorOut(.{ .token = token, .payload = .undeclared_identifier });
             entry.* = if (try self.getVariableReferenceValue(vr)) |value|
                 .{ .value = value }
             else
                 .{ .var_ref = vr };
-        } else return self.errorOut(.{ .token = token, .payload = .undeclared_identifier }),
+        },
         else => |e| {
             _ = e;
             // std.debug.print("idk how to fold {s}\n", .{@tagName(e)});
         },
     }
+}
+fn foldFunctionTypeDecl(self: *Parser, fn_type_decl: FunctionTypeDecl, node: Node) Error!void {
+    const arg_count = fn_type_decl.arg_count;
+    var type_node = node + 1;
+    for (0..arg_count + 1) |_| {
+        try self.foldNode(type_node);
+        _ = try self.asType(type_node);
+        type_node += self.nodeConsumption(type_node);
+    }
+
+    const fte = self.function_type_elems.items;
+
+    const function_type: TypeEntry.FunctionType = blk: {
+        for (0..fte.len) |i| {
+            var arg_type_node: Node = node + 1;
+            if (i + arg_count >= fte.len) break;
+            for (0..arg_count) |j| {
+                defer arg_type_node += self.nodeConsumption(arg_type_node);
+
+                const arg_type = self.asTypeOpt(arg_type_node).?;
+                if (arg_type != fte[i + j]) break;
+            } else if (self.asTypeOpt(arg_type_node).? == fte[i + arg_count])
+                break :blk .{ .id = @truncate(i), .arg_count = arg_count };
+            //check rtype
+        }
+
+        type_node = node + 1; //append arg_types to the function_type_elems
+        try self.function_type_elems.ensureUnusedCapacity(self.allocator, arg_count + 1);
+        const function_type_id: u32 = @truncate(self.function_type_elems.items.len);
+        for (0..arg_count + 1) |_| {
+            self.function_type_elems.appendAssumeCapacity(try self.asType(type_node));
+            type_node += self.nodeConsumption(type_node);
+        }
+        break :blk .{ .id = function_type_id, .arg_count = arg_count };
+    };
+    self.replaceNodeWithValue(node, type_node - node, .{
+        .type = .type,
+        .payload = @intFromEnum(try self.addType(.{ .function = function_type })),
+    });
 }
 fn foldFunctionDecl(self: *Parser, fn_decl: FunctionDecl, node: Node) Error!void {
     const function_entry = self.getFunctionEntry(fn_decl.function).*;
@@ -291,8 +315,7 @@ fn foldFunctionDecl(self: *Parser, fn_decl: FunctionDecl, node: Node) Error!void
 
         try self.foldNode(arg_type_node);
         switch (self.getNodeEntry(arg_type_node).*) {
-            .null => {},
-            .@"anytype" => @panic("anytype"),
+            .null, .@"anytype" => {},
             else => _ = try self.asType(arg_type_node),
         }
     }
@@ -502,7 +525,9 @@ fn getFunctionDeclReturnType(self: *Parser, function: Function, parent_scope: Sc
 }
 fn foldVarDecl(self: *Parser, var_decl: VariableDeclaration, node: Node) Error!void {
     //check for redelaration
-    if (try self.getVariableReference(self.current_scope, node, var_decl.name)) |vr|
+    var dependency_stack: List(Token) = .empty;
+    defer dependency_stack.deinit(self.allocator);
+    if (try self.getVariableReference(self.current_scope, node, var_decl.name, &dependency_stack)) |vr|
         return self.errorOut(.{
             .token = var_decl.qualifier_token,
             .payload = .{ .redeclaration = .{
@@ -609,20 +634,35 @@ fn getVariableReferenceValue(self: *Parser, var_ref: VariableReference) Error!?V
     };
     return try self.getValue(value_node);
 }
-fn getVariableReference(self: *Parser, scope: Scope, node: Node, token: Token) Error!?VariableReference {
+fn getVariableReference(
+    self: *Parser,
+    scope: Scope,
+    node: Node,
+    token: Token,
+    dependency_stack: *List(Token),
+) Error!?VariableReference {
     const last_scope = self.current_scope;
     defer self.current_scope = last_scope;
     self.current_scope = scope;
+
+    for (dependency_stack.items) |rs| {
+        if (rs == token or util.strEql(self.tokenizer.slice(rs), self.tokenizer.slice(token))) {
+            std.debug.print("DEP STACK: {any}\n", .{dependency_stack.items});
+            return self.errorOut(.{ .token = token, .payload = .dependency_loop });
+        }
+    }
 
     const scope_entry = self.getScopeEntry(scope);
     const current = if (scope_entry.container == .@"struct")
         try self.getDeclScopeVarRef(node, token)
     else
         try self.getBlockScopeVarRef(node, token);
+    try dependency_stack.append(self.allocator, token);
+    defer dependency_stack.items.len -|= 1;
 
     return if (current) |c| .{ .node = c, .scope = scope } else //
     if (self.isScopeFile(scope)) null else //
-    try self.getVariableReference(scope_entry.parent, scope_entry.getDeclNode(self), token);
+    try self.getVariableReference(scope_entry.parent, scope_entry.getDeclNode(self), token, dependency_stack);
 }
 //both those functions should return VariableReference
 //get block scope var ref should loop statements while < node: and check
@@ -766,25 +806,10 @@ fn typeOf(self: *Parser, node: Node) Error!Type {
             };
         },
         .function_type_decl => .type,
-        .function_decl => |fn_decl| blk: {
-            if (self.findExistingFunctionDeclFunctionTypeID(fn_decl, node)) |ft|
-                break :blk try self.addType(.{ .function = ft });
-
-            const function_type_id: u32 = @truncate(self.function_type_elems.items.len);
-            const arg_count = self.getFunctionEntry(fn_decl.function).arg_count;
-
-            var arg_node: Node = node + 2;
-            for (0..arg_count) |_| {
-                defer arg_node += 1 + self.nodeConsumption(arg_node);
-
-                const arg_type = self.asTypeOpt(arg_node).?; //?
-                try self.function_type_elems.append(self.allocator, arg_type);
-            }
-            const rtype = self.asTypeOpt(arg_node - 1).?;
-            try self.function_type_elems.append(self.allocator, rtype);
-            break :blk try self.addType(.{ .function = .{ .id = function_type_id, .arg_count = arg_count } });
-        },
-        .constructor => switch (self.getNodeEntry(node + 1).*) {
+        //store function type in the FunctionEntry
+        .function_decl => |fn_decl| try self.typeOfFunctionDecl(fn_decl, node),
+        .constructor,
+        => switch (self.getNodeEntry(node + 1).*) {
             .value => |value| if (value.type == .type)
                 @enumFromInt(value.payload)
             else
@@ -798,9 +823,37 @@ fn typeOf(self: *Parser, node: Node) Error!Type {
         },
     };
 }
-fn findExistingFunctionDeclFunctionTypeID(self: *Parser, fn_decl: FunctionDecl, node: Node) ?TypeEntry.FunctionType {
-    _ = .{ self, fn_decl, node };
-    return null;
+fn typeOfFunctionDecl(self: *Parser, fn_decl: FunctionDecl, node: Node) Error!Type {
+    const fte = self.function_type_elems.items;
+    const arg_count = self.getFunctionEntry(fn_decl.function).arg_count;
+
+    const function_type: TypeEntry.FunctionType = blk: {
+        for (0..fte.len) |i| {
+            var arg_type_node: Node = node + 2;
+            if (i + arg_count >= fte.len) break;
+            for (0..arg_count) |j| {
+                const consumption = self.nodeConsumption(arg_type_node);
+                defer arg_type_node += 1 + consumption;
+
+                const arg_type = self.asTypeOpt(arg_type_node).?;
+                if (arg_type != fte[i + j]) break;
+            } else if (self.asTypeOpt(arg_type_node - 1).? == fte[i + arg_count])
+                break :blk .{ .id = @truncate(i), .arg_count = arg_count };
+            //check rtype
+        }
+
+        try self.function_type_elems.ensureUnusedCapacity(self.allocator, arg_count + 1);
+        const function_type_id: u32 = @truncate(self.function_type_elems.items.len);
+
+        var type_node = node + 2; //append arg_types to the function_type_elems
+        for (0..arg_count + 1) |i| {
+            if (i == arg_count) type_node -= 1;
+            self.function_type_elems.appendAssumeCapacity(try self.asType(type_node));
+            type_node += 1 + self.nodeConsumption(type_node);
+        }
+        break :blk .{ .id = function_type_id, .arg_count = arg_count };
+    };
+    return try self.addType(.{ .function = function_type });
 }
 
 fn asType(self: *Parser, node: Node) Error!Type {
@@ -815,6 +868,7 @@ fn asType(self: *Parser, node: Node) Error!Type {
 fn asTypeOpt(self: *Parser, node: Node) ?Type {
     const entry = self.getNodeEntry(node).*;
     return switch (entry) {
+        .@"anytype" => .@"anytype",
         .value => |value| if (value.type == .type)
             @enumFromInt(value.payload)
         else
@@ -1064,7 +1118,7 @@ fn parseExpressionRecursive(self: *Parser, delimiter: ExpressionDelimiter, bp: u
         if (Tokenizer.bindingPower(op) <= bp) break;
         self.token += 1;
 
-        // try self.tokenizer.skipEndl(); //?
+        _ = self.skipEndl();
 
         const bin_op_node: NodeEntry = .{ .bin_op = .{ .op = op, .token = self.token - 1 } };
         try self.insertNthLastNode(left_len, bin_op_node);
@@ -1719,7 +1773,7 @@ pub fn constructorStructure(self: *Parser, @"type": Type) Error!ConstructorStruc
     };
 }
 
-pub const Type = enum(u32) { type, _ };
+pub const Type = enum(u32) { type = 0, @"anytype" = ~@as(u32, 0), _ };
 pub const TypeEntry = union(enum) {
     void,
     type,
@@ -1842,6 +1896,9 @@ pub const FatType = struct {
     self: *Parser,
     type: Type,
     pub fn format(entry: FatType, writer: *std.Io.Writer) !void {
+        if (entry.type == .@"anytype")
+            return try writer.writeAll("anytype");
+
         const te = entry.self.getTypeEntry(entry.type);
         switch (te) {
             .function => |ftype| {

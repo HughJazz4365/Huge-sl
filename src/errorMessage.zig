@@ -21,10 +21,7 @@ pub const ParserErrorInfo = struct {
         //undeclared identifer {id}:
         // <line thing>
         redeclaration: Redeclaration,
-        dependency_loop, //DeclToken
-        //dependency loop:
-        //<line>
-
+        dependency_loop,
         return_type_mismatch,
         cant_implicitly_cast,
         invalid_cast: InvalidCast,
@@ -166,6 +163,7 @@ pub fn printErrorMessageParser(parser: *Parser, writer: *std.Io.Writer) Error!vo
         },
         inline .unable_to_resolve_comptime_value,
         .unclosed_scope,
+        .dependency_loop,
         => |_, tag| {
             try writer.writeAll(formatTagType(tag));
             try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
