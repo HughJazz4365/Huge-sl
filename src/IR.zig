@@ -36,7 +36,7 @@ const LocalVariable = struct {
     type: Type,
     decl_node: Parser.Node, //??
 };
-const StorageClass = enum { general, input, output, push, shared };
+const StorageClass = enum { general, input, output, push, workgroup };
 
 const Operand = struct {
     id: u32,
@@ -53,6 +53,7 @@ const Operand = struct {
         //instruction pool
     };
 };
+
 const Type = enum(u32) { void = 0, _ };
 const TypeEntry = union(enum) {
     void,
@@ -71,7 +72,15 @@ const TypeEntry = union(enum) {
     //sampler, image
 
     // @"struct": Struct,
+    const Scalar = Parser.TypeEntry.Scalar;
+    const Vector = Parser.TypeEntry.Vector;
+    const Matrix = Parser.TypeEntry.Matrix;
+    const Array = struct { len: u32, child: Type };
+    const LogicalPointer = struct { child: Type, storage_class: StorageClass };
+    const DevicePointer = struct { child: Type, alignment: Alignment };
+    const Alignment = enum(u32) { size = 0, _ };
 };
+
 const OpCode = enum(u32) {
     add, //[left][right]
     sub,
@@ -165,15 +174,8 @@ const InstructionPool = struct {
         return @ptrCast(new_block.ptr);
     }
 };
-const Array = struct { len: u32, child: Type };
-const LogicalPointer = struct { child: Type, storage_class: StorageClass };
-const DevicePointer = struct { child: Type, alignment: Alignment };
-const Alignment = enum(u32) { size = 0, _ };
 
 const Allocator = std.mem.Allocator;
 const List = std.ArrayList;
 const Error = hgsl.Error;
 const Token = Tokenizer.Token;
-const Scalar = Parser.Scalar;
-const Vector = Parser.Vector;
-const Matrix = Parser.Matrix;

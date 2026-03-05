@@ -32,7 +32,7 @@ pub fn tokenize(self: *Tokenizer, allocator: std.mem.Allocator) Error!void {
 }
 pub fn parseTypeLiteral(self: Tokenizer, token: Token) Parser.TypeEntry {
     const bytes = self.slice(token);
-    const scalar: Parser.Scalar = .{
+    const scalar: Parser.TypeEntry.Scalar = .{
         .layout = switch (bytes[0]) {
             'f' => .float,
             'u' => .uint,
@@ -50,14 +50,14 @@ pub fn parseTypeLiteral(self: Tokenizer, token: Token) Parser.TypeEntry {
     const off: usize = 2 + @as(usize, @intFromBool(scalar.width != ._8));
     if (bytes.len == off) return .{ .scalar = scalar };
 
-    const vector_len: Parser.Vector.Len = switch (bytes[off + 1]) {
+    const vector_len: Parser.TypeEntry.Vector.Len = switch (bytes[off + 1]) {
         '2' => ._2,
         '3' => ._3,
         '4' => ._4,
         else => unreachable,
     };
     if (bytes.len == off + 2) return .{ .vector = .{ .len = vector_len, .scalar = scalar } };
-    const column_count: Parser.Vector.Len = switch (bytes[off + 3]) {
+    const column_count: Parser.TypeEntry.Vector.Len = switch (bytes[off + 3]) {
         '2' => ._2,
         '3' => ._3,
         '4' => ._4,
@@ -164,14 +164,14 @@ fn getNextTokenEntry(self: *Tokenizer) Error!?TokenEntry {
 }
 fn getNumericTypeLiteral(bytes: []const u8) usize {
     if (bytes.len < 2) return 0;
-    const scalar: Parser.Scalar = .{
+    const scalar: Parser.TypeEntry.Scalar = .{
         .layout = switch (bytes[0]) {
             'i' => .int,
             'u' => .uint,
             'f' => .float,
             else => return 0,
         },
-        .width = inline for (@typeInfo(Parser.Scalar.Width).@"enum".fields) |ef| {
+        .width = inline for (@typeInfo(Parser.TypeEntry.Scalar.Width).@"enum".fields) |ef| {
             if (util.strStarts(bytes[1..], ef.name[1..]))
                 break @enumFromInt(ef.value);
         } else return 0,
@@ -380,7 +380,7 @@ pub const TokenKind = enum(u8) {
     env,
 
     push,
-    shared,
+    workgroup,
     //shader stage qualifiers
     vertex,
     fragment,

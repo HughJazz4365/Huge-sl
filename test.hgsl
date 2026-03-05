@@ -2,7 +2,8 @@ vertex vert = fn void{
 	push vertex_buffer : *f32x3
 	@position = .{vertex_buffer[@vertex_id], 1} 
 }
-fragment frag = fn f32x4 {
+
+fragment frag: fn f32x4  = fn(arg) f32x4 {
 	return .{1}
 }
 

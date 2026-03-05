@@ -1,6 +1,4 @@
-//TODO SEPARATION BETWEEN TOKENIZER ERROR INFO AND PARSING ERROR INFO
-//TOKENIZER - {source_offset, kind}
-//PARSER    - {node/token, extra}
+//TODO: wrong line/char calculations
 const std = @import("std");
 const root = @import("root.zig");
 const Tokenizer = @import("Tokenizer.zig");
@@ -31,6 +29,7 @@ pub const ParserErrorInfo = struct {
         cant_implicitly_cast,
         invalid_cast: InvalidCast,
         //'FROM' cannot be casted into 'TO': line
+
         not_a_type: Parser.Type, //AType, BType, Token
         //expected {a}, found {b}:
         //<line>
@@ -57,12 +56,11 @@ pub const ParserErrorInfo = struct {
         qualifier_cant_have_initializer: Parser.Qualifier, //QUALIFIER, VARDECL
         //{qualifier} variables can`t have intializers
         //<line>
+        qualifier_can_only_be_in_file_scope,
+        //variable that is not 'const' or 'var' in Non file decl_scope
 
         unclosed_scope,
-        unable_to_resolve_comptime_value, //TOKEN
-        //unable_to_resolve_comptime_value:
-        //<line>
-
+        unable_to_resolve_comptime_value,
         invalid_function_declaration, //TOKEN
         //unable_to_resolve_comptime_value:
         //<line>
@@ -97,6 +95,7 @@ pub const ParserErrorInfo = struct {
         NonMatchingConstructorElementCount,
 
         unknown,
+        pub const Tag = std.meta.Tag(Payload);
     };
 };
 const InvalidCast = struct {
@@ -125,6 +124,7 @@ pub fn printErrorMessageParser(parser: *Parser, writer: *std.Io.Writer) Error!vo
     const error_info = parser.error_info;
     const loc: TokenSourceLocation = .get(parser.tokenizer, error_info.token);
     try loc.printWithPath(parser.tokenizer, writer);
+    try writer.print("(token:{d})", .{error_info.token});
     try writer.writeAll(comptime Color.red.ec() ++ " error: " ++ Color.default.ec());
 
     switch (error_info.payload) {
@@ -132,10 +132,10 @@ pub fn printErrorMessageParser(parser: *Parser, writer: *std.Io.Writer) Error!vo
             try writer.print("invalid builtin '{s}':\n", .{parser.tokenizer.slice(error_info.token)});
             try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
         },
-        .unclosed_scope => {
-            try writer.print("unclosed scope:\n", .{});
-            try loc.printLineToken(.pointer, parser.tokenizer, writer);
-        },
+        // .unclosed_scope => {
+        //     try writer.print("unclosed scope:\n", .{});
+        //     try loc.printLineToken(.pointer, parser.tokenizer, writer);
+        // },
         .unexpected_token => {
             try writer.print("unexpected token '{s}':\n", .{@tagName(parser.tokenizer.kind(error_info.token))});
             try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
@@ -164,10 +164,26 @@ pub fn printErrorMessageParser(parser: *Parser, writer: *std.Io.Writer) Error!vo
             });
             try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
         },
+        inline .unable_to_resolve_comptime_value,
+        .unclosed_scope,
+        => |_, tag| {
+            try writer.writeAll(formatTagType(tag));
+            try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
+        },
 
         else => |payload| try writer.print("error: {s}\n", .{@tagName(payload)}),
     }
     try writer.flush();
+}
+fn formatTagType(comptime tag: ParserErrorInfo.Payload.Tag) []const u8 {
+    const tag_name = @tagName(tag);
+    comptime var result: []const u8 = &.{};
+    inline for (tag_name) |char| {
+        const c = if (char == '_') ' ' else char;
+        result = result ++ &[1]u8{c};
+    }
+
+    return result ++ ":\n";
 }
 const Color = enum {
     green,
