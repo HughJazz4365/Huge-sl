@@ -21,7 +21,7 @@ pub const ParserErrorInfo = struct {
         redeclaration: Redeclaration,
         dependency_loop,
         return_type_mismatch,
-        cant_implicitly_cast,
+        cant_implicitly_cast: InvalidCast,
         invalid_cast: InvalidCast,
         //'FROM' cannot be casted into 'TO': line
 
@@ -123,6 +123,13 @@ pub fn printErrorMessageParser(parser: *Parser, writer: *std.Io.Writer) Error!vo
     try writer.writeAll(comptime Color.red.ec() ++ " error: " ++ Color.default.ec());
 
     switch (error_info.payload) {
+        .cant_implicitly_cast => |cic| {
+            try writer.print("can`t implicitly cast '{f}' to '{f}':\n", .{
+                Parser.FatType{ .self = parser, .type = cic.from },
+                Parser.FatType{ .self = parser, .type = cic.to },
+            });
+            try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
+        },
         inline .invalid_builtin, .undeclared_identifier => |_, tag| {
             const msg = comptime formatTagType(tag);
             const trim = msg[0 .. msg.len - 2];
