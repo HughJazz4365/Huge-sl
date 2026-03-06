@@ -17,9 +17,7 @@ pub const ParserErrorInfo = struct {
     pub const Payload = union(enum) {
         invalid_builtin,
         unexpected_token,
-        undeclared_identifier, //UseToken
-        //undeclared identifer {id}:
-        // <line thing>
+        undeclared_identifier,
         redeclaration: Redeclaration,
         dependency_loop,
         return_type_mismatch,
@@ -125,14 +123,12 @@ pub fn printErrorMessageParser(parser: *Parser, writer: *std.Io.Writer) Error!vo
     try writer.writeAll(comptime Color.red.ec() ++ " error: " ++ Color.default.ec());
 
     switch (error_info.payload) {
-        .invalid_builtin => {
-            try writer.print("invalid builtin '{s}':\n", .{parser.tokenizer.slice(error_info.token)});
+        inline .invalid_builtin, .undeclared_identifier => |_, tag| {
+            const msg = comptime formatTagType(tag);
+            const trim = msg[0 .. msg.len - 2];
+            try writer.print(trim ++ " '{s}':\n", .{parser.tokenizer.slice(error_info.token)});
             try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
         },
-        // .unclosed_scope => {
-        //     try writer.print("unclosed scope:\n", .{});
-        //     try loc.printLineToken(.pointer, parser.tokenizer, writer);
-        // },
         .unexpected_token => {
             try writer.print("unexpected token '{s}':\n", .{@tagName(parser.tokenizer.kind(error_info.token))});
             try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);

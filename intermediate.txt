@@ -1,4 +1,13 @@
 
+1)
+const A = B
+const B = A
+//fold B.var_decl
+
+const main = fn void{
+  const a = ...
+}
+
 
 %variable%, 
 

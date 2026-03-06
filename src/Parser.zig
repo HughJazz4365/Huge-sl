@@ -54,9 +54,11 @@ token: Token = 0,
 
 error_info: ErrorInfo = .unknown,
 
+dependency_stack: List(Token) = .empty,
+
 pub fn dump(self: *Parser) void {
-    std.debug.print("function type elem:\n", .{});
-    for (self.function_type_elems.items) |t| std.debug.print("--- {}\n", .{t});
+    // std.debug.print("function type elem:\n", .{});
+    // for (self.function_type_elems.items) |t| std.debug.print("--- {}\n", .{t});
     // std.debug.print("types:\n", .{});
     // for (self.types.items) |t| std.debug.print("--- {any}\n", .{t});
     // std.debug.print("structs:\n", .{});
@@ -110,6 +112,7 @@ pub fn deinit(self: *Parser) void {
     self.functions.deinit(self.allocator);
     self.structs.deinit(self.allocator);
     self.scopes.deinit(self.allocator);
+    self.dependency_stack.deinit(self.allocator);
 
     self.number_values.deinit(self.allocator);
     self.x8_vectors.deinit(self.allocator);
@@ -250,9 +253,7 @@ fn foldNode(self: *Parser, node: Node) Error!void {
         },
         .u_op => |op| try self.foldUOp(op, node),
         .identifier => |token| {
-            var dependency_stack: List(Token) = .empty;
-            defer dependency_stack.deinit(self.allocator);
-            const vr = try self.getVariableReference(self.current_scope, node, token, &dependency_stack) orelse
+            const vr = try self.getVariableReference(self.current_scope, node, token) orelse
                 return self.errorOut(.{ .token = token, .payload = .undeclared_identifier });
             entry.* = if (try self.getVariableReferenceValue(vr)) |value|
                 .{ .value = value }
@@ -524,17 +525,19 @@ fn getFunctionDeclReturnType(self: *Parser, function: Function, parent_scope: Sc
     return @enumFromInt(rtype_node.value.payload);
 }
 fn foldVarDecl(self: *Parser, var_decl: VariableDeclaration, node: Node) Error!void {
+    self.getNodeEntry(node).* = .{ .folded_var_decl = var_decl };
+
     //check for redelaration
-    var dependency_stack: List(Token) = .empty;
-    defer dependency_stack.deinit(self.allocator);
-    if (try self.getVariableReference(self.current_scope, node, var_decl.name, &dependency_stack)) |vr|
+    if (try self.getVariableReference(self.current_scope, node, var_decl.name)) |vr| {
+        const decls: [2]Token = .{ var_decl.qualifier_token, self.getNodeEntryScope(vr.scope, vr.node).token() };
         return self.errorOut(.{
-            .token = var_decl.qualifier_token,
+            .token = @max(decls[0], decls[1]),
             .payload = .{ .redeclaration = .{
-                .statement = self.getNodeEntryScope(vr.scope, vr.node).token(),
+                .statement = @min(decls[0], decls[1]),
                 .name = var_decl.name,
             } },
         });
+    }
 
     const qualifier_info_node = node + 1;
     try self.foldNode(qualifier_info_node);
@@ -626,72 +629,62 @@ fn isQualifierCompatibleWithType(self: *Parser, qualifier: Qualifier, @"type": T
 
 fn getVariableReferenceValue(self: *Parser, var_ref: VariableReference) Error!?Value {
     const value_node = switch (self.getNodeEntryScope(var_ref.scope, var_ref.node).*) {
-        .var_decl => |vd| if (vd.qualifier == .@"const")
+        .var_decl, .folded_var_decl => |vd| if (vd.qualifier == .@"const")
             var_ref.node + 1 + self.nodeSequenceConsumption(var_ref.scope, var_ref.node + 1, 2)
         else
             return null,
         else => var_ref.node,
     };
+    std.debug.print("VALUE Node: {d}, tagname: {s}\n", .{
+        value_node,
+        @tagName(self.getNodeEntry(value_node).*),
+    });
     return try self.getValue(value_node);
 }
-fn getVariableReference(
-    self: *Parser,
-    scope: Scope,
-    node: Node,
-    token: Token,
-    dependency_stack: *List(Token),
-) Error!?VariableReference {
+fn getVariableReference(self: *Parser, scope: Scope, node: Node, token: Token) Error!?VariableReference {
     const last_scope = self.current_scope;
     defer self.current_scope = last_scope;
     self.current_scope = scope;
 
-    for (dependency_stack.items) |rs| {
-        if (rs == token or util.strEql(self.tokenizer.slice(rs), self.tokenizer.slice(token))) {
-            std.debug.print("DEP STACK: {any}\n", .{dependency_stack.items});
-            return self.errorOut(.{ .token = token, .payload = .dependency_loop });
-        }
-    }
+    // std.debug.print("name: {s}, DEP STACK({d}): {{", .{ self.tokenizer.slice(token), self.dependency_stack.items.len });
+    // for (self.dependency_stack.items) |ds| std.debug.print("({d}){s}, ", .{ ds, self.tokenizer.slice(ds) });
+    // std.debug.print("}}\n", .{});
+
+    // for (self.dependency_stack.items) |rs| {
+    //     if (rs == token or util.strEql(self.tokenizer.slice(rs), self.tokenizer.slice(token))) {
+    //         return self.errorOut(.{ .token = token, .payload = .dependency_loop });
+    //     }
+    // }
 
     const scope_entry = self.getScopeEntry(scope);
-    const current = if (scope_entry.container == .@"struct")
-        try self.getDeclScopeVarRef(node, token)
-    else
-        try self.getBlockScopeVarRef(node, token);
-    try dependency_stack.append(self.allocator, token);
-    defer dependency_stack.items.len -|= 1;
+
+    var i: Node = 0; //get scope var ref (move into own function?)
+    const cap = if (scope_entry.container.isDecl()) self.getBodySlice().len else node;
+    const current: ?Node = while (i < cap) {
+        defer i += self.nodeConsumption(i);
+
+        if (i == node and scope_entry.container.isDecl()) continue;
+        if (try self.getStatementVarRef(i, token))
+            break i;
+    } else null;
 
     return if (current) |c| .{ .node = c, .scope = scope } else //
     if (self.isScopeFile(scope)) null else //
-    try self.getVariableReference(scope_entry.parent, scope_entry.getDeclNode(self), token, dependency_stack);
-}
-//both those functions should return VariableReference
-//get block scope var ref should loop statements while < node: and check
-fn getBlockScopeVarRef(self: *Parser, node: Node, token: Token) Error!?Node {
-    return self.getDeclScopeVarRef(node, token);
+    try self.getVariableReference(scope_entry.parent, scope_entry.getDeclNode(self), token);
 }
 
-fn getDeclScopeVarRef(self: *Parser, node: Node, token: Token) Error!?Node {
-    const body = self.getBodySlice();
-    var i: Node = 0;
+fn getStatementVarRef(self: *Parser, node: Node, token: Token) Error!bool {
     const name = self.tokenizer.slice(token);
-    // std.debug.print("GET VAR REF OF: {s}\n", .{name});
-    while (i < body.len) {
-        const consumption = self.nodeConsumption(i);
-        defer i += consumption;
-
-        if (i == node) continue;
-        switch (self.getNodeEntry(i).*) {
-            .var_decl => |vd| if (vd.name == token or util.strEql(
-                name,
-                self.tokenizer.slice(vd.name),
-            )) {
-                try self.foldNode(i);
-                return i;
-            },
-            else => {},
-        }
-    }
-    return null;
+    return switch (self.getNodeEntry(node).*) {
+        .var_decl, .folded_var_decl => |vd| if (vd.name == token or util.strEql(
+            name,
+            self.tokenizer.slice(vd.name),
+        )) {
+            try self.foldNode(node);
+            return true;
+        } else false,
+        else => false,
+    };
 }
 fn implicitCast(self: *Parser, node: Node, @"type": Type) Error!void {
     // std.debug.print("IMPLICIT CAST TO : {f}\n", .{FatType{ .self = self, .type = @"type" }});
@@ -793,7 +786,10 @@ fn typeOf(self: *Parser, node: Node) Error!Type {
             try self.typeOf(node + 1 + self.nodeConsumption(node + 1)),
         ),
         .u_op => |u_op| try self.typeOfUOp(u_op.op, try self.typeOf(node + 1)),
-        .var_ref => |vr| @enumFromInt(self.getNodeEntryScope(vr.scope, vr.node + 1 + self.nodeConsumption(vr.node + 1)).value.payload),
+        .var_ref => |vr| @enumFromInt(self.getNodeEntryScope(
+            vr.scope,
+            vr.node + 1 + self.nodeConsumption(vr.node + 1),
+        ).value.payload),
 
         //return type of target for now
         .indexing => blk: {
@@ -897,7 +893,7 @@ pub fn nodeConsumptionScope(self: *Parser, scope: Scope, node: u32) u32 {
     // function_decl: Function, //[fn_decl][args...][rtype][body...]
     // branch,
     var consumption: u32 = switch (self.getNodeEntryScope(scope, node).*) {
-        .var_decl => 1 + self.nodeSequenceConsumption(scope, node + 1, 3),
+        .var_decl, .folded_var_decl => 1 + self.nodeSequenceConsumption(scope, node + 1, 3),
         .bin_op, .indexing, .assignment => 1 + self.nodeSequenceConsumption(scope, node + 1, 2),
         .u_op, .@"return", .function_param => 1 + self.nodeConsumption(node + 1),
         .null => 1,
@@ -1647,13 +1643,14 @@ pub const NodeEntry = union(enum) {
 
     //statement
     var_decl: VariableDeclaration, //[var_decl][qualifier_info][type][initializer]
+    folded_var_decl: VariableDeclaration,
     pub fn token(self: NodeEntry) Token {
         return switch (self) {
             .null, .pad => 0, //unknown
             .array_type_decl, .branch, .loop, .var_ref => 0, //
 
             .function_param => |fp| fp.name,
-            .var_decl => |vd| vd.qualifier_token,
+            .var_decl, .folded_var_decl => |vd| vd.qualifier_token,
             .identifier,
             .assignment,
             .indexing,
@@ -2024,7 +2021,8 @@ const FatNode = struct {
                 entry.node.* += 1;
                 try writer.print("{f} = {f}", .{ entry, entry });
             },
-            .var_decl => |var_decl| {
+            .var_decl, .folded_var_decl => |var_decl| {
+                if (body[entry.node.*] == .folded_var_decl) try writer.writeByte('*');
                 entry.node.* += 1;
                 try writer.print("{s}", .{@tagName(var_decl.qualifier)});
                 if (var_decl.qualifier == .compute) {
@@ -2063,7 +2061,7 @@ const FatNode = struct {
             .var_ref => |vr| {
                 entry.node.* += 1;
                 try writer.print("'{s}", .{
-                    entry.self.tokenizer.slice(entry.self.getNodeEntryScope(vr.scope, vr.node).var_decl.name),
+                    entry.self.tokenizer.slice(entry.self.getNodeEntryScope(vr.scope, vr.node).folded_var_decl.name),
                 });
             },
             .null => {

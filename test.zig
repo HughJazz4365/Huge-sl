@@ -1,8 +1,6 @@
 const std = @import("std");
-const A = B;
-const B = A;
+
 pub fn main() !void {
-    _ = B;
     std.debug.print("S: {d}\n", .{@sizeOf(@Vector(3, f64))});
     std.debug.print("b: {}\n", .{@as(f32, -0.0) == @as(f32, 0.0)});
     //2, f32 => 64

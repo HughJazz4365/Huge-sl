@@ -1,10 +1,11 @@
+//inner scope variables accessing variable that declares the scope inner variable is in
 vertex vert = fn void{
 	push vertex_buffer : *f32x3
 	@position = .{vertex_buffer[@vertex_id], 1} 
 }
 
-const B = 3
-const A = 4
+//const A = B
+//const B = A
 fragment frag = fn f32x4 {
 	return .{1}
 }
