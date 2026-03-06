@@ -28,7 +28,7 @@ pub fn test_() !void {
         Parser.TypeEntry,
         Parser.FunctionEntry,
         Tokenizer.TokenEntry,
-        IR.Instruction,
+        IR.InstructionData,
     }) |_| {}
     // }) |T|
     // std.debug.print("size of {s}: {d}, align: {d}\n", .{ @typeName(T), @sizeOf(T), @alignOf(T) });
@@ -67,7 +67,7 @@ pub fn test_() !void {
                 try error_message.printErrorMessageParser(&parser, &file_writer.interface);
             return err;
         };
-        var ir = IR.new(&parser, allocator);
+        var ir = try IR.new(&parser, allocator);
         defer ir.deinit();
 
         try ir.lower();

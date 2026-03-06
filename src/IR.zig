@@ -9,11 +9,16 @@ parser: *Parser,
 
 types: List(TypeEntry) = .empty,
 
-pub fn new(parser: *Parser, allocator: Allocator) IR {
-    return .{
+entry_points: List(EntryPoint) = .empty,
+current_entry_point: usize = 0,
+
+pub fn new(parser: *Parser, allocator: Allocator) Error!IR {
+    var ir: IR = .{
         .parser = parser,
         .arena_allocator = .init(allocator),
     };
+    try ir.types.append(ir.arena(), .void);
+    return ir;
 }
 
 pub fn deinit(self: IR) void {
@@ -21,8 +26,55 @@ pub fn deinit(self: IR) void {
 }
 
 pub fn lower(self: *IR) Error!void {
-    try self.types.append(self.arena(), .void);
+    const body = self.parser.getScopeEntry(.root_source_file).body.items;
+    var node: Parser.Node = 0;
+    while (node < body.len) {
+        defer node += self.parser.nodeConsumptionScope(.root_source_file, node);
+        const node_entry = body[node];
+
+        if (node_entry == .var_decl and node_entry.var_decl.qualifier.isEntryPoint()) {
+            const function_node = node + 1 + self.parser.nodeSequenceConsumption(.root_source_file, node + 1, 2);
+
+            const function_value = (try self.parser.getValue(function_node)).?;
+            const function: Parser.Function = @enumFromInt(function_value.payload);
+
+            const entry_point_scope = self.parser.getFunctionEntry(function).scope;
+            _ = entry_point_scope;
+
+            self.current_entry_point = self.entry_points.items.len;
+            try self.entry_points.append(self.arena(), .{
+                .parser_id = function,
+                // .body = try self.lowerScope(entry_point_scope),
+                .name = try self.dupeFunctionName(function),
+                .kind = switch (node_entry.var_decl.qualifier) {
+                    .vertex => .vertex,
+                    .fragment => .fragment,
+                    else => .compute,
+                },
+                // .compute_workgroup_size = 0, //??
+            });
+        }
+    }
 }
+// fn lowerEntryPoint(self: *IR) Error!void{}
+// fn lowerStatement(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction.ID {}
+// fn lowerExpression(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction.ID {}
+
+const EntryPoint = struct {
+    parser_id: Parser.Function,
+    body: Instruction = null_instruction,
+
+    name: []const u8,
+    kind: ExecutionModel,
+
+    compute_workgroup_size: [3]u32 = @splat(1), //??
+    // //some push constant info
+    // //input variables []Variable
+    // //output variables []Variable
+    // local_variables: List(VariableEntry) = .empty,
+
+    const ExecutionModel = enum { vertex, fragment, compute };
+};
 
 const GlobalVariable = struct {
     storage_class: StorageClass,
@@ -116,23 +168,24 @@ const OpCode = enum(u32) {
     initialize_local_variable, //[localvarid][id]
 };
 
-pub const Instruction = struct {
+pub const Instruction = u32;
+const null_instruction = ~@as(Instruction, 0);
+
+pub const InstructionData = struct {
     operands: [*]u32 = undefined,
 
     operand_count: u32 = 0,
     op: OpCode = undefined,
     type: Type = undefined,
 
-    next: ID = null_id,
+    next: Instruction = null_instruction,
 
-    const null_id = ~@as(ID, 0);
-    pub const ID = u32;
-    pub fn format(self: Instruction, writer: *std.Io.Writer) !void {
+    pub fn format(self: InstructionData, writer: *std.Io.Writer) !void {
         try writer.print("{s}({d}) -> {d}:{any}", .{
             @tagName(self.op),
-            self.operands.len,
+            self.operand_count,
             self.next,
-            self.operands,
+            self.operands[0..self.operand_count],
         });
     }
 };
@@ -142,24 +195,24 @@ inline fn arena(self: *IR) Allocator {
 }
 
 const InstructionPool = struct {
-    blocks: List([]Instruction) = .empty,
+    blocks: List([]InstructionData) = .empty,
     count: u32 = 0,
     const block_size = 32;
 
-    pub fn append(self: *InstructionPool, allocator: Allocator, inst: Instruction) !Instruction.ID {
+    pub fn append(self: *InstructionPool, allocator: Allocator, inst: InstructionData) !InstructionData.ID {
         const ptr = try self.alloc(allocator);
         ptr.* = inst;
         return self.count - 1;
     }
-    pub fn get(self: *InstructionPool, id: Instruction.ID) *Instruction {
+    pub fn get(self: *InstructionPool, id: InstructionData.ID) *InstructionData {
         return &self.blocks.items[id / block_size][id % block_size];
     }
-    pub fn new(self: *InstructionPool, allocator: Allocator) !Instruction.ID {
+    pub fn new(self: *InstructionPool, allocator: Allocator) !InstructionData.ID {
         // _ = try self.alloc(allocator);
         // return self.count - 1;
         return self.append(allocator, .{});
     }
-    fn alloc(self: *InstructionPool, allocator: Allocator) !*Instruction {
+    fn alloc(self: *InstructionPool, allocator: Allocator) !*InstructionData {
         const blocks_len = self.blocks.items.len;
         if (blocks_len > 0) {
             const local_id = self.count % blocks_len;
@@ -168,12 +221,17 @@ const InstructionPool = struct {
                 return &self.blocks.items[self.count / blocks_len][local_id];
             }
         }
-        const new_block = try allocator.alloc(Instruction, block_size);
+        const new_block = try allocator.alloc(InstructionData, block_size);
         try self.blocks.append(allocator, new_block);
         self.count += 1;
         return @ptrCast(new_block.ptr);
     }
 };
+fn dupeFunctionName(self: *IR, function: Parser.Function) Error![]const u8 {
+    const token = self.parser.getFunctionEntry(function).name;
+    const slice = self.parser.tokenizer.slice(token);
+    return try self.arena().dupe(u8, slice);
+}
 
 const Allocator = std.mem.Allocator;
 const List = std.ArrayList;
