@@ -1,3 +1,5 @@
+//TODO: proper int/float literal parsing
+
 //TODO: if arg_count=0 function_type.id could just be Type
 //with no function_type_elems involved
 
@@ -50,6 +52,12 @@ error_info: ErrorInfo = .unknown,
 
 //each entry should store Scope to allow recursion
 dependency_stack: List(Token) = .empty,
+
+//"output"
+entry_point_infos: List(EntryPointInfo) = .empty,
+global_push_constant_count: usize = 0,
+
+push_constant_infos: List(PushConstantInfo) = .empty,
 
 pub fn dump(self: *Parser) void {
     // std.debug.print("function type elem:\n", .{});
@@ -116,6 +124,9 @@ pub fn deinit(self: *Parser) void {
     self.x32_vectors.deinit(self.allocator);
     self.x64_vectors.deinit(self.allocator);
     self.matrix_values.deinit(self.allocator);
+
+    self.push_constant_infos.deinit(self.allocator);
+    self.entry_point_infos.deinit(self.allocator);
 }
 
 pub fn parse(self: *Parser, tokenizer: Tokenizer) Error!void {
@@ -124,7 +135,29 @@ pub fn parse(self: *Parser, tokenizer: Tokenizer) Error!void {
     const s = try self.parseFile(tokenizer);
     self.current_scope = self.getStructEntry(s).scope;
     try self.foldScope(self.current_scope);
+
+    try self.gatherEntryPointInfo();
 }
+
+fn gatherEntryPointInfo(self: *Parser) Error!void {
+    _ = self;
+}
+
+const EntryPointInfo = struct {
+    name: Token,
+    function: Function,
+
+    local_push_constant_offset: usize,
+    local_push_constant_count: usize = 0,
+
+    stage: hgsl.Stage,
+    workgroup_size: [3]u32 = @splat(1),
+};
+
+const PushConstantInfo = struct {
+    name: Token,
+    type: Type,
+};
 
 fn foldScope(self: *Parser, scope: Scope) Error!void {
     const last_scope = self.current_scope;
@@ -158,15 +191,16 @@ fn foldDeclScope(self: *Parser) Error!void {
 }
 
 fn isStatementSignificantDeclScope(self: *Parser, node: Node) bool {
-    if (true) return true;
+    // if (true) return true;
     return switch (self.getNodeEntry(node).*) {
-        .var_decl => |var_decl| var_decl.qualifier.isEntryPoint(),
+        .var_decl => |var_decl| //
+        var_decl.qualifier.isEntryPoint() or var_decl.qualifier == .push,
         else => false,
     };
 }
 
 fn isStatementSignificantBlockScope(self: *Parser, node: Node) bool {
-    if (true) return true;
+    // if (true) return true;
     return switch (self.getNodeEntry(node).*) {
         .@"return", .assignment => true,
         else => false,

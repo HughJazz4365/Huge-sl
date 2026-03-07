@@ -1,4 +1,4 @@
-const vert = entrypoint(.vertex){
+vertex vert = fn f32x2{
 	const verts : [4]vec2 = .{
 		.{-1,-1},
 		.{-1, 1},
@@ -7,11 +7,12 @@ const vert = entrypoint(.vertex){
 	}
 
 	const pos = verts[@vertex_id]
-	@position = .{pos, 0, 1}
-	out uv : vec2 
+	@position = pos.xy01
+
+	const uv = pos * 0.5 + .{0.5}
+	return uv;
 }
 
-const frag = entrypoint(.fragment){
-    in uv: vec2
-	out col : vec4 = .{1, 0, 1, 1}
+fragment frag = fn(uv: f32x2) f32x4{
+	return uv.xy01
 }

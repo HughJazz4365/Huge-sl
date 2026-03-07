@@ -1,4 +1,4 @@
-
+//old 
 const frag = entrypoint(.fragment){
 	const light_dir = |vec3{3, -4, 0}
 	const light_color: vec3 = .{0xff1 & 834} //@colHex(0xFA_FD_55)

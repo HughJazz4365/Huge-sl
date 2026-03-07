@@ -15,6 +15,8 @@ pub const ParserErrorInfo = struct {
     //plan the error message and information dependecies for
     //each error kind
     pub const Payload = union(enum) {
+        push_constant_buffer_overflow,
+
         invalid_builtin,
         unexpected_token,
         undeclared_identifier,

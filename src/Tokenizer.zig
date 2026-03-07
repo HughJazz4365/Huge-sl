@@ -128,7 +128,17 @@ fn getNextTokenEntry(self: *Tokenizer) Error!?TokenEntry {
     if (self.matchOperator(
         bytes,
         if (self.tokenCount() == 0) false else switch (self.kind(self.tokenCount() - 1)) {
-            .identifier, .int_literal, .float_literal, .true, .false, .@")", .@"]", .@"}" => true,
+            //if the previous token is one of those -> bin_op_priority = true
+            .identifier,
+            .builtin,
+            .int_literal,
+            .float_literal,
+            .true,
+            .false,
+            .@")",
+            .@"]",
+            .@"}",
+            => true,
             //type literal
             else => false,
         },

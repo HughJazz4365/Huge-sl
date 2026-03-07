@@ -154,7 +154,8 @@ const OpCode = enum(u32) {
 
     composite_extract,
 
-    device_pointer_load, //[ptr]
+    // device_pointer_load?, //[ptr]
+    // device_pointer_store?, //[ptr]
     load, //[var]
     store, //[var][value]
     access_chain, //[var][index0..]

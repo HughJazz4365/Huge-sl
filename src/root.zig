@@ -20,6 +20,15 @@ pub const Error = error{
 
     CompilationError,
 };
+const push_buffer_size_vulkan_required = 128;
+pub const Settings = struct {
+    //bytes
+    push_constant_buffer_size: u32 = push_buffer_size_vulkan_required,
+    target: Target,
+    optimize: Optimize,
+};
+const Target = union(enum) { vulkan };
+const Optimize = enum { none, full };
 pub fn test_() !void {
     inline for (&[_]type{
         Parser.NodeEntry,
