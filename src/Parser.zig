@@ -3,8 +3,6 @@
 //TODO: if arg_count=0 function_type.id could just be Type
 //with no function_type_elems involved
 
-//TODO: PUSH CONSTANTS??
-
 //bin op assignments( a *= b, c -= 1 )
 
 //TODO: foldInsignificant
@@ -60,6 +58,25 @@ global_push_constant_count: usize = 0,
 push_constant_infos: List(PushConstantInfo) = .empty,
 
 pub fn dump(self: *Parser) void {
+    std.debug.print("push constant infos({d}, global: {d}):\n", .{
+        self.push_constant_infos.items.len,
+        self.global_push_constant_count,
+    });
+    for (self.push_constant_infos.items) |pc_info| std.debug.print("--- {s}: {f}\n", .{
+        self.tokenizer.slice(pc_info.name),
+        FatType{ .self = self, .type = pc_info.type },
+    });
+
+    std.debug.print("entry point infos({d}):\n", .{self.entry_point_infos.items.len});
+    for (self.entry_point_infos.items) |ep_info|
+        std.debug.print("---(fn:{d}) {s} {s}[pc = {d}..{d}]\n", .{
+            @intFromEnum(ep_info.function),
+            @tagName(ep_info.stage),
+            self.tokenizer.slice(ep_info.name),
+            ep_info.local_push_constant_offset,
+            ep_info.local_push_constant_offset + ep_info.local_push_constant_count,
+        });
+
     // std.debug.print("function type elem:\n", .{});
     // for (self.function_type_elems.items) |t| std.debug.print("--- {}\n", .{t});
     // std.debug.print("types:\n", .{});
@@ -136,19 +153,75 @@ pub fn parse(self: *Parser, tokenizer: Tokenizer) Error!void {
     self.current_scope = self.getStructEntry(s).scope;
     try self.foldScope(self.current_scope);
 
-    try self.gatherEntryPointInfo();
+    try self.gatherEntryPointInfos();
 }
 
-fn gatherEntryPointInfo(self: *Parser) Error!void {
-    _ = self;
+fn gatherEntryPointInfos(self: *Parser) Error!void {
+    self.current_scope = .root_source_file;
+    var statement: Node = 0;
+    const body = self.getBodySlice();
+    while (statement < body.len) {
+        defer statement += self.nodeConsumption(statement);
+        if (body[statement] != .folded_var_decl) continue;
+        const var_decl = body[statement].folded_var_decl;
+
+        const qualifier_info_node = statement + 1;
+        const type_node = qualifier_info_node + self.nodeConsumption(qualifier_info_node);
+        const initializer_node = type_node + self.nodeConsumption(type_node);
+
+        switch (var_decl.qualifier) {
+            .push => {
+                const pc_info: PushConstantInfo = .{
+                    .name = var_decl.name,
+                    .type = @enumFromInt(self.getValuePayload(type_node)),
+                };
+                try self.push_constant_infos.append(self.allocator, pc_info);
+                self.global_push_constant_count += 1;
+            },
+            else => |q| if (q.getStage()) |stage| {
+                const ep_info: EntryPointInfo = .{
+                    .name = var_decl.name,
+                    .function = @enumFromInt(self.getValuePayload(initializer_node)),
+                    .stage = stage,
+                    // .workgroup_size = getvalue(qual_info)
+                };
+                try self.entry_point_infos.append(self.allocator, ep_info);
+            },
+        }
+    }
+    for (self.entry_point_infos.items) |*ep_info| {
+        var pc_count: usize = 0;
+        ep_info.local_push_constant_offset = self.push_constant_infos.items.len;
+        defer ep_info.local_push_constant_count = pc_count;
+
+        self.current_scope = self.getFunctionEntry(ep_info.function).scope;
+
+        statement = 0;
+        const ep_body = self.getBodySlice();
+        while (statement < ep_body.len) {
+            defer statement += self.nodeConsumption(statement);
+
+            if (ep_body[statement] != .folded_var_decl) continue;
+            const var_decl = ep_body[statement].folded_var_decl;
+
+            if (var_decl.qualifier != .push) continue;
+
+            pc_count += 1;
+            const type_node = statement + 1 + self.nodeConsumption(statement + 1);
+            try self.push_constant_infos.append(self.allocator, .{
+                .name = var_decl.name,
+                .type = @enumFromInt(self.getValuePayload(type_node)),
+            });
+        }
+    }
 }
 
 const EntryPointInfo = struct {
     name: Token,
     function: Function,
 
-    local_push_constant_offset: usize,
-    local_push_constant_count: usize = 0,
+    local_push_constant_offset: usize = undefined,
+    local_push_constant_count: usize = undefined,
 
     stage: hgsl.Stage,
     workgroup_size: [3]u32 = @splat(1),
@@ -202,6 +275,7 @@ fn isStatementSignificantDeclScope(self: *Parser, node: Node) bool {
 fn isStatementSignificantBlockScope(self: *Parser, node: Node) bool {
     // if (true) return true;
     return switch (self.getNodeEntry(node).*) {
+        .var_decl => |var_decl| var_decl.qualifier == .push,
         .@"return", .assignment => true,
         else => false,
     };
@@ -216,6 +290,14 @@ pub fn getValue(self: *Parser, node: Node) Error!?Value {
             .token = fn_decl.token,
         },
         else => null,
+    };
+}
+
+pub fn getValuePayload(self: *Parser, node: Node) u32 {
+    return switch (self.getNodeEntry(node).*) {
+        .value => |value| value.payload,
+        .function_declaration => |fn_decl| @intFromEnum(fn_decl.function),
+        else => unreachable,
     };
 }
 
@@ -1741,6 +1823,14 @@ pub const Qualifier = enum {
     vertex,
     fragment,
     compute, //[workgroup size]
+    pub fn getStage(self: Qualifier) ?hgsl.Stage {
+        return switch (self) {
+            .vertex => .vertex,
+            .fragment => .fragment,
+            .compute => .compute,
+            else => null,
+        };
+    }
     pub fn isEntryPoint(self: Qualifier) bool {
         return util.enumInRange(Qualifier, self, .vertex, .compute);
     }

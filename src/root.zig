@@ -51,7 +51,7 @@ pub fn test_() !void {
     var buf: [128]u8 = undefined;
     var file_writer = std.Io.File.stdout().writer(io, &buf);
 
-    const path = "test.hgsl";
+    const path = "samples/test.hgsl";
     const source = readFile(io, allocator, path) catch
         return Error.FileReadFailed;
 

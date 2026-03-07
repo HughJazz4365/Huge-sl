@@ -9,7 +9,6 @@ parser: *Parser,
 
 types: List(TypeEntry) = .empty,
 
-entry_points: List(EntryPoint) = .empty,
 current_entry_point: usize = 0,
 
 pub fn new(parser: *Parser, allocator: Allocator) Error!IR {
@@ -26,55 +25,11 @@ pub fn deinit(self: IR) void {
 }
 
 pub fn lower(self: *IR) Error!void {
-    const body = self.parser.getScopeEntry(.root_source_file).body.items;
-    var node: Parser.Node = 0;
-    while (node < body.len) {
-        defer node += self.parser.nodeConsumptionScope(.root_source_file, node);
-        const node_entry = body[node];
-
-        if (node_entry == .var_decl and node_entry.var_decl.qualifier.isEntryPoint()) {
-            const function_node = node + 1 + self.parser.nodeSequenceConsumption(.root_source_file, node + 1, 2);
-
-            const function_value = (try self.parser.getValue(function_node)).?;
-            const function: Parser.Function = @enumFromInt(function_value.payload);
-
-            const entry_point_scope = self.parser.getFunctionEntry(function).scope;
-            _ = entry_point_scope;
-
-            self.current_entry_point = self.entry_points.items.len;
-            try self.entry_points.append(self.arena(), .{
-                .parser_id = function,
-                // .body = try self.lowerScope(entry_point_scope),
-                .name = try self.dupeFunctionName(function),
-                .kind = switch (node_entry.var_decl.qualifier) {
-                    .vertex => .vertex,
-                    .fragment => .fragment,
-                    else => .compute,
-                },
-                // .compute_workgroup_size = 0, //??
-            });
-        }
-    }
+    _ = self;
 }
 // fn lowerEntryPoint(self: *IR) Error!void{}
 // fn lowerStatement(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction.ID {}
 // fn lowerExpression(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction.ID {}
-
-const EntryPoint = struct {
-    parser_id: Parser.Function,
-    body: Instruction = null_instruction,
-
-    name: []const u8,
-    kind: ExecutionModel,
-
-    compute_workgroup_size: [3]u32 = @splat(1), //??
-    // //some push constant info
-    // //input variables []Variable
-    // //output variables []Variable
-    // local_variables: List(VariableEntry) = .empty,
-
-    const ExecutionModel = enum { vertex, fragment, compute };
-};
 
 const GlobalVariable = struct {
     storage_class: StorageClass,
