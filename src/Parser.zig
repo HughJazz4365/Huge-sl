@@ -52,31 +52,30 @@ error_info: ErrorInfo = .unknown,
 dependency_stack: List(Token) = .empty,
 
 //"output"
-entry_point_infos: List(EntryPointInfo) = .empty,
+entry_points: List(EntryPointInfo) = .empty,
 global_push_constant_count: usize = 0,
 
-push_constant_infos: List(PushConstantInfo) = .empty,
+push_constants: List(PushConstantInfo) = .empty,
 
 pub fn dump(self: *Parser) void {
-    std.debug.print("push constant infos({d}, global: {d}):\n", .{
-        self.push_constant_infos.items.len,
-        self.global_push_constant_count,
-    });
-    for (self.push_constant_infos.items) |pc_info| std.debug.print("--- {s}: {f}\n", .{
-        self.tokenizer.slice(pc_info.name),
-        FatType{ .self = self, .type = pc_info.type },
-    });
+    // std.debug.print("push constant infos({d}, global: {d}):\n", .{
+    //     self.push_constants.items.len,
+    //     self.global_push_constant_count,
+    // });
+    // for (self.push_constants.items) |pc_info| std.debug.print("--- {s}: {f}\n", .{
+    //     self.tokenizer.slice(pc_info.name),
+    //     FatType{ .self = self, .type = pc_info.type },
+    // });
 
-    std.debug.print("entry point infos({d}):\n", .{self.entry_point_infos.items.len});
-    for (self.entry_point_infos.items) |ep_info|
-        std.debug.print("---(fn:{d}) {s} {s}[pc = {d}..{d}]\n", .{
-            @intFromEnum(ep_info.function),
-            @tagName(ep_info.stage),
-            self.tokenizer.slice(ep_info.name),
-            ep_info.local_push_constant_offset,
-            ep_info.local_push_constant_offset + ep_info.local_push_constant_count,
-        });
-
+    // std.debug.print("entry point infos({d}):\n", .{self.entry_points.items.len});
+    // for (self.entry_points.items) |ep_info|
+    //     std.debug.print("---(fn:{d}) {s} {s}[pc = {d}..{d}]\n", .{
+    //         @intFromEnum(ep_info.function),
+    //         @tagName(ep_info.stage),
+    //         self.tokenizer.slice(ep_info.name),
+    //         ep_info.local_push_constant_offset,
+    //         ep_info.local_push_constant_offset + ep_info.local_push_constant_count,
+    //     });
     // std.debug.print("function type elem:\n", .{});
     // for (self.function_type_elems.items) |t| std.debug.print("--- {}\n", .{t});
     // std.debug.print("types:\n", .{});
@@ -142,8 +141,8 @@ pub fn deinit(self: *Parser) void {
     self.x64_vectors.deinit(self.allocator);
     self.matrix_values.deinit(self.allocator);
 
-    self.push_constant_infos.deinit(self.allocator);
-    self.entry_point_infos.deinit(self.allocator);
+    self.push_constants.deinit(self.allocator);
+    self.entry_points.deinit(self.allocator);
 }
 
 pub fn parse(self: *Parser, tokenizer: Tokenizer) Error!void {
@@ -175,7 +174,7 @@ fn gatherEntryPointInfos(self: *Parser) Error!void {
                     .name = var_decl.name,
                     .type = @enumFromInt(self.getValuePayload(type_node)),
                 };
-                try self.push_constant_infos.append(self.allocator, pc_info);
+                try self.push_constants.append(self.allocator, pc_info);
                 self.global_push_constant_count += 1;
             },
             else => |q| if (q.getStage()) |stage| {
@@ -185,13 +184,13 @@ fn gatherEntryPointInfos(self: *Parser) Error!void {
                     .stage = stage,
                     // .workgroup_size = getvalue(qual_info)
                 };
-                try self.entry_point_infos.append(self.allocator, ep_info);
+                try self.entry_points.append(self.allocator, ep_info);
             },
         }
     }
-    for (self.entry_point_infos.items) |*ep_info| {
+    for (self.entry_points.items) |*ep_info| {
         var pc_count: usize = 0;
-        ep_info.local_push_constant_offset = self.push_constant_infos.items.len;
+        ep_info.local_push_constant_offset = self.push_constants.items.len;
         defer ep_info.local_push_constant_count = pc_count;
 
         self.current_scope = self.getFunctionEntry(ep_info.function).scope;
@@ -208,7 +207,7 @@ fn gatherEntryPointInfos(self: *Parser) Error!void {
 
             pc_count += 1;
             const type_node = statement + 1 + self.nodeConsumption(statement + 1);
-            try self.push_constant_infos.append(self.allocator, .{
+            try self.push_constants.append(self.allocator, .{
                 .name = var_decl.name,
                 .type = @enumFromInt(self.getValuePayload(type_node)),
             });
@@ -2209,3 +2208,16 @@ const UnaryOperator = Tokenizer.UnaryOperator;
 const Token = Tokenizer.Token;
 const TokenEntry = Tokenizer.TokenEntry;
 const activeTag = std.meta.activeTag;
+// .identifier => |identifier| blk: {
+//     for (self.access_dependency_stack.items) |i|
+//         if (util.strEql(identifier, i))
+//             return self.errorOut(.{ .dependency_loop = identifier });
+//     try self.access_dependency_stack.append(self.arena.allocator(), identifier);
+//     defer _ = self.access_dependency_stack.pop();
+
+//     const vr = try self.getVariableReference(identifier);
+//     break :blk if (access == .full and vr.var_ref.qualifier == .@"const" and vr.value != .null)
+//         vr.value
+//     else
+//         .{ .var_ref = vr.var_ref };
+// },

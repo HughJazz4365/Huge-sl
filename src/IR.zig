@@ -7,8 +7,11 @@ const IR = @This();
 arena_allocator: std.heap.ArenaAllocator,
 parser: *Parser,
 
+pool: InstructionPool = .{},
+
 types: List(TypeEntry) = .empty,
 
+entry_points: List(EntryPoint) = .empty,
 current_entry_point: usize = 0,
 
 pub fn new(parser: *Parser, allocator: Allocator) Error!IR {
@@ -25,11 +28,41 @@ pub fn deinit(self: IR) void {
 }
 
 pub fn lower(self: *IR) Error!void {
-    _ = self;
+    const ep_count = self.parser.entry_points.items.len;
+    self.entry_points = try .initCapacity(self.arena(), ep_count);
+    self.entry_points.items.len = ep_count;
+
+    for (self.parser.entry_points.items, self.entry_points.items) |ep_info, *ep| {
+        ep.body = null_instruction;
+        const scope = self.parser.getFunctionEntry(ep_info.function).scope;
+        const body = self.parser.getScopeEntry(scope).body.items;
+        var statement: Parser.Node = 0;
+        var inst: Instruction = null_instruction;
+        while (statement < body.len) {
+            defer statement = self.parser.nodeConsumptionScope(scope, statement);
+
+            const statement_instruction = try self.lowerStatement(scope, statement);
+            if (inst != null_instruction)
+                self.pool.get(inst).next = statement_instruction;
+            inst = statement_instruction;
+        }
+    }
 }
-// fn lowerEntryPoint(self: *IR) Error!void{}
-// fn lowerStatement(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction.ID {}
+fn lowerStatement(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction {
+    _ = self;
+    _ = scope;
+    std.debug.print("lower statement node: {d}\n", .{node});
+    return null_instruction;
+}
 // fn lowerExpression(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction.ID {}
+
+const EntryPoint = struct {
+    body: Instruction = null_instruction,
+    // //input variables []Variable
+    // //output variables []Variable
+    // local_variables: List(VariableEntry) = .empty,
+
+};
 
 const GlobalVariable = struct {
     storage_class: StorageClass,
@@ -155,15 +188,15 @@ const InstructionPool = struct {
     count: u32 = 0,
     const block_size = 32;
 
-    pub fn append(self: *InstructionPool, allocator: Allocator, inst: InstructionData) !InstructionData.ID {
+    pub fn append(self: *InstructionPool, allocator: Allocator, inst: InstructionData) !Instruction {
         const ptr = try self.alloc(allocator);
         ptr.* = inst;
         return self.count - 1;
     }
-    pub fn get(self: *InstructionPool, id: InstructionData.ID) *InstructionData {
+    pub fn get(self: *InstructionPool, id: Instruction) *InstructionData {
         return &self.blocks.items[id / block_size][id % block_size];
     }
-    pub fn new(self: *InstructionPool, allocator: Allocator) !InstructionData.ID {
+    pub fn new(self: *InstructionPool, allocator: Allocator) !Instruction {
         // _ = try self.alloc(allocator);
         // return self.count - 1;
         return self.append(allocator, .{});
