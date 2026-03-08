@@ -14,6 +14,9 @@ types: List(TypeEntry) = .empty,
 entry_points: List(EntryPoint) = .empty,
 current_entry_point: usize = 0,
 
+name_mappings: List(NameMapping) = .empty,
+const NameMapping = struct { name: []const u8, operand: Operand };
+
 pub fn new(parser: *Parser, allocator: Allocator) Error!IR {
     var ir: IR = .{
         .parser = parser,
@@ -49,10 +52,15 @@ pub fn lower(self: *IR) Error!void {
     }
 }
 fn lowerStatement(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction {
-    _ = self;
-    _ = scope;
-    std.debug.print("lower statement node: {d}\n", .{node});
-    return null_instruction;
+    //name -> operand mappings??
+    const entry = self.parser.getNodeEntryScope(scope, node).*;
+    return switch (entry) {
+        .folded_var_decl => |vd| switch (vd.qualifier) {
+            else => null_instruction,
+        },
+        else => null_instruction,
+    };
+    // std.debug.print("lower statement node: {d}\n", .{node});
 }
 // fn lowerExpression(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction.ID {}
 

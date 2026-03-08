@@ -2079,6 +2079,15 @@ const FatValue = struct {
         }
     }
 };
+const FatNodeU = struct {
+    self: *Parser,
+    node: Node,
+
+    pub fn format(entry: FatNodeU, writer: *std.Io.Writer) !void {
+        var node = entry.node;
+        try (FatNode{ .self = entry.self, .node = &node }).format(writer);
+    }
+};
 const FatNode = struct {
     self: *Parser,
     node: *Node,

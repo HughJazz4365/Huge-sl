@@ -9,6 +9,11 @@ pub const CI = i128;
 pub const CF = f64;
 
 pub const Stage = enum { fragment, vertex, compute };
+pub const StageInfo = union(Stage) {
+    fragment,
+    vertex,
+    compute: [3]u32,
+};
 
 pub const Error = error{
     OutOfMemory,
@@ -16,19 +21,67 @@ pub const Error = error{
 
     FileReadFailed,
 
-    //==============
-
     CompilationError,
 };
-const push_buffer_size_vulkan_required = 128;
 pub const Settings = struct {
-    //bytes
-    push_constant_buffer_size: u32 = push_buffer_size_vulkan_required,
+    push_constant_buffer_size: u32 =
+        push_buffer_size_vulkan_required,
     target: Target,
     optimize: Optimize,
+
+    const push_buffer_size_vulkan_required = 128;
+
+    const Target = union(enum) { vulkan: VulkanSettings };
+    const Optimize = enum { none, full };
+
+    const VulkanSettings = struct {
+        bindless_implementation: enum {
+            runtime_array_bindings,
+            descriptor_heaps, //??
+        },
+        storage_texture_rt_array_binding: u32 = 0,
+        sampled_texture_rt_array_binding: u32 = 1,
+
+        buffer_rt_array_binding_fallback: u32 = 2,
+    };
+    fn serialize() void {} //??
+    fn deserialize() void {}
 };
-const Target = union(enum) { vulkan };
-const Optimize = enum { none, full };
+
+pub const Result = struct {
+    bytes: []u8,
+    entry_points: []EntryPoint,
+
+    const EntryPoint = struct {
+        name: [:0]const u8,
+        stage_info: StageInfo,
+
+        push_constants: []const PushConstant = &.{},
+
+        io_entries: [*]const IOEntry = undefined,
+        input_count: u32 = 0,
+        output_count: u32 = 0,
+    };
+    const IOEntry = struct {
+        interpolation: Interpolation = .smooth,
+        type: IOType,
+    };
+    const Interpolation = enum { smooth, linear, flat };
+    const IOType = union(enum) {
+        scalar: Parser.TypeEntry.Scalar,
+        vector: Parser.TypeEntry.Vector,
+        // matrix: Parser.TypeEntry.Matrix,
+    };
+    const PushConstant = struct {
+        name: []const u8,
+        offset: usize,
+        size: usize,
+    };
+    pub fn free(self: Result, allocator: Allocator) void {
+        allocator.free(self.bytes);
+    }
+};
+
 pub fn test_() !void {
     inline for (&[_]type{
         Parser.NodeEntry,
