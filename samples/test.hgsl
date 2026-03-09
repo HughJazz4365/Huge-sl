@@ -1,7 +1,8 @@
 push vertex_buffer: *f32x3
 
 vertex vert = fn void{
-	@position = .{vertex_buffer[@vertex_id], 1} 
+	//@position = .{vertex_buffer[@vertex_id], 1} 
+	@position = .{f32x3{2}, 1} 
 }
 
 fragment frag = fn f32x4 {

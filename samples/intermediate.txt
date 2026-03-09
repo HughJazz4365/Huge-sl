@@ -14,6 +14,7 @@ types that can have constructor{
 3.+ composite_insert (vec, literal, index)
 4.+ composite_construct(elem0, ...) (fallback)
 
+//=================================================
 if(vectors.len == 1 and other.allComptime())
 	swizzle_literal
 if(vectors.len == 1 and other.len == 1)
@@ -22,6 +23,13 @@ else(vectors.len == 2 and other.len == 0)
 	swizzle
 else
 	composite construct
+
+for(elems)|e|{
+	e -> :
+	value(vector/scalar, comptime?)
+	indices()
+}
+//=================================================
 
 
 

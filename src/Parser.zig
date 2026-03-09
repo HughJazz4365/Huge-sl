@@ -293,8 +293,11 @@ pub fn getValue(self: *Parser, node: Node) Error!?Value {
     };
 }
 
-pub fn getValuePayload(self: *Parser, node: Node) u32 {
-    return switch (self.getNodeEntry(node).*) {
+pub inline fn getValuePayload(self: *Parser, node: Node) u32 {
+    return self.getValuePayloadScope(self.current_scope, node);
+}
+pub fn getValuePayloadScope(self: *Parser, scope: Scope, node: Node) u32 {
+    return switch (self.getNodeEntryScope(scope, node).*) {
         .value => |value| value.payload,
         .function_declaration => |fn_decl| @intFromEnum(fn_decl.function),
         else => unreachable,
@@ -881,7 +884,7 @@ fn isTypeImplicitlyCastable(self: *Parser, from: Type, to: Type) bool {
     };
 }
 
-fn typeOf(self: *Parser, node: Node) Error!Type {
+pub fn typeOf(self: *Parser, node: Node) Error!Type {
     return switch (self.getNodeEntry(node).*) {
         .builtin => try self.addType(.{ .vector = .{ .len = ._4, .scalar = .{ .layout = .float, .width = ._32 } } }),
         .value => |value| value.type,
