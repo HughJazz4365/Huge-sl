@@ -1,29 +1,32 @@
-entry_point.push_constants =>
-	root_source_file.push_constants, + 
-	entry_point_declared.push_constants
+lower constuctor:{
 
-after foldGlobalScope()
-
-construct: entry_points,
-		   global_push_constants,
-		   entry_points_aliases??, [lists]:
-
-//same as IR.EntryPoint basically
-//but everything must be checked by parser before lowering
-
-struct EntryPointInfo{
-	name: Token,
-    function: Function,
-	local_push_constants: List(PushConstantInfo)
-
-	execution_model : ExecutionModel,
-	compute_workgroup_size : [3]u32,
 }
-
-struct PushConstantInfo{
-	type: Type,
-	name: Token,
+types that can have constructor{
+	0. vector,
+	2. matrix,
+	3. array
 }
+0: possible_outputted_instructions:
 
-entry_point_infos: List(EntryPointInfo),
-global_push_constants: List(PushConstantInfo),
+0.+ swizzle (vec1, vec2, mask)
+1.+ swizzle_literal (vec, literals, mask)
+2.+ vector_dynamic_insert
+3.+ composite_insert (vec, literal, index)
+4.+ composite_construct(elem0, ...) (fallback)
+
+if(vectors.len == 1 and other.allComptime())
+	swizzle_literal
+if(vectors.len == 1 and other.len == 1)
+	 composite_insert
+else(vectors.len == 2 and other.len == 0)
+	swizzle
+else
+	composite construct
+
+
+
+
+types that can have struct_constructor{
+	0. struct,
+	1. bitfield
+}

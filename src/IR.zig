@@ -1,3 +1,4 @@
+//TODO: remove internal arena
 const std = @import("std");
 const hgsl = @import("root.zig");
 const Parser = @import("Parser.zig");
@@ -15,7 +16,27 @@ entry_points: List(EntryPoint) = .empty,
 current_entry_point: usize = 0,
 
 name_mappings: List(NameMapping) = .empty,
-const NameMapping = struct { name: []const u8, operand: Operand };
+
+const NameMapping = struct {
+    name: []const u8,
+    operand: Operand,
+    scope: Parser.Scope,
+};
+
+pub fn dump(self: *IR) void {
+    // for (self.entry_points.items) |ep|
+    // std.debug.print("EP:name: {s}, kind: {}\n", .{ ep.name, ep.kind });
+
+    std.debug.print("INSTRUCTION POOL: {d}\n", .{self.pool.count});
+    for (0..self.pool.count) |i| {
+        const block_index = i / InstructionPool.block_size;
+        const local_index = i % InstructionPool.block_size;
+        std.debug.print(
+            "{f}\n",
+            .{self.pool.blocks.items[block_index][local_index]},
+        );
+    }
+}
 
 pub fn new(parser: *Parser, allocator: Allocator) Error!IR {
     var ir: IR = .{
@@ -55,14 +76,34 @@ fn lowerStatement(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instr
     //name -> operand mappings??
     const entry = self.parser.getNodeEntryScope(scope, node).*;
     return switch (entry) {
-        .folded_var_decl => |vd| switch (vd.qualifier) {
-            else => null_instruction,
-        },
+        .folded_var_decl => |var_decl| self.lowerVariableDeclaration(scope, var_decl, node),
         else => null_instruction,
     };
     // std.debug.print("lower statement node: {d}\n", .{node});
 }
-// fn lowerExpression(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction.ID {}
+fn lowerVariableDeclaration(self: *IR, scope: Parser.Scope, var_decl: Parser.VariableDeclaration, node: Parser.Node) Error!Instruction {
+    return switch (var_decl.qualifier) {
+        .@"const" => blk: {
+            const value_node = node + 2 + self.parser.nodeConsumptionScope(scope, node + 2);
+            const initializer = try self.lowerExpression(scope, value_node);
+            try self.name_mappings.append(self.arena(), .{
+                .name = self.parser.tokenizer.slice(var_decl.name),
+                .operand = .{ .id = initializer, .kind = .intermediate },
+                .scope = scope,
+            });
+            break :blk initializer;
+        },
+        .@"var" => null_instruction,
+        .push, .workgroup => null_instruction,
+        .env, .vertex, .fragment, .compute => return null_instruction,
+    };
+}
+fn lowerExpression(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction {
+    const entry = self.parser.getNodeEntryScope(scope, node).*;
+    return switch (entry) {
+        else => null_instruction,
+    };
+}
 
 const EntryPoint = struct {
     body: Instruction = null_instruction,

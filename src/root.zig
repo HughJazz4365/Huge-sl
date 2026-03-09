@@ -8,8 +8,8 @@ const IR = @import("IR.zig");
 pub const CI = i128;
 pub const CF = f64;
 
-pub const Stage = enum { fragment, vertex, compute };
-pub const StageInfo = union(Stage) {
+pub const ShaderStage = enum { fragment, vertex, compute };
+pub const ShaderStageInfo = union(ShaderStage) {
     fragment,
     vertex,
     compute: [3]u32,
@@ -54,7 +54,7 @@ pub const Result = struct {
 
     const EntryPoint = struct {
         name: [:0]const u8,
-        stage_info: StageInfo,
+        stage_info: ShaderStageInfo,
 
         push_constants: []const PushConstant = &.{},
 
@@ -141,7 +141,7 @@ pub fn test_() !void {
         measure += @intCast(timestamp.durationTo(new_timestamp).nanoseconds);
         timestamp = new_timestamp;
         parser.dump();
-        // ir.dump();
+        ir.dump();
         parser.deinit();
     }
     std.debug.print(

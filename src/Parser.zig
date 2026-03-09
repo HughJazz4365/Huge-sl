@@ -1,3 +1,4 @@
+//BIG TODO: functions, control flow, imports
 //TODO: proper int/float literal parsing
 
 //TODO: if arg_count=0 function_type.id could just be Type
@@ -8,10 +9,6 @@
 //TODO: foldInsignificant
 //(to avoid 'const a = undecl_id' in the middle of the function)
 //(dont go into inner functions)
-
-//TODO: functions
-//TODO: 'generic' functions
-//TODO: @import("i.hgsl")
 
 const std = @import("std");
 const util = @import("util.zig");
@@ -71,7 +68,7 @@ pub fn dump(self: *Parser) void {
     // for (self.entry_points.items) |ep_info|
     //     std.debug.print("---(fn:{d}) {s} {s}[pc = {d}..{d}]\n", .{
     //         @intFromEnum(ep_info.function),
-    //         @tagName(ep_info.stage),
+    //         @tagName(ep_info.stage_info),
     //         self.tokenizer.slice(ep_info.name),
     //         ep_info.local_push_constant_offset,
     //         ep_info.local_push_constant_offset + ep_info.local_push_constant_count,
@@ -177,11 +174,16 @@ fn gatherEntryPointInfos(self: *Parser) Error!void {
                 try self.push_constants.append(self.allocator, pc_info);
                 self.global_push_constant_count += 1;
             },
-            else => |q| if (q.getStage()) |stage| {
+            else => |q| if (@as(?hgsl.ShaderStageInfo, switch (q) {
+                .vertex => .vertex,
+                .fragment => .fragment,
+                .compute => .{ .compute = @splat(1) },
+                else => null,
+            })) |si| {
                 const ep_info: EntryPointInfo = .{
                     .name = var_decl.name,
                     .function = @enumFromInt(self.getValuePayload(initializer_node)),
-                    .stage = stage,
+                    .stage_info = si,
                     // .workgroup_size = getvalue(qual_info)
                 };
                 try self.entry_points.append(self.allocator, ep_info);
@@ -222,8 +224,7 @@ const EntryPointInfo = struct {
     local_push_constant_offset: usize = undefined,
     local_push_constant_count: usize = undefined,
 
-    stage: hgsl.Stage,
-    workgroup_size: [3]u32 = @splat(1),
+    stage_info: hgsl.ShaderStageInfo,
 };
 
 const PushConstantInfo = struct {
@@ -1822,14 +1823,6 @@ pub const Qualifier = enum {
     vertex,
     fragment,
     compute, //[workgroup size]
-    pub fn getStage(self: Qualifier) ?hgsl.Stage {
-        return switch (self) {
-            .vertex => .vertex,
-            .fragment => .fragment,
-            .compute => .compute,
-            else => null,
-        };
-    }
     pub fn isEntryPoint(self: Qualifier) bool {
         return util.enumInRange(Qualifier, self, .vertex, .compute);
     }
