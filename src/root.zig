@@ -90,7 +90,6 @@ pub fn test_() !void {
         Parser.TypeEntry,
         Parser.FunctionEntry,
         Tokenizer.TokenEntry,
-        IR.InstructionData,
     }) |_| {}
     // }) |T|
     // std.debug.print("size of {s}: {d}, align: {d}\n", .{ @typeName(T), @sizeOf(T), @alignOf(T) });

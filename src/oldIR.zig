@@ -1,234 +1,281 @@
+//TODO: remove internal arena
+//arena only makes sense for InstructionData.operands
 const std = @import("std");
 const hgsl = @import("root.zig");
 const Parser = @import("Parser.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const IR = @This();
 
-arena: std.heap.ArenaAllocator,
+arena_allocator: std.heap.ArenaAllocator,
 parser: *Parser,
-current_entry_point: usize = 0,
 
 pool: InstructionPool = .{},
 
+types: List(TypeEntry) = .empty,
+
 entry_points: List(EntryPoint) = .empty,
-entry_point_aliases: void = undefined,
+current_entry_point: usize = 0,
 
-variables: List(VariableEntry) = .empty,
-builtin_variables: List(VariableEntry) = .empty,
-constants: List(ConstantEntry) = .empty,
+name_mappings: List(NameMapping) = .empty,
 
-//list of functions
-//shuffle_literals
-//extension information?
+const NameMapping = struct {
+    name: []const u8,
+    operand: Operand,
+    scope: Parser.Scope,
+};
 
-//create valid_ variations of statement NodeEntries
 pub fn dump(self: *IR) void {
     // for (self.entry_points.items) |ep|
     // std.debug.print("EP:name: {s}, kind: {}\n", .{ ep.name, ep.kind });
 
-    std.debug.print("INSTRUCTION POOL: {d}\n", .{self.pool.count});
-    for (0..self.pool.count) |i| {
-        const block_index = i / InstructionPool.block_size;
-        const local_index = i % InstructionPool.block_size;
-        std.debug.print(
-            "{f}\n",
-            .{self.pool.blocks.items[block_index][local_index]},
-        );
+    for (self.entry_points.items) |ep| {
+        std.debug.print("ENTRYPOINT:\n", .{});
+        var body = ep.body;
+        while (body != null_instruction) {
+            const data = self.pool.get(body).*;
+            std.debug.print("|{d}|{f}\n", .{ body, data });
+            body = data.next;
+        }
     }
+}
+
+pub fn new(parser: *Parser, allocator: Allocator) Error!IR {
+    var ir: IR = .{
+        .parser = parser,
+        .arena_allocator = .init(allocator),
+    };
+    try ir.types.append(ir.arena(), .void);
+    return ir;
+}
+
+pub fn deinit(self: IR) void {
+    self.arena_allocator.deinit();
 }
 
 pub fn lower(self: *IR) Error!void {
-    const body = self.parser.getScopeEntry(.root_source_file).body.items;
-    var node: Parser.Node = 0;
-    while (node < body.len) {
-        defer node += self.parser.nodeConsumptionScope(.root_source_file, node);
-        const node_entry = body[node];
+    const ep_count = self.parser.entry_points.items.len;
+    self.entry_points = try .initCapacity(self.arena(), ep_count);
+    self.entry_points.items.len = ep_count;
+    @memset(self.entry_points.items, .{});
 
-        if (node_entry == .var_decl and node_entry.var_decl.qualifier.isEntryPoint()) {
-            const function_node = node + 1 + self.parser.nodeSequenceConsumption(.root_source_file, node + 1, 2);
+    for (self.parser.entry_points.items, self.entry_points.items) |ep_info, *ep| {
+        const scope = self.parser.getFunctionEntry(ep_info.function).scope;
+        self.parser.current_scope = scope;
 
-            const function_value = (try self.parser.getValue(function_node)).?;
-            const function: Parser.Function = @enumFromInt(function_value.payload);
+        const body = self.parser.getScopeEntry(scope).body.items;
 
-            const entry_point_scope = self.parser.getFunctionEntry(function).scope;
+        ep.body = self.pool.count; //next created instruction
+        var tail = null_instruction;
+        defer { //if none instructions were added set body to 'null'
+            if (tail == null_instruction) ep.body = null_instruction;
+        }
 
-            self.current_entry_point = self.entry_points.items.len;
-            try self.entry_points.append(self.arena.allocator(), .{
-                .parser_id = function,
-                .body = try self.lowerScope(entry_point_scope),
-                .name = try self.dupeFunctionName(function),
-                .kind = switch (node_entry.var_decl.qualifier) {
-                    .vertex => .vertex,
-                    .fragment => .fragment,
-                    else => .compute,
-                },
-                .compute_workgroup_size = 0, //??
-            });
+        var statement: Parser.Node = 0;
+        while (statement < body.len) {
+            defer statement = self.parser.nodeConsumption(statement);
+
+            const statement_instruction = try self.lowerStatement(tail, statement);
+            if (statement_instruction != null_instruction)
+                tail = statement_instruction;
         }
     }
 }
-
-pub fn new(parser: *Parser, allocator: std.mem.Allocator) IR {
-    return .{
-        .parser = parser,
-        .arena = .init(allocator),
-    };
-}
-pub fn deinit(self: *IR) void {
-    self.arena.deinit();
-}
-
-pub fn lowerScope(self: *IR, scope: Parser.Scope) Error!Instruction.ID {
-    const len = self.parser.getScopeEntry(scope).body.items.len;
-    if (len == 0) return Instruction.null_id;
-    const first_consumption = self.parser.nodeConsumptionScope(scope, 0);
-    const root = try self.lowerStatement(scope, 0);
-    var node: Parser.Node = first_consumption;
-
-    var inst_id = root;
-    while (len > node) {
-        const consumption = self.parser.nodeConsumptionScope(scope, node);
-        defer node += consumption;
-        const new_inst = try self.lowerStatement(scope, node);
-        if (~new_inst != 0) {
-            if (~inst_id != 0) self.pool.get(inst_id).next = new_inst;
-            inst_id = new_inst;
-        }
-    }
-    return inst_id;
-}
-fn lowerExpression(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction.ID {
-    const entry = self.parser.getNodeEntryScope(scope, node).*;
+fn lowerStatement(self: *IR, tail: Instruction, node: Parser.Node) Error!Instruction {
+    const entry = self.parser.getNodeEntry(node).*;
     return switch (entry) {
-        //how do we differentiate between constants
-        // and intermediate ids from instructions
-        else => Instruction.null_id,
-    };
-}
-pub fn lowerStatement(self: *IR, scope: Parser.Scope, node: Parser.Node) Error!Instruction.ID {
-    const entry = self.parser.getNodeEntryScope(scope, node).*;
-    return switch (entry) {
-        .var_decl => |vd| try self.lowerVarDecl(scope, vd, node),
-        .@"return" => if (self.parser.getNodeEntryScope(scope, node + 1).* == .null)
-            try self.pool.append(self.arena.allocator(), .{ .op = .@"return" })
-        else
-            try self.pool.append(self.arena.allocator(), .{
-                .op = .return_value,
-                .operands = try self.arena.allocator().dupe(u32, &.{try self.lowerExpression(scope, node + 1)}),
-            }),
-
-        else => Instruction.null_id,
-    };
-}
-
-fn lowerVarDecl(self: *IR, scope: Parser.Scope, var_decl: Parser.VariableDeclaration, node: Parser.Node) Error!Instruction.ID {
-    return switch (var_decl.qualifier) {
-        .@"var", .shared => blk: {
-            const var_kind: VariableEntry.Kind = //
-                if (var_decl.qualifier == .@"var") .regular else .shared;
-            const type_node = node + 2;
-            const var_type: Parser.Type = @enumFromInt((try self.parser.getValue(type_node)).?.payload);
-
-            if (self.parser.getTypeEntry(var_type).isComptime())
-                break :blk Instruction.null_id;
-
-            const initializer_node = type_node + self.parser.nodeConsumptionScope(scope, type_node);
-            //put value.payload into VariableEntry.initalizer field
-            if (try self.parser.getValue(initializer_node)) |iv| {
-                _ = try self.addLocalVariable(.{ .kind = var_kind, .type = var_type, .initializer = iv.payload });
-                break :blk Instruction.null_id;
-            } else {
-                //calculate variable initializer and
-                //emit initializer_local_variable instruction
-                //inside target scope
-                const local_var_id = try self.addLocalVariable(.{ .kind = var_kind, .type = var_type });
-                const initializer_id = try self.lowerExpression(scope, initializer_node);
-                if (initializer_id == 0)
-                    @panic("emit non comptime local variable_initializer");
-                break :blk try self.pool.append(self.arena.allocator(), .{
-                    .operands = try self.arena.allocator().dupe(u32, &.{
-                        @bitCast(local_var_id),
-                        initializer_id,
-                    }),
-                    .op = .initialize_local_variable,
-                });
-            }
+        .folded_var_decl => |var_decl| self.lowerVariableDeclaration(tail, var_decl, node),
+        .assignment => blk: {
+            const k = (try self.lowerExpression(tail, node + 1 + self.parser.nodeConsumption(node + 1)))[0];
+            std.debug.print("K: {any}\n", .{k});
+            break :blk k;
         },
-        .push => Instruction.null_id,
-        else => Instruction.null_id,
-        //if constant we skip
-        //if push constant we skip for now
-        //else -> add local variable
+        else => null_instruction,
+    };
+    // std.debug.print("lower statement node: {d}\n", .{node});
+}
+fn lowerVariableDeclaration(self: *IR, tail: Instruction, var_decl: Parser.VariableDeclaration, node: Parser.Node) Error!Instruction {
+    return switch (var_decl.qualifier) {
+        .@"const" => blk: {
+            const value_node = node + 2 + self.parser.nodeConsumption(node + 2);
+            const initializer = try self.lowerExpression(tail, value_node);
+            try self.name_mappings.append(self.arena(), .{
+                .name = self.parser.tokenizer.slice(var_decl.name),
+                .operand = initializer,
+                .scope = self.parser.current_scope,
+            });
+            break :blk if (initializer[1] == .instruction)
+                initializer[0]
+            else
+                null_instruction;
+        },
+        .@"var" => null_instruction,
+        .push, .workgroup => null_instruction,
+        .env, .vertex, .fragment, .compute => return null_instruction,
     };
 }
-fn getVariableEntry(self: *IR, id: Variable) Error!*VariableEntry {
-    return switch (id.kind) {
-        .global => &self.variables.items[id.id],
-        .builtin => &self.builtin_variables.items[id.id],
-        .local => &self.entry_points.items[self.current_entry_point].local_variables.items[id.id],
+fn lowerExpression(self: *IR, tail: Instruction, node: Parser.Node) Error!Operand {
+    std.debug.print("lowers exprsestion\n", .{});
+    const entry = self.parser.getNodeEntry(node).*;
+    return switch (entry) {
+        .constructor => |constructor| try self.lowerConstructor(
+            tail,
+            constructor.elem_count,
+            @enumFromInt(self.parser.getValuePayload(node + 1)),
+            node + 1 + self.parser.nodeConsumption(node + 1),
+        ),
+        .value => |value| .{ value.payload, .parser_constant },
+
+        else => |e| {
+            std.debug.print("else: {s}\n", .{@tagName(e)});
+            return null_operand;
+        },
+        // else => null_instruction,
     };
 }
-fn addLocalVariable(self: *IR, entry: VariableEntry) Error!Variable {
-    const entry_point = &self.entry_points.items[self.current_entry_point];
-    try entry_point.local_variables.append(self.arena.allocator(), entry);
-    return .{
-        .id = @truncate(entry_point.local_variables.items.len),
-        .kind = .local,
+fn lowerConstructor(self: *IR, tail: Instruction, elem_count: u32, @"type": Parser.Type, elem_node: Parser.Node) Error!Operand {
+    return switch (self.parser.getTypeEntry(@"type")) {
+        .vector => blk: {
+            var operands: [4]Operand = undefined;
+            var count: usize = 0;
+
+            var node = elem_node;
+            var current = tail;
+
+            for (0..elem_count) |_| {
+                defer node += self.parser.nodeConsumption(node);
+
+                //TODO: can require a cast!
+                const elem_type = self.parser.typeOf(node) catch unreachable;
+                const elem_slots = (self.parser.constructorStructure(elem_type) catch unreachable).len;
+
+                defer count += elem_slots;
+
+                const elem_inst = try self.lowerExpression(current, node);
+                self.advanceOperand(&current, elem_inst);
+
+                if (elem_slots > 1) {
+                    for (0..elem_slots) |j| {
+                        const extract = try self.addInstruction(.{
+                            .op = .composite_extract,
+                            .operands = &.{ elem_inst, .{ @truncate(j), .literal } },
+                        });
+                        operands[count + j] = .{ extract, .instruction };
+                        self.advance(&current, extract);
+                    }
+                } else operands[count] = elem_inst;
+            }
+            const construct = try self.addInstruction(.{
+                .op = .composite_construct,
+                .operands = operands[0..count],
+            });
+            self.advance(&current, construct);
+            break :blk .{ construct, .instruction };
+        },
+        else => @panic("lower non vector consturctor"),
     };
 }
 
-// pub fn newInstNode(self: *IR, inst: Instruction) InstructionNode.Ptr {}
+fn addInstruction(self: *IR, data: struct {
+    op: OpCode,
+    operands: []const Operand = &.{},
+    next: Instruction = null_instruction,
+    type: Type = .void,
+}) Error!Instruction {
+    return self.pool.add(self.arena(), .{
+        .op = data.op,
+        .operands = if (data.operands.len > 0)
+            (try self.arena().dupe(Operand, data.operands)).ptr
+        else
+            &.{},
+        .operand_count = @truncate(data.operands.len),
+        .next = data.next,
+        .type = data.type,
+    });
+}
+
+fn attach(self: *IR, head: Instruction, tail: Instruction) void {
+    if (head != null_instruction) self.pool.get(head).next = tail;
+}
+fn advance(self: *IR, head: *Instruction, tail: Instruction) void {
+    self.attach(head.*, tail);
+    head.* = tail;
+}
+fn advanceOperand(self: *IR, head: *Instruction, operand: Operand) void {
+    if (operand[1] == .instruction) self.advance(head, operand[0]);
+}
+
 const EntryPoint = struct {
-    parser_id: Parser.Function,
-    body: Instruction.ID,
-
-    name: []const u8,
-    kind: Kind,
-    compute_workgroup_size: u32, //??
-    //some push constant info
-    //input variables []Variable
-    //output variables []Variable
-    local_variables: List(VariableEntry) = .empty,
-
-    const Kind = enum { vertex, fragment, compute };
+    body: Instruction = null_instruction,
+    // //input variables []Variable
+    // //output variables []Variable
+    // local_variables: List(VariableEntry) = .empty,
 };
 
-const Variable = packed struct {
-    id: u30,
-    kind: Kind,
-    const Kind = enum(u2) { local, global, builtin };
+const GlobalVariable = struct {
+    storage_class: StorageClass,
+    type: Type, //not a pointer type
+    decl_node: Parser.Node,
+
+    extra: u32 = 0, //binding, offset
 };
-const VariableEntry = struct {
-    kind: Kind,
-    type: Parser.Type,
-    initializer: u32 = null_initializer, //value payload
-    const null_initializer = ~@as(u32, 0);
-    const Kind = enum { regular, input, output, push, shared };
+const OutputBuiltin = enum { position };
+const InputBuiltin = enum { vertex_id };
+
+const LocalVariable = struct {
+    type: Type,
+    decl_node: Parser.Node, //??
+};
+const StorageClass = enum { general, input, output, push, workgroup };
+
+const Operand = @Tuple(&.{ u32, OperandKind });
+const OperandKind = enum(u32) {
+    //WHERE STORED
+    local_variable,
+    //entry_point.local_variables
+    global_variable,
+    //entry_point.global_variables??
+
+    parser_constant,
+    //parser.values
+    ir_constant,
+    //parser.values
+
+    instruction,
+    //instruction pool
+    literal,
 };
 
-const Constant = u32;
-const ConstantEntry = struct {
-    id: u32,
-    type: Parser.Type,
-};
+const Type = enum(u32) { void = 0, _ };
+const TypeEntry = union(enum) {
+    void,
+    bool,
 
-pub const Instruction = struct {
-    operands: []u32 = &.{},
-    op: OpCode = undefined,
-    next: ID = null_id,
-    const null_id = ~@as(ID, 0);
-    pub const ID = u32;
-    pub fn format(self: Instruction, writer: *std.Io.Writer) !void {
-        try writer.print("{s}({d}) -> {d}:{any}", .{
-            @tagName(self.op),
-            self.operands.len,
-            self.next,
-            self.operands,
-        });
-    }
+    scalar: Scalar,
+    vector: Vector,
+    matrix: Matrix,
+
+    array: Array,
+    runtime_array: Type,
+    device_pointer: DevicePointer,
+    logical_pointer: LogicalPointer,
+
+    storage_image,
+    sampled_image,
+    //sampler, image
+
+    // @"struct": Struct,
+    const Scalar = Parser.TypeEntry.Scalar;
+    const Vector = Parser.TypeEntry.Vector;
+    const Matrix = Parser.TypeEntry.Matrix;
+    const Array = struct { len: u32, child: Type };
+    const LogicalPointer = struct { child: Type, storage_class: StorageClass };
+    const DevicePointer = struct { child: Type, alignment: Alignment };
+    const Alignment = enum(u32) { size = 0, _ };
 };
 
 const OpCode = enum(u32) {
+    function,
+
     add, //[left][right]
     sub,
     mul,
@@ -248,113 +295,84 @@ const OpCode = enum(u32) {
     swizzle_literal, //[vector][mask][elem1]...[elem4]
 
     composite_extract,
+    composite_construct,
 
-    device_pointer_load, //[ptr]
+    // device_pointer_load?, //[ptr]
+    // device_pointer_store?, //[ptr]
     load, //[var]
     store, //[var][value]
     access_chain, //[var][index0..]
+
+    load_builtin,
+    store_builtin,
 
     @"return",
     return_value,
 
     initialize_local_variable, //[localvarid][id]
 };
-const Type = struct {
-    void,
-    bool,
-    // compint,
-    // compfloat,
 
-    // scalar: Scalar,
-    // vector: Vector,
-    // matrix: Matrix,
+pub const Instruction = u32;
+const null_instruction = ~@as(Instruction, 0);
+const null_operand: Operand = .{ null_instruction, .instruction };
 
-    // array: u32, Type, //length
-    // device_pointer: Type,
-    // logical_pointer: Type,
+pub const InstructionData = struct {
+    operands: [*]Operand = undefined,
 
-    // @"enum": u32,
-    // @"struct": Struct,
+    operand_count: u32 = 0,
+    op: OpCode = undefined,
+    type: Type = undefined,
+
+    next: Instruction = null_instruction,
+
+    pub fn format(self: InstructionData, writer: *std.Io.Writer) !void {
+        try writer.print("{s}", .{@tagName(self.op)});
+        if (self.next != null_instruction)
+            try writer.print("(N:{d})", .{self.next});
+        try writer.print(" -> [{d}]:{any}", .{
+            self.operand_count,
+            self.operands[0..self.operand_count],
+        });
+    }
 };
 
+inline fn arena(self: *IR) Allocator {
+    return self.arena_allocator.allocator();
+}
+
 const InstructionPool = struct {
-    blocks: List([]Instruction) = .empty,
+    blocks: List([]InstructionData) = .empty,
     count: u32 = 0,
     const block_size = 32;
 
-    pub fn append(self: *InstructionPool, allocator: Allocator, inst: Instruction) !Instruction.ID {
+    pub fn add(self: *InstructionPool, allocator: Allocator, inst: InstructionData) !Instruction {
         const ptr = try self.alloc(allocator);
         ptr.* = inst;
         return self.count - 1;
     }
-    pub fn get(self: *InstructionPool, id: Instruction.ID) *Instruction {
+    pub fn get(self: *InstructionPool, id: Instruction) *InstructionData {
         return &self.blocks.items[id / block_size][id % block_size];
     }
-    pub fn new(self: *InstructionPool, allocator: Allocator) !Instruction.ID {
-        // _ = try self.alloc(allocator);
-        // return self.count - 1;
-        return self.append(allocator, .{});
-    }
-    fn alloc(self: *InstructionPool, allocator: Allocator) !*Instruction {
+    fn alloc(self: *InstructionPool, allocator: Allocator) !*InstructionData {
         const blocks_len = self.blocks.items.len;
         if (blocks_len > 0) {
-            const local_id = self.count % blocks_len;
+            const local_id = self.count % block_size;
             if (local_id > 0) {
                 self.count += 1;
-                return &self.blocks.items[self.count / blocks_len][local_id];
+                return &self.blocks.items[self.count / block_size][local_id];
             }
         }
-        const new_block = try allocator.alloc(Instruction, block_size);
+        const new_block = try allocator.alloc(InstructionData, block_size);
         try self.blocks.append(allocator, new_block);
         self.count += 1;
         return @ptrCast(new_block.ptr);
     }
 };
-
 fn dupeFunctionName(self: *IR, function: Parser.Function) Error![]const u8 {
     const token = self.parser.getFunctionEntry(function).name;
     const slice = self.parser.tokenizer.slice(token);
-    return try self.arena.allocator().dupe(u8, slice);
+    return try self.arena().dupe(u8, slice);
 }
-
-// vertex vert: fn():void = fn () void{
-//    push vertex_buffer: *f32x3 = <null>
-//    @position = f32x4{'vertex_buffer[@vertex_id], 1}
-
-// fragment frag: fn():f32x4 = fn () f32x4{
-//    return f32x4{1}
-
-//vertex data
-//@builtin variables{
-//  input vertex_id: u32
-//  output position : f32x4
-//@variables {
-//  push vertex_buffer: *f32x3
-//@constants {
-//@shuffle_literals : '1'
-
-//@vertex entrypoint:{
-// (load) vertex_buffer = load(vertex_buffer)
-// (load) vid = load(@vertex_id)
-// (fmul) elem_pointer_offset = @ptrOffset(f32x3) * vid
-// (fadd) elem_pointer = vertex_buffer + elem_pointer_offset
-// (load_device_ptr) vertex = load_device_ptr(elem_pointer)
-// (shuffle_literal) pos = exlitsh(vertex, 'x 'y 'z 1)
-// (store) @position = pos
-// (return) *ommited*
-//}
-
-//fragment data
-//@builtin variables{
-//@variables {
-//  output frag_out: f32x4
-//@constants {
-//  vec_of1 : f32x4 = .{1, 1, 1, 1}
-//@fragment entry point:{
-//  (constant vec => f32x4{1,1,1,1})
-//  (store) frag_out = vec
-//  (return) *ommited*
-//}
 
 const Allocator = std.mem.Allocator;
 const List = std.ArrayList;
