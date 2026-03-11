@@ -1,6 +1,20 @@
-lower constuctor:{
+=============VARIABLES============
+0.declaration
+1.initialization
+2.references
+3.loads
 
-}
+NameMapping{
+	load: ?u32
+
+GENVALUE:var_ref:
+	if(name_mapping.present(name)):
+		return nm.load
+
+
+
+=============CONSTRUCTORS============
+
 types that can have constructor{
 	0. vector,
 	2. matrix,

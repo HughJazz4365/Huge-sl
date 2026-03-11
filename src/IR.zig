@@ -1,3 +1,5 @@
+//TODO: var refs?
+
 //TODO: remove internal arena
 //arena only makes sense for InstructionData.operands
 
@@ -15,6 +17,16 @@ operand_pool: OperandPool = .{},
 
 entry_points: List(EntryPoint) = .empty,
 current_entry_point: usize = 0,
+
+name_mappings: List(NameMapping) = .empty,
+
+const NameMapping = struct {
+    name: []const u8,
+    operand: Operand,
+
+    scope: Parser.Scope,
+    decl_node: Parser.Node,
+};
 
 pub fn dump(self: *IR) void {
     for (self.entry_points.items) |ep| {
@@ -78,16 +90,18 @@ fn lowerStatement(self: *IR, node: Parser.Node) Error!void {
             var_decl.name,
             node,
         ),
-        .assignment => {
-            const target_node = node + 1;
-            const target_operand = try self.lowerExpression(target_node);
+        .assignment => try self.lowerAssignment(node + 1),
 
-            const value_node = target_node + self.parser.nodeConsumption(target_node);
-            const value_operand = try self.lowerExpression(value_node);
-            _ = try self.addInst(.store, &.{ target_operand, value_operand });
-        },
         else => std.debug.print("lstatement: {s}\n", .{@tagName(entry)}),
     }
+}
+
+fn lowerAssignment(self: *IR, target_node: Parser.Node) Error!void {
+    const target_operand = try self.lowerExpression(target_node, .pointer);
+
+    const value_node = target_node + self.parser.nodeConsumption(target_node);
+    const value_operand = try self.lowerExpression(value_node, .value);
+    _ = try self.addInst(.store, &.{ target_operand, value_operand });
 }
 
 fn lowerVariableDeclaration(
@@ -102,13 +116,20 @@ fn lowerVariableDeclaration(
     }
 }
 
-fn lowerExpression(self: *IR, node: Parser.Node) Error!Operand {
+const ExpressionKind = enum { value, pointer };
+fn lowerExpression(self: *IR, node: Parser.Node, kind: ExpressionKind) Error!Operand {
     const entry = self.parser.getNodeEntry(node).*;
     return switch (entry) {
-        .builtin => |builtin| switch (builtin.builtin) {
-            .position => OutputBuiltin.position.toOperand(),
-            .vertex_id => InputBuiltin.vertex_id.toOperand(),
-            // else => unreachable,
+        .builtin => |builtin| blk: {
+            const variable = switch (builtin.builtin) {
+                .position => OutputBuiltin.position.toOperand(),
+                .vertex_id => InputBuiltin.vertex_id.toOperand(),
+                // else => unreachable,
+            };
+            if (kind == .pointer) break :blk variable;
+
+            const load = try self.addInst(.load, &.{variable});
+            break :blk .new(load, .inst);
         },
         .value => |value| .new(value.payload, .parser_value),
         .constructor => |constructor| blk: {
@@ -120,22 +141,35 @@ fn lowerExpression(self: *IR, node: Parser.Node) Error!Operand {
             break :blk self.lowerConstructor(@"type", constructor.elem_count, elem_node);
             // try self.lowerConstructor(
         },
-        .indexing => {
-            const target_node = node + 1;
-            const target_operand = try self.lowerExpression(target_node);
-
-            const index_node = target_node + self.parser.nodeConsumption(target_node);
-            const index_operand = try self.lowerExpression(index_node);
-            //pointer deref at index offset
-            //composite extract
-            //vector dynamic extract
-            //access chain
-            try self.lowerIndexing();
-        },
+        .indexing => try self.lowerIndexing(node + 1, kind),
+        .var_ref => try self.lowerVariableReference(),
 
         inline else => |_, tag| @panic(@tagName(tag)),
         // else => .fromRaw(0),
     };
+}
+// fn lowerVariableReference
+fn lowerIndexing(self: *IR, target_node: Parser.Node, kind: ExpressionKind) Error!Operand {
+    const target_operand = try self.lowerExpression(target_node, kind);
+
+    const index_node = target_node + self.parser.nodeConsumption(target_node);
+    const index_operand = try self.lowerExpression(index_node, .value);
+
+    const access_chain = try self.addInst(
+        .access_chain,
+        &.{ target_operand, index_operand },
+    );
+    if (kind == .pointer)
+        return .new(access_chain, .inst);
+
+    const load = try self.addInst(.load, &.{.new(access_chain, .inst)});
+    return .new(load, .inst);
+
+    //pointer deref at index offset
+    //composite extract
+    //vector dynamic extract
+    //access chain
+    //access chain
 }
 
 fn lowerConstructor(self: *IR, @"type": Parser.Type, elem_count: u32, elem_node: Parser.Node) Error!Operand {
@@ -154,7 +188,7 @@ fn lowerConstructor(self: *IR, @"type": Parser.Type, elem_count: u32, elem_node:
 
                 defer count += elem_slots;
 
-                const elem_operand = try self.lowerExpression(node);
+                const elem_operand = try self.lowerExpression(node, .value);
 
                 if (elem_slots > 1) {
                     for (0..elem_slots) |j| {
