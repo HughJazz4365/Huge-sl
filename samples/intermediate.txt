@@ -7,9 +7,18 @@
 NameMapping{
 	load: ?u32
 
-GENVALUE:var_ref:
-	if(name_mapping.present(name)):
+lowerVarRef(.value):
+	const nm = getNameMapping(name)
+	if(nm.load):
 		return nm.load
+	else generate load
+lowerVarRef(.reference):
+	const nm = getNameMapping(name)
+	nm.load = null
+	return nm
+
+generateVarDecl:
+
 
 
 

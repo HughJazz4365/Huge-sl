@@ -1,3 +1,7 @@
+//custom POInter alignment
+
+//decl scope initializers must be comptime known
+
 //BIG TODO: functions, control flow, imports
 //TODO: proper int/float literal parsing
 
@@ -436,6 +440,7 @@ fn foldFunctionDeclaration(self: *Parser, fn_decl: FunctionDeclaration, node: No
 
     try self.foldScope(function_entry.scope);
 }
+
 fn fillInferredFunctionDeclarationArgumentTypes(
     self: *Parser,
     arg_type_node: Node,
@@ -731,7 +736,14 @@ fn isQualifierCompatibleWithType(self: *Parser, qualifier: Qualifier, @"type": T
     };
 }
 
-fn getVariableReferenceValue(self: *Parser, var_ref: VariableReference) Error!?Value {
+pub fn getVariableReferenceQualifier(self: *Parser, var_ref: VariableReference) Qualifier {
+    const entry = self.getNodeEntryScope(var_ref.scope, var_ref.node).*;
+    return switch (entry) {
+        .var_decl, .folded_var_decl => |vd| vd.qualifier,
+        else => .@"const",
+    };
+}
+pub fn getVariableReferenceValue(self: *Parser, var_ref: VariableReference) Error!?Value {
     const value_node = switch (self.getNodeEntryScope(var_ref.scope, var_ref.node).*) {
         .var_decl, .folded_var_decl => |vd| if (vd.qualifier == .@"const")
             var_ref.node + 1 + self.nodeSequenceConsumption(var_ref.scope, var_ref.node + 1, 2)
@@ -750,10 +762,6 @@ fn getVariableReference(self: *Parser, scope: Scope, node: Node, token: Token) E
     defer self.current_scope = last_scope;
     self.current_scope = scope;
 
-    // std.debug.print("name: {s}, DEP STACK({d}): {{", .{ self.tokenizer.slice(token), self.dependency_stack.items.len });
-    // for (self.dependency_stack.items) |ds| std.debug.print("({d}){s}, ", .{ ds, self.tokenizer.slice(ds) });
-    // std.debug.print("}}\n", .{});
-
     for (self.dependency_stack.items) |rs| {
         if (rs == token or util.strEql(self.tokenizer.slice(rs), self.tokenizer.slice(token))) {
             return self.errorOut(.{ .token = token, .payload = .dependency_loop });
@@ -768,7 +776,7 @@ fn getVariableReference(self: *Parser, scope: Scope, node: Node, token: Token) E
         defer i += self.nodeConsumption(i);
 
         if (i == node and scope_entry.container.isDecl()) continue;
-        if (try self.getStatementVariableRefence(i, token))
+        if (try self.doesStatementContainVariableReference(i, token))
             break i;
     } else null;
 
@@ -777,7 +785,7 @@ fn getVariableReference(self: *Parser, scope: Scope, node: Node, token: Token) E
     try self.getVariableReference(scope_entry.parent, scope_entry.getDeclNode(self), token);
 }
 
-fn getStatementVariableRefence(self: *Parser, node: Node, token: Token) Error!bool {
+fn doesStatementContainVariableReference(self: *Parser, node: Node, token: Token) Error!bool {
     const name = self.tokenizer.slice(token);
     return switch (self.getNodeEntry(node).*) {
         .var_decl, .folded_var_decl => |vd| if (vd.name == token or util.strEql(
@@ -881,6 +889,15 @@ fn isTypeImplicitlyCastable(self: *Parser, from: Type, to: Type) bool {
             from_entry == .compint or
             from_entry == .compfloat,
         else => false,
+    };
+}
+
+pub fn sizeOf(self: *Parser, @"type": Type) u32 {
+    const entry = self.getTypeEntry(@"type");
+    return switch (entry) {
+        .scalar => |scalar| scalar.width.value(),
+        .vector => |vector| vector.scalar.width.value() / 8 * vector.len.value(),
+        inline else => |_, tag| @panic(@tagName(tag)),
     };
 }
 
@@ -1551,7 +1568,7 @@ fn tokenPastEndl(self: *Parser) Token {
 fn getNumberValue(self: *Parser, id: u32) u128 {
     return self.number_values.items[id];
 }
-fn addNumberValue(self: *Parser, scalar: anytype) Error!u32 {
+pub fn addNumberValue(self: *Parser, scalar: anytype) Error!u32 {
     for (self.number_values.items, 0..) |s, i| if (s == util.fit(u128, scalar)) return @truncate(i);
     const l: u32 = @truncate(self.number_values.items.len);
     try self.number_values.append(self.allocator, util.fit(u128, scalar));
@@ -1804,7 +1821,7 @@ pub const ParameterQualifier = enum {
     linear,
     flat,
 };
-const VariableReference = struct {
+pub const VariableReference = struct {
     scope: Scope,
     node: Node,
     value: Node = 0,
@@ -1934,7 +1951,7 @@ pub const TypeEntry = union(enum) {
             _32,
             _64,
             pub fn value(width: Width) u32 {
-                return (1 << 3) << @intFromEnum(width);
+                return @as(u32, 1 << 3) << @intFromEnum(width);
             }
         };
 

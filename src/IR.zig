@@ -18,15 +18,8 @@ operand_pool: OperandPool = .{},
 entry_points: List(EntryPoint) = .empty,
 current_entry_point: usize = 0,
 
+global_variables: List(GlobalVariable) = .empty,
 name_mappings: List(NameMapping) = .empty,
-
-const NameMapping = struct {
-    name: []const u8,
-    operand: Operand,
-
-    scope: Parser.Scope,
-    decl_node: Parser.Node,
-};
 
 pub fn dump(self: *IR) void {
     for (self.entry_points.items) |ep| {
@@ -91,13 +84,20 @@ fn lowerStatement(self: *IR, node: Parser.Node) Error!void {
             node,
         ),
         .assignment => try self.lowerAssignment(node + 1),
+        .@"return" => {
+            if (self.parser.getNodeEntry(node + 1).* == .null)
+                _ = try self.addInst(.@"return", &.{});
+
+            const returned_value = try self.lowerExpression(node + 1, .value);
+            _ = try self.addInst(.return_value, &.{returned_value});
+        },
 
         else => std.debug.print("lstatement: {s}\n", .{@tagName(entry)}),
     }
 }
 
 fn lowerAssignment(self: *IR, target_node: Parser.Node) Error!void {
-    const target_operand = try self.lowerExpression(target_node, .pointer);
+    const target_operand = try self.lowerExpression(target_node, .reference);
 
     const value_node = target_node + self.parser.nodeConsumption(target_node);
     const value_operand = try self.lowerExpression(value_node, .value);
@@ -110,13 +110,58 @@ fn lowerVariableDeclaration(
     name: Tokenizer.Token,
     node: Parser.Node,
 ) Error!void {
-    _ = .{ self, name, node };
+    const storage_class: StorageClass = .fromQualifier(qualifier);
+    _ = name;
+    const type_node = node + 1 + self.parser.nodeConsumption(node);
+    const @"type": Parser.Type = @enumFromInt(self.parser.getValuePayload(type_node));
+
+    const initializer_node = type_node + self.parser.nodeConsumption(type_node);
+
     switch (qualifier) {
-        else => {},
+        .@"const" => {
+            const initializer = try self.lowerExpression(initializer_node, .value);
+            _ = try self.addNameMapping(
+                initializer,
+                node,
+                self.parser.current_scope,
+                initializer,
+            );
+        },
+        .@"var", .push, .workgroup => {
+            const initializer = try self.lowerExpression(initializer_node, .value);
+            _ = @"type";
+            const local_variable_id = try self.addLocalVariable(.{
+                .initializer = initializer,
+                .storage_class = storage_class,
+            });
+
+            _ = try self.addNameMapping(
+                .new(local_variable_id, .local_variable),
+                node,
+                self.parser.current_scope,
+                initializer,
+            );
+        },
+        .env, .vertex, .fragment, .compute => {},
     }
 }
 
-const ExpressionKind = enum { value, pointer };
+fn addGlobalVariable(self: *IR, variable: GlobalVariable) Error!u32 {
+    for (self.global_variables.items, 0..) |gv, i| {
+        if (gv.node == variable.node) return @truncate(i);
+    }
+    const id: u32 = @truncate(self.global_variables.items.len);
+    try self.global_variables.append(self.arena(), variable);
+    return id;
+}
+fn addLocalVariable(self: *IR, variable: Variable) Error!u32 {
+    const entry_point = &self.entry_points.items[self.current_entry_point];
+    const id: u32 = @truncate(entry_point.local_variables.items.len);
+    try entry_point.local_variables.append(self.arena(), variable);
+    return id;
+}
+
+const ExpressionKind = enum { value, reference };
 fn lowerExpression(self: *IR, node: Parser.Node, kind: ExpressionKind) Error!Operand {
     const entry = self.parser.getNodeEntry(node).*;
     return switch (entry) {
@@ -126,7 +171,7 @@ fn lowerExpression(self: *IR, node: Parser.Node, kind: ExpressionKind) Error!Ope
                 .vertex_id => InputBuiltin.vertex_id.toOperand(),
                 // else => unreachable,
             };
-            if (kind == .pointer) break :blk variable;
+            if (kind == .reference) break :blk variable;
 
             const load = try self.addInst(.load, &.{variable});
             break :blk .new(load, .inst);
@@ -142,24 +187,101 @@ fn lowerExpression(self: *IR, node: Parser.Node, kind: ExpressionKind) Error!Ope
             // try self.lowerConstructor(
         },
         .indexing => try self.lowerIndexing(node + 1, kind),
-        .var_ref => try self.lowerVariableReference(),
+        .var_ref => |var_ref| try self.lowerVariableReference(var_ref, kind),
 
         inline else => |_, tag| @panic(@tagName(tag)),
         // else => .fromRaw(0),
     };
 }
-// fn lowerVariableReference
+
+fn lowerVariableReference(self: *IR, var_ref: Parser.VariableReference, kind: ExpressionKind) Error!Operand {
+    const nm = if (self.getNameMapping(var_ref.node, var_ref.scope)) |existing|
+        existing
+    else blk: {
+        const initializer: Operand = if (try self.parser.getVariableReferenceValue(var_ref)) |value|
+            .new(value.payload, .parser_value)
+        else
+            .nullop;
+
+        const id = try self.addGlobalVariable(.{
+            // type: Type = undefined,
+            .storage_class = .fromQualifier(self.parser.getVariableReferenceQualifier(var_ref)),
+            .initializer = initializer,
+            .node = var_ref.node,
+        });
+        break :blk try self.addNameMapping(
+            .new(id, .global_variable),
+            var_ref.node,
+            .root_source_file,
+            initializer,
+        );
+    };
+
+    if (kind == .value) {
+        if (nm.load.isNull()) {
+            const load: Operand =
+                .new(try self.addInst(.load, &.{nm.operand}), .inst);
+            nm.load = load;
+        }
+        return nm.load;
+    } else nm.load = .nullop;
+    return nm.operand;
+}
+
+fn getNameMapping(self: *IR, node: Parser.Node, scope: Parser.Scope) ?*NameMapping {
+    return for (self.name_mappings.items, 0..) |nm, i| {
+        if (nm.node == node and nm.scope == scope)
+            break &self.name_mappings.items[i];
+    } else null;
+}
+fn addNameMapping(self: *IR, operand: Operand, node: Parser.Node, scope: Parser.Scope, load: Operand) Error!*NameMapping {
+    const index = self.name_mappings.items.len;
+    try self.name_mappings.append(self.arena(), .{
+        .operand = operand,
+        .node = node,
+        .scope = scope,
+        .load = load,
+    });
+    return &self.name_mappings.items[index];
+}
+
 fn lowerIndexing(self: *IR, target_node: Parser.Node, kind: ExpressionKind) Error!Operand {
     const target_operand = try self.lowerExpression(target_node, kind);
 
     const index_node = target_node + self.parser.nodeConsumption(target_node);
     const index_operand = try self.lowerExpression(index_node, .value);
 
+    const target_type = try self.parser.typeOf(target_node);
+    switch (self.parser.getTypeEntry(target_type)) {
+        .pointer => |pointed_type| {
+            const sizeof: u64 = self.parser.sizeOf(pointed_type);
+            const offset_operand: Operand = if (sizeof > 1) blk: {
+                const sizeof_value_id = try self.parser.addNumberValue(sizeof);
+                break :blk .new(try self.addInst(.mul, &.{
+                    index_operand,
+                    .new(sizeof_value_id, .parser_value),
+                    //type = u64
+                }), .inst);
+            } else index_operand;
+
+            const new_ptr: Operand = .new(try self.addInst(.add, &.{
+                target_operand,
+                offset_operand,
+                //type = u64
+            }), .inst);
+            return if (kind == .value)
+                return new_ptr
+            else
+                .new(try self.addInst(.load, &.{new_ptr}), .inst);
+        },
+        else => {},
+    }
+
     const access_chain = try self.addInst(
         .access_chain,
         &.{ target_operand, index_operand },
     );
-    if (kind == .pointer)
+    if (kind == .reference)
         return .new(access_chain, .inst);
 
     const load = try self.addInst(.load, &.{.new(access_chain, .inst)});
@@ -226,6 +348,45 @@ fn operandSlice(self: *IR, inst: Inst) []Operand {
 
 const EntryPoint = struct {
     body: List(u32) = .empty,
+    local_variables: List(Variable) = .empty,
+};
+
+const NameMapping = struct {
+    // name: []const u8,
+    operand: Operand,
+
+    scope: Parser.Scope,
+    node: Parser.Node,
+
+    load: Operand = .nullop,
+};
+
+const GlobalVariable = struct {
+    type: Type = undefined,
+    storage_class: StorageClass,
+    initializer: Operand, //parser_value
+
+    node: Parser.Node,
+};
+const Variable = struct {
+    type: Type = undefined,
+    storage_class: StorageClass,
+    initializer: Operand,
+};
+
+const StorageClass = enum {
+    general,
+    input,
+    output,
+    push,
+    workgroup,
+    pub fn fromQualifier(qualifier: Parser.Qualifier) StorageClass {
+        return switch (qualifier) {
+            .push => .push,
+            .workgroup => .workgroup,
+            else => .general,
+        };
+    }
 };
 
 //every instruction has unique id
@@ -239,7 +400,43 @@ const Inst = struct {
     operands: u32,
     count: u32,
 
-    type: u32 = undefined,
+    type: Type = undefined,
+};
+
+const Type = enum(u32) { _ };
+const TypeEntry = union(enum) {
+    void,
+    bool,
+    bool_vec: Vector.Len,
+
+    scalar: Scalar,
+    vector: Vector,
+    matrix: Matrix,
+
+    array: Array,
+    runtime_array: Type,
+    device_pointer: DevicePointer,
+    logical_pointer: LogicalPointer,
+
+    storage_image: Image,
+    sampled_image: Image,
+
+    // @"struct": Struct,
+    pub const Scalar = Parser.TypeEntry.Scalar;
+    pub const Vector = Parser.TypeEntry.Vector;
+    pub const Matrix = Parser.TypeEntry.Matrix;
+    pub const Array = struct { len: u32, child: Type };
+
+    pub const LogicalPointer = struct { child: Type, storage_class: StorageClass };
+
+    pub const DevicePointer = struct { child: Type, alignment: Alignment };
+    pub const Alignment = enum(u32) { size = 0, _ };
+
+    pub const Image = struct {
+        texel_type: Type,
+        dim: Dimensionality,
+    };
+    const Dimensionality = enum { d1, d2, d3, cube };
 };
 
 const OutputBuiltin = enum(u32) {
@@ -258,6 +455,11 @@ const InputBuiltin = enum(u32) {
 const Operand = packed struct(u64) {
     val: u32,
     kind: OperandKind,
+
+    pub const nullop: Operand = .fromRaw(std.math.maxInt(u64));
+    pub inline fn isNull(self: Operand) bool {
+        return ~(self.toRaw()) == 0;
+    }
     pub inline fn new(val: u32, kind: OperandKind) Operand {
         return .{ .val = val, .kind = kind };
     }
@@ -276,7 +478,7 @@ const Operand = packed struct(u64) {
 const OperandKind = enum(u32) {
     inst,
     parser_value,
-    variable,
+    global_variable,
     local_variable,
 
     input_builtin,
@@ -317,8 +519,6 @@ const Op = enum(u32) {
 
     @"return",
     return_value,
-
-    initialize_local_variable, //[localvarid][id]
 };
 const InstructionPool = Pool(Inst, 16);
 const OperandPool = Pool(Operand, 64);

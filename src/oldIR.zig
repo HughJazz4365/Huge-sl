@@ -24,12 +24,6 @@ const NameMapping = struct {
     scope: Parser.Scope,
 };
 
-const NameMapping = struct {
-    name: []const u8,
-    operand: Operand,
-    scope: Parser.Scope,
-};
-
 pub fn dump(self: *IR) void {
     // for (self.entry_points.items) |ep|
     // std.debug.print("EP:name: {s}, kind: {}\n", .{ ep.name, ep.kind });
