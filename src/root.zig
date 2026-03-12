@@ -5,82 +5,10 @@ const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
 const IR = @import("IR.zig");
 
+const spirv = @import("spirv.zig");
+
 pub const CI = i128;
 pub const CF = f64;
-
-pub const ShaderStage = enum { fragment, vertex, compute };
-pub const ShaderStageInfo = union(ShaderStage) {
-    fragment,
-    vertex,
-    compute: [3]u32,
-};
-
-pub const Error = error{
-    OutOfMemory,
-    WriteFailed,
-
-    FileReadFailed,
-
-    CompilationError,
-};
-pub const Settings = struct {
-    push_constant_buffer_size: u32 =
-        push_buffer_size_vulkan_required,
-    target: Target,
-    optimize: Optimize,
-
-    const push_buffer_size_vulkan_required = 128;
-
-    const Target = union(enum) { vulkan: VulkanSettings };
-    const Optimize = enum { none, full };
-
-    const VulkanSettings = struct {
-        bindless_implementation: enum {
-            runtime_array_bindings,
-            descriptor_heaps, //??
-        },
-        storage_texture_rt_array_binding: u32 = 0,
-        sampled_texture_rt_array_binding: u32 = 1,
-
-        buffer_rt_array_binding_fallback: u32 = 2,
-    };
-    fn serialize() void {} //??
-    fn deserialize() void {}
-};
-
-pub const Result = struct {
-    bytes: []u8,
-    entry_points: []EntryPoint,
-
-    const EntryPoint = struct {
-        name: [:0]const u8,
-        stage_info: ShaderStageInfo,
-
-        push_constants: []const PushConstant = &.{},
-
-        io_entries: [*]const IOEntry = undefined,
-        input_count: u32 = 0,
-        output_count: u32 = 0,
-    };
-    const IOEntry = struct {
-        interpolation: Interpolation = .smooth,
-        type: IOType,
-    };
-    const Interpolation = enum { smooth, linear, flat };
-    const IOType = union(enum) {
-        scalar: Parser.TypeEntry.Scalar,
-        vector: Parser.TypeEntry.Vector,
-        // matrix: Parser.TypeEntry.Matrix,
-    };
-    const PushConstant = struct {
-        name: []const u8,
-        offset: usize,
-        size: usize,
-    };
-    pub fn free(self: Result, allocator: Allocator) void {
-        allocator.free(self.bytes);
-    }
-};
 
 pub fn test_() !void {
     inline for (&[_]type{
@@ -123,48 +51,127 @@ pub fn test_() !void {
         };
 
         var parser = try Parser.new(allocator);
+        defer parser.deinit();
         parser.parse(tok) catch |err| {
             if (err == Error.CompilationError)
                 try error_message.printErrorMessageParser(&parser, &file_writer.interface);
             return err;
         };
+
         var ir = try IR.new(&parser, allocator);
         defer ir.deinit();
-
         try ir.lower();
 
-        // parser.deinit();
+        const spirv_bytecode = try spirv.generate(&ir, allocator, .{});
+        const result: Result = .{
+            .bytes = @ptrCast(@alignCast(spirv_bytecode)),
+        };
+        std.debug.print("{s}\n", .{result.bytes});
+        // _ = result;
+
         //============================
 
         const new_timestamp = clock.now(io);
         measure += @intCast(timestamp.durationTo(new_timestamp).nanoseconds);
         timestamp = new_timestamp;
+
         parser.dump();
         ir.dump();
-        parser.deinit();
     }
     std.debug.print(
         "time: {d} mcs(tc: {d})\n",
         .{ @as(f64, @floatFromInt(measure)) / 1_000.0 / test_count, test_count },
     );
 }
-pub fn compile(io: std.Io, allocator: Allocator, path: []const u8, error_writer: *std.Io.Writer) Error![]u32 {
-    const source = readFile(io, allocator, path) catch
-        return Error.FileReadFailed;
-    defer allocator.free(source);
 
-    var parser = try Parser.new(.{
-        .source = source,
+pub const ShaderStage = enum { fragment, vertex, compute };
+pub const ShaderStageInfo = union(ShaderStage) {
+    fragment,
+    vertex,
+    compute: [3]u32,
+};
 
-        .full_source = source,
-        .path = path,
-    }, allocator);
-    parser.parse() catch |err| {
-        try @import("errorMessage.zig").printErrorMessage(error_writer, parser.tokenizer.error_info);
-        return err;
+pub const Error = error{
+    OutOfMemory,
+    WriteFailed,
+
+    FileReadFailed,
+
+    CompilationError,
+};
+pub const Settings = struct {
+    push_constant_buffer_size: u32 =
+        push_buffer_size_vulkan_required,
+    target: Target = .{ .vulkan = .{} },
+    optimize: Optimize = .full,
+
+    vendor: GpuVendor = .other,
+
+    const push_buffer_size_vulkan_required = 128;
+
+    const Target = union(enum) { vulkan: VulkanSettings };
+    const Optimize = enum { none, full };
+
+    const VulkanSettings = struct {
+        spirv_version: SpirvVersion = .v1_0,
+        bindless_implementation: enum {
+            runtime_arrays,
+            descriptor_heaps, //??
+        } = .runtime_arrays,
+        storage_texture_rt_array_binding: u32 = 0,
+        sampled_texture_rt_array_binding: u32 = 1,
+
+        buffer_rt_array_binding_fallback: u32 = 2,
     };
-    return &.{};
-}
+    fn serialize() void {} //??
+    fn deserialize() void {}
+    pub const SpirvVersion = enum {
+        v1_0, //vulkan 1.0
+        v1_1,
+        v1_3, //vulkan 1.1
+        v1_4,
+        v1_5, //vulkan 1.2
+        v1_6, //vulkan 1.3
+        pub inline fn higher(self: SpirvVersion, v: SpirvVersion) bool {
+            return @intFromEnum(self) >= @intFromEnum(v);
+        }
+    };
+    pub const GpuVendor = enum { nvidia, amd, other };
+};
+
+pub const Result = struct {
+    bytes: []u8,
+    entry_points: []EntryPoint = &.{},
+
+    const EntryPoint = struct {
+        name: [:0]const u8,
+        stage_info: ShaderStageInfo,
+
+        push_constants: []const PushConstant = &.{},
+
+        io_entries: [*]const IOEntry = undefined,
+        input_count: u32 = 0,
+        output_count: u32 = 0,
+    };
+    const IOEntry = struct {
+        interpolation: Interpolation = .smooth,
+        type: IOType,
+    };
+    const Interpolation = enum { smooth, linear, flat };
+    const IOType = union(enum) {
+        scalar: Parser.TypeEntry.Scalar,
+        vector: Parser.TypeEntry.Vector,
+        // matrix: Parser.TypeEntry.Matrix,
+    };
+    const PushConstant = struct {
+        name: []const u8,
+        offset: usize,
+        size: usize,
+    };
+    pub fn free(self: Result, allocator: Allocator) void {
+        allocator.free(self.bytes);
+    }
+};
 
 pub fn readFile(io: std.Io, allocator: Allocator, path: []const u8) ![]const u8 {
     const source_file = try std.Io.Dir.cwd().openFile(io, path, .{});

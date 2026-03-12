@@ -1580,13 +1580,13 @@ pub fn getTypeEntry(self: *Parser, @"type": Type) TypeEntry {
 }
 
 fn addType(self: *Parser, entry: TypeEntry) Error!Type {
-    return for (0..self.types.items.len) |i| {
+    for (0..self.types.items.len) |i| {
         if (std.meta.eql(entry, self.getTypeEntry(@enumFromInt(i))))
             return @enumFromInt(i);
-    } else blk: {
-        try self.types.append(self.allocator, entry);
-        break :blk @enumFromInt(self.types.items.len - 1);
-    };
+    }
+    const id: Type = @enumFromInt(self.types.items.len);
+    try self.types.append(self.allocator, entry);
+    return id;
 }
 
 pub fn getNodeEntry(self: *Parser, node: Node) *NodeEntry {

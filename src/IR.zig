@@ -12,11 +12,13 @@ const IR = @This();
 arena_allocator: std.heap.ArenaAllocator,
 parser: *Parser,
 
+entry_points: List(EntryPoint) = .empty,
+current_entry_point: usize = 0,
+
 inst_pool: InstructionPool = .{},
 operand_pool: OperandPool = .{},
 
-entry_points: List(EntryPoint) = .empty,
-current_entry_point: usize = 0,
+types: List(TypeEntry) = .empty,
 
 global_variables: List(GlobalVariable) = .empty,
 name_mappings: List(NameMapping) = .empty,
@@ -27,11 +29,10 @@ pub fn dump(self: *IR) void {
         for (ep.body.items) |id| {
             const inst = self.inst_pool.get(id).*;
             const operands = self.operand_pool.getSlice(inst.operands, inst.count);
-            std.debug.print("|{d}|{s} -> [{d}]{{", .{
-                id,
-                @tagName(inst.op),
-                operands.len,
-            });
+            std.debug.print("|{d}|{s}", .{ id, @tagName(inst.op) });
+            if (inst.type != .null)
+                std.debug.print(": {}", .{inst.type});
+            std.debug.print(" -> [{d}]{{", .{operands.len});
             for (operands, 0..) |operand, i|
                 std.debug.print("{f}{s}", .{
                     operand,
@@ -254,21 +255,24 @@ fn lowerIndexing(self: *IR, target_node: Parser.Node, kind: ExpressionKind) Erro
     const target_type = try self.parser.typeOf(target_node);
     switch (self.parser.getTypeEntry(target_type)) {
         .pointer => |pointed_type| {
+            const u64_type = try self.addType(.{ .scalar = .{ .width = ._64, .layout = .uint } });
+
             const sizeof: u64 = self.parser.sizeOf(pointed_type);
+
+            //index * pointer.alignment
             const offset_operand: Operand = if (sizeof > 1) blk: {
                 const sizeof_value_id = try self.parser.addNumberValue(sizeof);
-                break :blk .new(try self.addInst(.mul, &.{
+                break :blk .new(try self.addInstTyped(.mul, &.{
                     index_operand,
                     .new(sizeof_value_id, .parser_value),
-                    //type = u64
-                }), .inst);
+                }, u64_type), .inst);
             } else index_operand;
 
-            const new_ptr: Operand = .new(try self.addInst(.add, &.{
+            //ptr + index * pointer.alignment
+            const new_ptr: Operand = .new(try self.addInstTyped(.add, &.{
                 target_operand,
                 offset_operand,
-                //type = u64
-            }), .inst);
+            }, u64_type), .inst);
             return if (kind == .value)
                 return new_ptr
             else
@@ -329,13 +333,17 @@ fn lowerConstructor(self: *IR, @"type": Parser.Type, elem_count: u32, elem_node:
     };
 }
 
-fn addInst(self: *IR, op: Op, operands: []const Operand) Error!u32 {
+inline fn addInst(self: *IR, op: Op, operands: []const Operand) Error!u32 {
+    return self.addInstTyped(op, operands, .null);
+}
+fn addInstTyped(self: *IR, op: Op, operands: []const Operand, @"type": Type) Error!u32 {
     // const id =
     const operands_id = try self.operand_pool.addSlice(self.arena(), operands);
     const inst_id = try self.inst_pool.add(self.arena(), .{
         .op = op,
         .operands = operands_id,
         .count = @truncate(operands.len),
+        .type = @"type",
     });
     const current_ep = &self.entry_points.items[self.current_entry_point];
     try current_ep.body.append(self.arena(), inst_id);
@@ -403,7 +411,22 @@ const Inst = struct {
     type: Type = undefined,
 };
 
-const Type = enum(u32) { _ };
+pub fn convertParserType(self: *IR, @"type": Parser.Type) Error!Type {
+    const entry = self.parser.getTypeEntry(@"type");
+    return switch (entry) {
+        inline .vector, .scalar, .matrix => |val, tag| //
+        try self.addType(@unionInit(TypeEntry, @tagName(tag), val)),
+        inline else => |_, tag| @panic(@tagName(tag)),
+    };
+}
+pub fn addType(self: *IR, entry: TypeEntry) Error!Type {
+    _ = .{ self, entry };
+    return @enumFromInt(0);
+}
+pub fn getType(self: *IR, @"type": Type) TypeEntry {
+    return self.types.items[@intFromEnum(@"type")];
+}
+const Type = enum(u32) { null = std.math.maxInt(u32), _ };
 const TypeEntry = union(enum) {
     void,
     bool,
