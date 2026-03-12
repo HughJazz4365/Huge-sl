@@ -1,9 +1,6 @@
 //device pointers access chains work the same but with  OpPtrAccessChain
 //LINE 250 -^
 
-//parser values -> bad idea(cant determine type of operand)
-//TODO: var refs?
-
 //TODO: remove internal arena
 //arena only makes sense for InstructionData.operands
 
@@ -246,50 +243,30 @@ fn lowerIndexing(self: *IR, target_node: Parser.Node, kind: ExpressionKind) Erro
     const index_node = target_node + self.parser.nodeConsumption(target_node);
     const index_operand = try self.lowerExpression(index_node, .value);
 
-    const target_type = try self.parser.typeOf(target_node);
-    switch (self.parser.getTypeEntry(target_type)) {
-        .pointer => |pointed_type| {
-            const u64_type = try self.addType(.{ .scalar = .{ .width = ._64, .layout = .uint } });
-
-            const sizeof: u64 = self.parser.sizeOf(pointed_type);
-
-            //index * pointer.alignment
-            const offset_operand: Operand = if (sizeof > 1) blk: {
-                const sizeof_value_id = try self.parser.addNumberValue(sizeof);
-                break :blk .new(try self.addInst(.mul, &.{
-                    index_operand,
-                    .new(try self.addParserValue(.{ .id = sizeof_value_id, .type = u64_type }), .parser_value),
-                }, u64_type), .inst);
-            } else index_operand;
-
-            //ptr + index * pointer.alignment
-            const new_ptr: Operand = .new(try self.addInst(.add, &.{
-                target_operand,
-                offset_operand,
-            }, u64_type), .inst);
-            return if (kind == .value)
-                return new_ptr
-            else
-                .new(try self.addInst(.load, &.{new_ptr}, .null), .inst);
-        },
-        else => {},
-    }
-
-    const access_chain = try self.addInst(
-        .access_chain,
-        &.{ target_operand, index_operand },
-        .null,
-    );
+    const target_type = try self.convertParserType(try self.parser.typeOf(target_node));
+    const target_type_entry = self.getType(target_type);
+    const access_chain =
+        if (target_type_entry == .device_pointer)
+            try self.addInst(
+                .ptr_access_chain,
+                &.{ target_operand, index_operand },
+                target_type_entry.device_pointer.child,
+            )
+        else
+            try self.addInst(
+                .access_chain,
+                &.{ target_operand, index_operand },
+                target_type,
+            );
     if (kind == .reference)
         return .new(access_chain, .inst);
 
-    const load = try self.addInst(.load, &.{.new(access_chain, .inst)}, .null);
+    const load = try self.addInst(.load, &.{.new(access_chain, .inst)}, self.inst_pool.get(access_chain).type);
     return .new(load, .inst);
 
-    //pointer deref at index offset
     //composite extract
     //vector dynamic extract
-    //access chain
+    //ptr access chain
     //access chain
 }
 
@@ -624,6 +601,7 @@ const Op = enum(u32) {
     load, //[var]
     store, //[var][value]
     access_chain, //[var][index0..]
+    ptr_access_chain, //[ptr][elem][index0...]
 
     load_builtin,
     store_builtin,

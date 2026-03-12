@@ -344,6 +344,8 @@ pub const Capability = enum(u32) {
     cull_distance = 33,
 };
 
+pub const glsl_std_ext_inst_set_name =
+    "GLSL.std.450";
 pub const physical_storage_buffer_ext_name =
     "SPV_KHR_physical_storage_buffer";
 pub const @"8bit_storage_ext_name" =
