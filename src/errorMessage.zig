@@ -127,8 +127,8 @@ pub fn printErrorMessageParser(parser: *Parser, writer: *std.Io.Writer) Error!vo
     switch (error_info.payload) {
         .cant_implicitly_cast => |cic| {
             try writer.print("can`t implicitly cast '{f}' to '{f}':\n", .{
-                Parser.FatType{ .self = parser, .type = cic.from },
-                Parser.FatType{ .self = parser, .type = cic.to },
+                Parser.DebugType{ .self = parser, .type = cic.from },
+                Parser.DebugType{ .self = parser, .type = cic.to },
             });
             try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
         },
@@ -162,7 +162,7 @@ pub fn printErrorMessageParser(parser: *Parser, writer: *std.Io.Writer) Error!vo
         .qualifier_incompatible_with_type => |q| {
             try writer.print("{s} variables cant have type '{f}'\n", .{
                 @tagName(q.qualifier),
-                Parser.FatType{ .self = parser, .type = q.type },
+                Parser.DebugType{ .self = parser, .type = q.type },
             });
             try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
         },

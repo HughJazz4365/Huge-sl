@@ -100,24 +100,27 @@ pub const Error = error{
     CompilationError,
 };
 pub const Settings = struct {
-    push_constant_buffer_size: u32 =
-        push_buffer_size_vulkan_required,
+    const push_buffer_size_vulkan_required = 128;
+
     target: Target = .{ .vulkan = .{} },
     optimize: Optimize = .full,
 
     vendor: GpuVendor = .other,
 
-    const push_buffer_size_vulkan_required = 128;
+    push_constant_buffer_size: u32 =
+        push_buffer_size_vulkan_required,
 
     const Target = union(enum) { vulkan: VulkanSettings };
     const Optimize = enum { none, full };
 
     const VulkanSettings = struct {
+        buffer_device_address: bool = true,
         spirv_version: SpirvVersion = .v1_0,
         bindless_implementation: enum {
             runtime_arrays,
             descriptor_heaps, //??
         } = .runtime_arrays,
+        runtime_arrays_descriptor_set: u32 = 0,
         storage_texture_rt_array_binding: u32 = 0,
         sampled_texture_rt_array_binding: u32 = 1,
 

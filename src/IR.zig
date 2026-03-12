@@ -1,3 +1,7 @@
+//device pointers access chains work the same but with  OpPtrAccessChain
+//LINE 250 -^
+
+//parser values -> bad idea(cant determine type of operand)
 //TODO: var refs?
 
 //TODO: remove internal arena
@@ -19,6 +23,7 @@ inst_pool: InstructionPool = .{},
 operand_pool: OperandPool = .{},
 
 types: List(TypeEntry) = .empty,
+parser_values: List(ParserValue) = .empty,
 
 global_variables: List(GlobalVariable) = .empty,
 name_mappings: List(NameMapping) = .empty,
@@ -31,7 +36,11 @@ pub fn dump(self: *IR) void {
             const operands = self.operand_pool.getSlice(inst.operands, inst.count);
             std.debug.print("|{d}|{s}", .{ id, @tagName(inst.op) });
             if (inst.type != .null)
-                std.debug.print(": {}", .{inst.type});
+                // std.debug.print(": {}", .{inst.type});
+                std.debug.print(": {f}", .{DebugType{
+                    .self = self,
+                    .type = inst.type,
+                }});
             std.debug.print(" -> [{d}]{{", .{operands.len});
             for (operands, 0..) |operand, i|
                 std.debug.print("{f}{s}", .{
@@ -87,10 +96,10 @@ fn lowerStatement(self: *IR, node: Parser.Node) Error!void {
         .assignment => try self.lowerAssignment(node + 1),
         .@"return" => {
             if (self.parser.getNodeEntry(node + 1).* == .null)
-                _ = try self.addInst(.@"return", &.{});
+                _ = try self.addInst(.@"return", &.{}, .null);
 
             const returned_value = try self.lowerExpression(node + 1, .value);
-            _ = try self.addInst(.return_value, &.{returned_value});
+            _ = try self.addInst(.return_value, &.{returned_value}, .null);
         },
 
         else => std.debug.print("lstatement: {s}\n", .{@tagName(entry)}),
@@ -102,7 +111,7 @@ fn lowerAssignment(self: *IR, target_node: Parser.Node) Error!void {
 
     const value_node = target_node + self.parser.nodeConsumption(target_node);
     const value_operand = try self.lowerExpression(value_node, .value);
-    _ = try self.addInst(.store, &.{ target_operand, value_operand });
+    _ = try self.addInst(.store, &.{ target_operand, value_operand }, .null);
 }
 
 fn lowerVariableDeclaration(
@@ -130,10 +139,10 @@ fn lowerVariableDeclaration(
         },
         .@"var", .push, .workgroup => {
             const initializer = try self.lowerExpression(initializer_node, .value);
-            _ = @"type";
             const local_variable_id = try self.addLocalVariable(.{
                 .initializer = initializer,
                 .storage_class = storage_class,
+                .type = try self.convertParserType(@"type"),
             });
 
             _ = try self.addNameMapping(
@@ -145,21 +154,6 @@ fn lowerVariableDeclaration(
         },
         .env, .vertex, .fragment, .compute => {},
     }
-}
-
-fn addGlobalVariable(self: *IR, variable: GlobalVariable) Error!u32 {
-    for (self.global_variables.items, 0..) |gv, i| {
-        if (gv.node == variable.node) return @truncate(i);
-    }
-    const id: u32 = @truncate(self.global_variables.items.len);
-    try self.global_variables.append(self.arena(), variable);
-    return id;
-}
-fn addLocalVariable(self: *IR, variable: Variable) Error!u32 {
-    const entry_point = &self.entry_points.items[self.current_entry_point];
-    const id: u32 = @truncate(entry_point.local_variables.items.len);
-    try entry_point.local_variables.append(self.arena(), variable);
-    return id;
 }
 
 const ExpressionKind = enum { value, reference };
@@ -174,10 +168,10 @@ fn lowerExpression(self: *IR, node: Parser.Node, kind: ExpressionKind) Error!Ope
             };
             if (kind == .reference) break :blk variable;
 
-            const load = try self.addInst(.load, &.{variable});
+            const load = try self.addInst(.load, &.{variable}, try self.typeOf(variable));
             break :blk .new(load, .inst);
         },
-        .value => |value| .new(value.payload, .parser_value),
+        .value => |value| .new(try self.convertParseValue(value), .parser_value),
         .constructor => |constructor| blk: {
             const type_node = node + 1;
             const @"type": Parser.Type = @enumFromInt(self.parser.getValuePayload(type_node));
@@ -200,12 +194,12 @@ fn lowerVariableReference(self: *IR, var_ref: Parser.VariableReference, kind: Ex
         existing
     else blk: {
         const initializer: Operand = if (try self.parser.getVariableReferenceValue(var_ref)) |value|
-            .new(value.payload, .parser_value)
+            .new(try self.convertParseValue(value), .parser_value)
         else
             .nullop;
 
         const id = try self.addGlobalVariable(.{
-            // type: Type = undefined,
+            .type = try self.convertParserType(self.parser.typeOfVariableReference(var_ref)),
             .storage_class = .fromQualifier(self.parser.getVariableReferenceQualifier(var_ref)),
             .initializer = initializer,
             .node = var_ref.node,
@@ -220,8 +214,8 @@ fn lowerVariableReference(self: *IR, var_ref: Parser.VariableReference, kind: Ex
 
     if (kind == .value) {
         if (nm.load.isNull()) {
-            const load: Operand =
-                .new(try self.addInst(.load, &.{nm.operand}), .inst);
+            const load_inst = try self.addInst(.load, &.{nm.operand}, try self.typeOf(nm.operand));
+            const load: Operand = .new(load_inst, .inst);
             nm.load = load;
         }
         return nm.load;
@@ -262,21 +256,21 @@ fn lowerIndexing(self: *IR, target_node: Parser.Node, kind: ExpressionKind) Erro
             //index * pointer.alignment
             const offset_operand: Operand = if (sizeof > 1) blk: {
                 const sizeof_value_id = try self.parser.addNumberValue(sizeof);
-                break :blk .new(try self.addInstTyped(.mul, &.{
+                break :blk .new(try self.addInst(.mul, &.{
                     index_operand,
-                    .new(sizeof_value_id, .parser_value),
+                    .new(try self.addParserValue(.{ .id = sizeof_value_id, .type = u64_type }), .parser_value),
                 }, u64_type), .inst);
             } else index_operand;
 
             //ptr + index * pointer.alignment
-            const new_ptr: Operand = .new(try self.addInstTyped(.add, &.{
+            const new_ptr: Operand = .new(try self.addInst(.add, &.{
                 target_operand,
                 offset_operand,
             }, u64_type), .inst);
             return if (kind == .value)
                 return new_ptr
             else
-                .new(try self.addInst(.load, &.{new_ptr}), .inst);
+                .new(try self.addInst(.load, &.{new_ptr}, .null), .inst);
         },
         else => {},
     }
@@ -284,11 +278,12 @@ fn lowerIndexing(self: *IR, target_node: Parser.Node, kind: ExpressionKind) Erro
     const access_chain = try self.addInst(
         .access_chain,
         &.{ target_operand, index_operand },
+        .null,
     );
     if (kind == .reference)
         return .new(access_chain, .inst);
 
-    const load = try self.addInst(.load, &.{.new(access_chain, .inst)});
+    const load = try self.addInst(.load, &.{.new(access_chain, .inst)}, .null);
     return .new(load, .inst);
 
     //pointer deref at index offset
@@ -298,9 +293,12 @@ fn lowerIndexing(self: *IR, target_node: Parser.Node, kind: ExpressionKind) Erro
     //access chain
 }
 
-fn lowerConstructor(self: *IR, @"type": Parser.Type, elem_count: u32, elem_node: Parser.Node) Error!Operand {
-    return switch (self.parser.getTypeEntry(@"type")) {
-        .vector => blk: {
+fn lowerConstructor(self: *IR, parser_type: Parser.Type, elem_count: u32, elem_node: Parser.Node) Error!Operand {
+    const @"type" = try self.convertParserType(parser_type);
+    return switch (self.getType(@"type")) {
+        .vector => |vector| blk: {
+            const slot_type = try self.addType(.{ .scalar = vector.scalar });
+
             var operands: [4]Operand = undefined;
             var count: usize = 0;
 
@@ -321,22 +319,24 @@ fn lowerConstructor(self: *IR, @"type": Parser.Type, elem_count: u32, elem_node:
                         const extract = try self.addInst(
                             .composite_extract,
                             &.{ elem_operand, .fromRaw(j) },
+                            slot_type,
                         );
                         operands[count + j] = .new(extract, .inst);
                     }
                 } else operands[count] = elem_operand;
             }
-            const construct = try self.addInst(.composite_construct, operands[0..count]);
+            const construct = try self.addInst(
+                .composite_construct,
+                operands[0..count],
+                @"type",
+            );
             break :blk .new(construct, .inst);
         },
         else => @panic("lower non vector consturctor"),
     };
 }
 
-inline fn addInst(self: *IR, op: Op, operands: []const Operand) Error!u32 {
-    return self.addInstTyped(op, operands, .null);
-}
-fn addInstTyped(self: *IR, op: Op, operands: []const Operand, @"type": Type) Error!u32 {
+fn addInst(self: *IR, op: Op, operands: []const Operand, @"type": Type) Error!u32 {
     // const id =
     const operands_id = try self.operand_pool.addSlice(self.arena(), operands);
     const inst_id = try self.inst_pool.add(self.arena(), .{
@@ -356,7 +356,7 @@ fn operandSlice(self: *IR, inst: Inst) []Operand {
 
 const EntryPoint = struct {
     body: List(u32) = .empty,
-    local_variables: List(Variable) = .empty,
+    local_variables: List(LocalVariable) = .empty,
 };
 
 const NameMapping = struct {
@@ -369,15 +369,35 @@ const NameMapping = struct {
     load: Operand = .nullop,
 };
 
+fn getGlobalVariable(self: *IR, id: u32) GlobalVariable {
+    return self.global_variables.items[id];
+}
+
+fn addGlobalVariable(self: *IR, variable: GlobalVariable) Error!u32 {
+    try self.global_variables.append(self.arena(), variable);
+    return @truncate(self.global_variables.items.len - 1);
+}
+
 const GlobalVariable = struct {
-    type: Type = undefined,
+    type: Type,
     storage_class: StorageClass,
     initializer: Operand, //parser_value
 
     node: Parser.Node,
 };
-const Variable = struct {
-    type: Type = undefined,
+
+fn getLocalVariable(self: *IR, id: u32) LocalVariable {
+    return self.entry_points.items[self.current_entry_point].local_variables.items[id];
+}
+
+fn addLocalVariable(self: *IR, variable: LocalVariable) Error!u32 {
+    const entry_point = &self.entry_points.items[self.current_entry_point];
+    try entry_point.local_variables.append(self.arena(), variable);
+    return @truncate(entry_point.local_variables.items.len - 1);
+}
+
+const LocalVariable = struct {
+    type: Type,
     storage_class: StorageClass,
     initializer: Operand,
 };
@@ -408,24 +428,71 @@ const Inst = struct {
     operands: u32,
     count: u32,
 
-    type: Type = undefined,
+    type: Type,
 };
+
+pub fn convertParseValue(self: *IR, value: Parser.Value) Error!u32 {
+    return try self.addParserValue(.{
+        .id = value.payload,
+        .type = try self.convertParserType(value.type),
+    });
+}
+pub fn addParserValue(self: *IR, value: ParserValue) Error!u32 {
+    try self.parser_values.append(self.arena(), value);
+    return @truncate(self.parser_values.items.len - 1);
+}
+pub fn getParserValue(self: *IR, id: u32) ParserValue {
+    return self.parser_values.items[id];
+}
+const ParserValue = struct {
+    id: u32,
+    type: Type,
+};
+
+fn typeOf(self: *IR, operand: Operand) Error!Type {
+    return switch (operand.kind) {
+        .inst => self.inst_pool.get(operand.val).type,
+        .parser_value => self.getParserValue(operand.val).type,
+        .global_variable => self.getGlobalVariable(operand.val).type, // global_variable,
+        .local_variable => self.getLocalVariable(operand.val).type, // global_variable,
+
+        .input_builtin => try self.typeOfInputBuiltin(@enumFromInt(operand.val)),
+        // output_builtin,
+        else => unreachable,
+    };
+}
+pub fn typeOfInputBuiltin(self: *IR, builtin: InputBuiltin) Error!Type {
+    const entry: TypeEntry = switch (builtin) {
+        .vertex_id => .{ .scalar = .{ .width = ._32, .layout = .uint } },
+        // else => unreachable,
+    };
+    return try self.addType(entry);
+}
 
 pub fn convertParserType(self: *IR, @"type": Parser.Type) Error!Type {
     const entry = self.parser.getTypeEntry(@"type");
-    return switch (entry) {
+    const new_entry: TypeEntry = switch (entry) {
         inline .vector, .scalar, .matrix => |val, tag| //
-        try self.addType(@unionInit(TypeEntry, @tagName(tag), val)),
+        @unionInit(TypeEntry, @tagName(tag), val),
+        .pointer => |pointed_type| .{ .device_pointer = .{
+            .child = try self.convertParserType(pointed_type),
+            .alignment = .size,
+        } },
+
         inline else => |_, tag| @panic(@tagName(tag)),
     };
+    return try self.addType(new_entry);
 }
+
 pub fn addType(self: *IR, entry: TypeEntry) Error!Type {
-    _ = .{ self, entry };
-    return @enumFromInt(0);
+    const id: Type = @enumFromInt(self.types.items.len);
+    try self.types.append(self.arena(), entry);
+    return id;
 }
 pub fn getType(self: *IR, @"type": Type) TypeEntry {
     return self.types.items[@intFromEnum(@"type")];
 }
+
 const Type = enum(u32) { null = std.math.maxInt(u32), _ };
 const TypeEntry = union(enum) {
     void,
@@ -438,6 +505,9 @@ const TypeEntry = union(enum) {
 
     array: Array,
     runtime_array: Type,
+
+    //device pointer in spirv:
+    //OpPointer(child_type, storage_class = PhysicalStorageBuffer)
     device_pointer: DevicePointer,
     logical_pointer: LogicalPointer,
 
@@ -460,6 +530,24 @@ const TypeEntry = union(enum) {
         dim: Dimensionality,
     };
     const Dimensionality = enum { d1, d2, d3, cube };
+};
+const DebugType = struct {
+    self: *IR,
+    type: Type,
+    pub fn format(debug: DebugType, writer: *std.Io.Writer) !void {
+        const entry = debug.self.getType(debug.type);
+        switch (entry) {
+            inline .scalar, .vector, .matrix => |numeric| try numeric.format(writer),
+            .device_pointer => |dp| {
+                try writer.writeAll("*");
+                if (dp.alignment != .size)
+                    try writer.print("align({d})", .{@intFromEnum(dp.alignment)});
+                try (DebugType{ .self = debug.self, .type = dp.child }).format(writer);
+            },
+
+            else => {},
+        }
+    }
 };
 
 const OutputBuiltin = enum(u32) {

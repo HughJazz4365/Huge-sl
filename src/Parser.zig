@@ -105,7 +105,7 @@ fn dumpCurrentScope(self: *Parser, nodes: bool, formatted: bool) void {
     if (formatted) {
         var node: Node = 0;
         while (node < body.len) {
-            std.debug.print("\t{f}\n", .{FatNode{
+            std.debug.print("\t{f}\n", .{DebugNode{
                 .self = self,
                 .node = &node,
             }});
@@ -911,10 +911,7 @@ pub fn typeOf(self: *Parser, node: Node) Error!Type {
             try self.typeOf(node + 1 + self.nodeConsumption(node + 1)),
         ),
         .u_op => |u_op| try self.typeOfUOp(u_op.op, try self.typeOf(node + 1)),
-        .var_ref => |vr| @enumFromInt(self.getNodeEntryScope(
-            vr.scope,
-            vr.node + 1 + self.nodeConsumption(vr.node + 1),
-        ).value.payload),
+        .var_ref => |var_ref| self.typeOfVariableReference(var_ref),
 
         //return type of target for now
         .indexing => blk: {
@@ -938,6 +935,17 @@ pub fn typeOf(self: *Parser, node: Node) Error!Type {
             return self.errorOut(.unknown);
         },
     };
+}
+
+pub fn typeOfVariableReference(self: *Parser, var_ref: VariableReference) Type {
+    const decl_entry = self.getNodeEntryScope(var_ref.scope, var_ref.node).*;
+    const node = switch (decl_entry) {
+        .var_decl, .folded_var_decl => //
+        var_ref.node + 1 + self.nodeConsumptionScope(var_ref.scope, var_ref.node + 1),
+        else => unreachable,
+    };
+
+    return @enumFromInt(self.getNodeEntryScope(var_ref.scope, node).value.payload);
 }
 fn typeOfFunctionDeclaration(self: *Parser, fn_decl: FunctionDeclaration, node: Node) Error!Type {
     const fte = self.function_type_elems.items;
@@ -1860,7 +1868,7 @@ pub const Qualifier = enum {
             @intFromEnum(Tokenizer.TokenKind.@"const"));
     }
 };
-const Value = struct {
+pub const Value = struct {
     type: Type,
     payload: u32,
     token: Token = undefined,
@@ -1928,6 +1936,13 @@ pub const TypeEntry = union(enum) {
         scalar: Scalar,
         m: Vector.Len,
         n: Vector.Len,
+        pub fn format(self: Matrix, writer: *std.Io.Writer) !void {
+            try writer.print("{f}x{s}x{s}", .{
+                self.scalar,
+                @tagName(self.m)[1..],
+                @tagName(self.n)[1..],
+            });
+        }
     };
     pub const Vector = packed struct {
         scalar: Scalar,
@@ -1940,6 +1955,12 @@ pub const TypeEntry = union(enum) {
                 return 2 + @as(u32, @intFromEnum(self));
             }
         };
+        pub fn format(self: Vector, writer: *std.Io.Writer) !void {
+            try writer.print("{f}x{s}", .{
+                self.scalar,
+                @tagName(self.len)[1..],
+            });
+        }
     };
     pub const Scalar = packed struct {
         width: Width,
@@ -1964,6 +1985,12 @@ pub const TypeEntry = union(enum) {
         pub inline fn eql(a: Scalar, b: Scalar) bool {
             return a.width == b.width and a.layout == b.layout;
         }
+        pub fn format(self: Scalar, writer: *std.Io.Writer) !void {
+            try writer.print("{c}{s}", .{
+                "fui"[@intFromEnum(self.layout)],
+                @tagName(self.width)[1..],
+            });
+        }
     };
     pub const Tag = std.meta.Tag(@This());
     pub fn isComptime(self: TypeEntry) bool {
@@ -1983,14 +2010,7 @@ pub const TypeEntry = union(enum) {
     }
     pub fn format(self: TypeEntry, writer: *std.Io.Writer) !void {
         switch (self) {
-            .scalar => |scalar| try writer.print("{c}{s}", .{
-                "fui"[@intFromEnum(scalar.layout)],
-                @tagName(scalar.width)[1..],
-            }),
-            .vector => |vector| try writer.print("{f}x{s}", .{
-                TypeEntry{ .scalar = vector.scalar },
-                @tagName(vector.len)[1..],
-            }),
+            inline .scalar, .vector, .matrix => |numeric| try numeric.format(writer),
             else => try writer.print("{s}", .{@tagName(self)}),
         }
     }
@@ -2003,26 +2023,10 @@ pub fn errorOut(self: *Parser, error_info: ErrorInfo) Error {
 
 //debug structs for formatting
 
-pub const FatToken = struct {
-    self: Tokenizer,
-    token: Token,
-    pub fn format(entry: FatToken, writer: *std.Io.Writer) !void {
-        const kind = entry.self.kind(entry.token);
-        try writer.print("'{s}'", .{@tagName(kind)});
-        switch (kind) {
-            .identifier,
-            .int_literal,
-            .float_literal,
-            .type_literal,
-            => try writer.print(" : \"{s}\"", .{entry.self.slice(entry.token)}),
-            else => {},
-        }
-    }
-};
-pub const FatType = struct {
+pub const DebugType = struct {
     self: *Parser,
     type: Type,
-    pub fn format(entry: FatType, writer: *std.Io.Writer) !void {
+    pub fn format(entry: DebugType, writer: *std.Io.Writer) !void {
         if (entry.type == .@"anytype")
             return try writer.writeAll("anytype");
 
@@ -2031,33 +2035,33 @@ pub const FatType = struct {
             .function => |ftype| {
                 try writer.print("fn(", .{});
                 for (0..ftype.arg_count) |i| try writer.print("{f}{s}", .{
-                    FatType{
+                    DebugType{
                         .self = entry.self,
                         .type = entry.self.function_type_elems.items[ftype.id + i],
                     },
                     if (i + 1 == ftype.arg_count) "" else ", ",
                 });
-                try writer.print(") {f}", .{FatType{
+                try writer.print(") {f}", .{DebugType{
                     .self = entry.self,
                     .type = entry.self.function_type_elems.items[ftype.id + ftype.arg_count],
                 }});
             },
-            .pointer => |pointed| try writer.print("*{f}", .{FatType{ .self = entry.self, .type = pointed }}),
+            .pointer => |pointed| try writer.print("*{f}", .{DebugType{ .self = entry.self, .type = pointed }}),
             else => try TypeEntry.format(te, writer),
         }
     }
 };
-const FatValue = struct {
+const DebugValue = struct {
     self: *Parser,
     value: Value,
-    pub fn format(entry: FatValue, writer: *std.Io.Writer) !void {
+    pub fn format(entry: DebugValue, writer: *std.Io.Writer) !void {
         const type_entry = entry.self.getTypeEntry(entry.value.type);
         switch (type_entry) {
             .compint => try writer.print("{d}", .{
                 util.extract(i128, entry.self.getNumberValue(entry.value.payload)),
             }),
             .bool => try writer.print("{}", .{util.extract(bool, entry.self.getNumberValue(entry.value.payload))}),
-            .type => try writer.print("{f}", .{FatType{
+            .type => try writer.print("{f}", .{DebugType{
                 .self = entry.self,
                 .type = @enumFromInt(entry.value.payload),
             }}),
@@ -2092,19 +2096,19 @@ const FatValue = struct {
         }
     }
 };
-const FatNodeU = struct {
+const DebugNodeU = struct {
     self: *Parser,
     node: Node,
 
-    pub fn format(entry: FatNodeU, writer: *std.Io.Writer) !void {
+    pub fn format(entry: DebugNodeU, writer: *std.Io.Writer) !void {
         var node = entry.node;
-        try (FatNode{ .self = entry.self, .node = &node }).format(writer);
+        try (DebugNode{ .self = entry.self, .node = &node }).format(writer);
     }
 };
-const FatNode = struct {
+const DebugNode = struct {
     self: *Parser,
     node: *Node,
-    pub fn format(entry: FatNode, writer: *std.Io.Writer) !void {
+    pub fn format(entry: DebugNode, writer: *std.Io.Writer) !void {
         const body = entry.self.getBodySlice();
         switch (body[entry.node.*]) {
             .@"return" => {
@@ -2186,7 +2190,7 @@ const FatNode = struct {
                 try writer.print("<{s}>{f}", .{ @tagName(u_op.op), entry });
             },
             .value => |value| {
-                try writer.print("{f}", .{FatValue{ .self = entry.self, .value = value }});
+                try writer.print("{f}", .{DebugValue{ .self = entry.self, .value = value }});
                 entry.node.* += 1;
             },
             .identifier => |identifier| {
@@ -2221,6 +2225,7 @@ const FatNode = struct {
     }
 };
 
+pub const DebugToken = Tokenizer.DebugToken;
 const ErrorInfo = error_message.ParserErrorInfo;
 const Error = hgsl.Error;
 const List = std.ArrayList;
