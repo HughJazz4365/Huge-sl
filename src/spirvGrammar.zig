@@ -1,5 +1,5 @@
 pub const spirv_magic: u32 = 0x07230203;
-pub const source_language: u32 = 0; //unknown
+pub const generator_magic: u32 = 0; //unknown
 
 pub const Op = enum(u32) {
     //debug

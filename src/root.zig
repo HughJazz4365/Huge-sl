@@ -42,6 +42,9 @@ pub fn test_() !void {
     for (0..test_count) |_| {
         timestamp = clock.now(io);
 
+        const settings: Settings = .{
+            .target = .{ .vulkan = .{ .spirv_version = .v1_5 } },
+        };
         //============================
         var tok: Tokenizer = .{ .full_source = source, .path = path };
         tok.tokenize(allocator) catch |err| {
@@ -62,11 +65,7 @@ pub fn test_() !void {
         defer ir.deinit();
         try ir.lower();
 
-        const spirv_bytecode = try spirv.generate(&ir, allocator, .{});
-        const result: Result = .{
-            .bytes = @ptrCast(@alignCast(spirv_bytecode)),
-        };
-        std.debug.print("{s}\n", .{result.bytes});
+        const result = try spirv.generate(&ir, allocator, settings);
         // _ = result;
 
         //============================
@@ -77,6 +76,7 @@ pub fn test_() !void {
 
         parser.dump();
         ir.dump();
+        std.debug.print("RESULT: {any}\n", .{@as([]u32, @ptrCast(@alignCast(result.bytes)))});
     }
     std.debug.print(
         "time: {d} mcs(tc: {d})\n",
@@ -128,13 +128,13 @@ pub const Settings = struct {
     };
     fn serialize() void {} //??
     fn deserialize() void {}
-    pub const SpirvVersion = enum {
-        v1_0, //vulkan 1.0
-        v1_1,
-        v1_3, //vulkan 1.1
-        v1_4,
-        v1_5, //vulkan 1.2
-        v1_6, //vulkan 1.3
+    pub const SpirvVersion = enum(u32) {
+        v1_0 = spirv.versionWord(1, 0), //vulkan 1.0
+        v1_1 = spirv.versionWord(1, 1),
+        v1_3 = spirv.versionWord(1, 3), //vulkan 1.1
+        v1_4 = spirv.versionWord(1, 4),
+        v1_5 = spirv.versionWord(1, 5), //vulkan 1.2
+        v1_6 = spirv.versionWord(1, 6), //vulkan 1.3
         pub inline fn higher(self: SpirvVersion, v: SpirvVersion) bool {
             return @intFromEnum(self) >= @intFromEnum(v);
         }

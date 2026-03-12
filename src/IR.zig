@@ -12,12 +12,12 @@ const IR = @This();
 
 arena_allocator: std.heap.ArenaAllocator,
 parser: *Parser,
-
-entry_points: List(EntryPoint) = .empty,
-current_entry_point: usize = 0,
-
 inst_pool: InstructionPool = .{},
 operand_pool: OperandPool = .{},
+
+extension_information: ExtensionInformation = .{},
+entry_points: List(EntryPoint) = .empty,
+current_entry_point: usize = 0,
 
 types: List(TypeEntry) = .empty,
 parser_values: List(ParserValue) = .empty,
@@ -82,6 +82,10 @@ pub fn lower(self: *IR) Error!void {
         }
     }
 }
+
+const ExtensionInformation = struct {
+    spirv_glsl_std: bool = true,
+};
 fn lowerStatement(self: *IR, node: Parser.Node) Error!void {
     const entry = self.parser.getNodeEntry(node).*;
     switch (entry) {
