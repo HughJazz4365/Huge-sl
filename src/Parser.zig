@@ -151,9 +151,9 @@ pub fn parse(self: *Parser, tokenizer: Tokenizer) Error!void {
 
     const s = try self.parseFile(tokenizer);
     self.current_scope = self.getStructEntry(s).scope;
-    try self.foldScope(self.current_scope);
+    // try self.foldScope(self.current_scope);
 
-    try self.gatherEntryPointInfos();
+    // try self.gatherEntryPointInfos();
 }
 
 fn gatherEntryPointInfos(self: *Parser) Error!void {
@@ -1027,7 +1027,7 @@ pub fn nodeConsumptionScope(self: *Parser, scope: Scope, node: u32) u32 {
         .null => 1,
         .function_declaration => 1 + self.nodeConsumption(node + 1), //args
         .constructor => |constructor| 1 + self.nodeSequenceConsumption(scope, node + 1, constructor.elem_count + 1),
-        .function_type_declaration => |fn_type_decl| 1 + self.nodeSequenceConsumption(scope, node + 1, fn_type_decl.arg_count + 1),
+        inline .function_call, .function_type_declaration => |fn_type_decl| 1 + self.nodeSequenceConsumption(scope, node + 1, fn_type_decl.arg_count + 1),
         else => 1,
     };
     const body = self.getScopeEntry(scope).body.items;
@@ -1177,7 +1177,7 @@ fn parseVarDecl(self: *Parser, qualifier: Qualifier, qualifier_token: Token) Err
     const type_node = self.nextNode();
     if (self.tokenizer.kind(self.token) == .@":") {
         self.token += 1;
-        _ = try self.parseExpression1();
+        _ = try self.parseExpression2(.{ .kind_or_scope_end = .@"=" });
     } else _ = try self.appendNode(.null);
 
     if (self.tokenizer.kind(self.token) != .@"=") {
@@ -1209,16 +1209,19 @@ fn parseQualifierInfo(self: *Parser) Error!void {
 const ExpressionDelimiter = union(enum) {
     kind: Tokenizer.TokenKind,
     kind_or_comma: Tokenizer.TokenKind,
+    kind_or_scope_end: Tokenizer.TokenKind,
     scope_end,
     pub fn shouldStop(delimiter: ExpressionDelimiter, self: *Parser) bool {
+        const current = self.tokenizer.kind(self.token);
+        const at_scope_end = current == .endl or
+            current == .eof or
+            current == .@"}";
+
         return switch (delimiter) {
-            .kind => |kind| self.tokenizer.kind(self.token) == kind,
-            .kind_or_comma => |kind| self.tokenizer.kind(self.token) == kind or
-                self.tokenizer.kind(self.token) == .@",",
-            .scope_end => //
-            self.tokenizer.kind(self.token) == .endl or
-                self.tokenizer.kind(self.token) == .eof or
-                self.tokenizer.kind(self.token) == .@"}",
+            .kind => |kind| current == kind,
+            .kind_or_comma => |kind| current == kind or current == .@",",
+            .scope_end => at_scope_end,
+            .kind_or_scope_end => |kind| at_scope_end or current == kind,
         };
     }
 };
@@ -1226,11 +1229,12 @@ pub inline fn isAtScopeEnd(self: *Parser) bool {
     const eos: ExpressionDelimiter = .scope_end;
     return eos.shouldStop(self);
 }
+
 inline fn parseExpression2(self: *Parser, delimiter: ExpressionDelimiter) Error!u32 {
-    return self.parseExpressionRecursive(delimiter, 0);
+    return self.parseBinaryExpressionRecursive(delimiter, 0);
 }
-fn parseExpressionRecursive(self: *Parser, delimiter: ExpressionDelimiter, bp: u8) Error!u32 {
-    var left_len = try self.parseExpression1();
+fn parseBinaryExpressionRecursive(self: *Parser, delimiter: ExpressionDelimiter, bp: u8) Error!u32 {
+    var left_len = try self.parseExpression1(false);
 
     var iter: usize = 0;
     while (!delimiter.shouldStop(self)) {
@@ -1248,7 +1252,7 @@ fn parseExpressionRecursive(self: *Parser, delimiter: ExpressionDelimiter, bp: u
         try self.insertNthLastNode(left_len, bin_op_node);
         iter += 1;
 
-        left_len += 1 + try self.parseExpressionRecursive(delimiter, Tokenizer.bindingPower(op));
+        left_len += 1 + try self.parseBinaryExpressionRecursive(delimiter, Tokenizer.bindingPower(op));
     }
     return left_len;
 }
@@ -1259,11 +1263,14 @@ fn replaceNodeWithValue(self: *Parser, node: Node, consumption: u32, value: Valu
 fn insertNodeAssumeCapacity(self: *Parser, i: u32, entry: NodeEntry) void {
     self.getScopeEntry(self.current_scope).body.insertAssumeCapacity(i, entry);
 }
+
+//insert node at body[len - n]
 fn insertNthLastNode(self: *Parser, n: u32, entry: NodeEntry) Error!void {
     const body = &self.getScopeEntry(self.current_scope).body;
     try body.insert(self.allocator, body.items.len - n, entry);
 }
-fn parseExpression1(self: *Parser) Error!u32 {
+
+fn parseExpression1(self: *Parser, exclude_constructor: bool) Error!u32 {
     const node = self.nextNode();
     var len = try self.parseExpression0();
     sw: switch (self.tokenizer.kind(self.token)) {
@@ -1275,6 +1282,8 @@ fn parseExpression1(self: *Parser) Error!u32 {
             continue :sw self.tokenizer.kind(self.token);
         },
         .@"{" => {
+            if (exclude_constructor) break :sw;
+
             const open_token = self.token;
             self.token += 1;
             try self.insertNthLastNode(len, .null);
@@ -1286,11 +1295,23 @@ fn parseExpression1(self: *Parser) Error!u32 {
             len += 1 + seq.node_consumption;
             continue :sw self.tokenizer.kind(self.token);
         },
+        //.@"." => {//member access, postfix fn call
+        .@"(" => {
+            const open_token = self.token;
+            self.token += 1;
+            try self.insertNthLastNode(len, .null);
+            const seq = try self.parseSequence(.@")");
+            self.getNodeEntry(node).* = .{ .function_call = .{
+                .arg_count = seq.count,
+                .token = open_token,
+            } };
+            len += 1 + seq.node_consumption;
+            continue :sw self.tokenizer.kind(self.token);
+        },
 
-        //     else => return expr,
-        // }
-        else => return len,
+        else => break :sw,
     }
+    return len;
 }
 
 //returns the node list size not the amount of consumed tokens
@@ -1354,6 +1375,14 @@ fn parseExpression0(self: *Parser) Error!u32 {
             self.token += 1;
             break :blk 1;
         },
+        inline .compint, .compfloat => |c| blk: {
+            _ = try self.appendNode(.{ .value = .{
+                .type = .type,
+                .payload = @intFromEnum(try self.addType(@unionInit(TypeEntry, @tagName(c), {}))),
+            } });
+            self.token += 1;
+            break :blk 1;
+        },
         .void => blk: {
             _ = try self.appendNode(.{ .value = .{
                 .type = .type,
@@ -1366,7 +1395,7 @@ fn parseExpression0(self: *Parser) Error!u32 {
             const u_op = Tokenizer.uOpFromTokenKind(op).?;
             _ = try self.appendNode(.{ .u_op = .{ .op = u_op, .token = self.token } });
             self.token += 1;
-            break :blk 1 + try self.parseExpression1();
+            break :blk 1 + try self.parseExpression1(false);
         },
         .@"." => switch (self.tokenizer.kind(self.token + 1)) {
             .@"{" => blk: {
@@ -1396,7 +1425,6 @@ fn parseFunctionTypeOrDeclaration(self: *Parser) Error!u32 {
     const header_token = self.token - 1;
     //TODO: in parse sequence put skipEndl() in else block of while loop
     //to allow endl before delimiter
-    //TODO: parseExpression1 but without @"{" for function rtype
     const header = try self.appendNode(.{ .function_type_declaration = .{
         .token = header_token,
         .arg_count = 0,
@@ -1482,7 +1510,7 @@ fn parseFunctionTypeOrDeclaration(self: *Parser) Error!u32 {
         .payload = .missing_return_type,
     });
 
-    const rtype_len = try self.parseExpression0();
+    const rtype_len = try self.parseExpression1(true);
 
     if (self.tokenizer.kind(self.tokenPastEndl()) == .@"{") {
         if (!must_be_fn_decl) try self.convertArgTypesToFunctionParameters(header + 1, arg_count, header_token);
@@ -1748,6 +1776,7 @@ const BuiltinNode = struct {
 const Builtin = enum {
     position, // f32x4
     vertex_id, // u32
+    TypeOf, //fn(anytype)type
 };
 
 pub const Node = u32;
@@ -1765,6 +1794,7 @@ pub const NodeEntry = union(enum) {
     indexing: Token, //[][target][index]
     constructor: ConstructorNode, //[count][type][elems..]
 
+    function_call: FunctionCall, //[][function][args..]
     array_type_decl, //??
 
     function_type_declaration: FunctionTypeDeclaration, //[fn_type_decl][arg_count][arg_types...][rtype]
@@ -1798,6 +1828,10 @@ pub const NodeEntry = union(enum) {
             inline else => |o| o.token,
         };
     }
+};
+const FunctionCall = struct {
+    arg_count: u32,
+    token: Token,
 };
 const FunctionTypeDeclaration = struct {
     arg_count: u32,
@@ -2127,6 +2161,13 @@ const DebugNode = struct {
                 entry.node.* += 1;
                 try writer.print("{f}[{f}]", .{ entry, entry });
             },
+            .function_call => |function_call| {
+                entry.node.* += 1;
+                try writer.print("{f}(", .{entry});
+                for (0..function_call.arg_count) |i|
+                    try writer.print("{f}{s}", .{ entry, if (i + 1 == function_call.arg_count) "" else ", " });
+                try writer.print(")", .{});
+            },
             .function_type_declaration => |fn_type_decl| {
                 entry.node.* += 1;
                 try writer.print("fn(", .{});
@@ -2235,6 +2276,7 @@ const UnaryOperator = Tokenizer.UnaryOperator;
 const Token = Tokenizer.Token;
 const TokenEntry = Tokenizer.TokenEntry;
 const activeTag = std.meta.activeTag;
+
 // .identifier => |identifier| blk: {
 //     for (self.access_dependency_stack.items) |i|
 //         if (util.strEql(identifier, i))

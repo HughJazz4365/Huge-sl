@@ -9,10 +9,11 @@ const Spirv = @This();
 const g = @import("spirvGrammar.zig");
 
 allocator: Allocator,
-words: List(u32) = .empty,
 glsl_inst_set_id: u32 = undefined,
-
 id: u32 = 1,
+
+header: List(u32) = .empty,
+decorations: List(u32) = .empty,
 
 pub fn generate(ir: *IR, allocator: Allocator, settings: hgsl.Settings) Error!Result {
     if (ir.entry_points.items.len == 0)
@@ -22,17 +23,23 @@ pub fn generate(ir: *IR, allocator: Allocator, settings: hgsl.Settings) Error!Re
 
     var spirv: Spirv = .{ .allocator = allocator };
     //minimum 5 words for header
-    try spirv.words.ensureTotalCapacity(allocator, 32);
+    try spirv.header.ensureTotalCapacity(allocator, 32);
 
     const vulkan_settings = settings.target.vulkan;
     //header: |spirv-magic|version|generator-magic|bound|***|
-    spirv.words.appendSliceAssumeCapacity(
+    spirv.header.appendSliceAssumeCapacity(
         &.{ g.spirv_magic, @intFromEnum(vulkan_settings.spirv_version), g.generator_magic, 0, 0 },
     );
 
     return .{
-        .bytes = @ptrCast(@alignCast(try spirv.words.toOwnedSlice(allocator))),
+        .bytes = @ptrCast(@alignCast(try spirv.header.toOwnedSlice(allocator))),
     };
+}
+
+// fn addType(self: *Spirv, @"type": IR.Type) !u32 {}
+
+fn opWord(op: g.Op, count: u32) u32 {
+    return (count << 16) | @intFromEnum(op);
 }
 
 pub fn versionWord(major: u8, minor: u8) u32 {

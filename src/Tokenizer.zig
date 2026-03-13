@@ -419,6 +419,8 @@ pub const TokenKind = enum(u8) {
     @"anytype",
     @"defer",
 
+    compint,
+    compfloat,
     void,
     true,
     false,

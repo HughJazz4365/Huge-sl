@@ -1,3 +1,6 @@
+//each function has its own list of variables
+//no global variables list
+
 //device pointers access chains work the same but with  OpPtrAccessChain
 //LINE 250 -^
 
@@ -26,6 +29,10 @@ global_variables: List(GlobalVariable) = .empty,
 name_mappings: List(NameMapping) = .empty,
 
 pub fn dump(self: *IR) void {
+    std.debug.print("TYPES(len: {d}):\n", .{self.types.items.len});
+    for (self.types.items) |t|
+        std.debug.print("{any}\n", .{t});
+
     for (self.entry_points.items) |ep| {
         std.debug.print("ENTRYPOINT(len: {d}):\n", .{ep.body.items.len});
         for (ep.body.items) |id| {
@@ -474,7 +481,7 @@ pub fn getType(self: *IR, @"type": Type) TypeEntry {
     return self.types.items[@intFromEnum(@"type")];
 }
 
-const Type = enum(u32) { null = std.math.maxInt(u32), _ };
+pub const Type = enum(u32) { null = std.math.maxInt(u32), _ };
 const TypeEntry = union(enum) {
     void,
     bool,

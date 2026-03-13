@@ -1,11 +1,23 @@
 push vertex_buffer: *f32x3
 
+const double = fn(x: anytype) @TypeOf(x) {
+	return x * 2
+}
+
+//should produce this function variant if x='scalar'
+const double_compint = fn(x: compint) compint{
+	return x * compint{2}
+}
+
 vertex vert = fn void{
 	@position = .{vertex_buffer[@vertex_id], 1} 
-	//@position = .{f32x3{2}, 1} 
 }
 
 fragment frag = fn f32x4 {
-	return .{1}
+	const scalar = 9
+	const ds = double(scalar)
+
+	const color: f32x3 = .{ds}
+	return .{dc, 1}
 }
 

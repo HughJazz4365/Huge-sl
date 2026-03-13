@@ -60,12 +60,13 @@ pub fn test_() !void {
                 try error_message.printErrorMessageParser(&parser, &file_writer.interface);
             return err;
         };
+        _ = settings;
 
-        var ir = try IR.new(&parser, allocator);
-        defer ir.deinit();
-        try ir.lower();
+        // var ir = try IR.new(&parser, allocator);
+        // defer ir.deinit();
+        // try ir.lower();
 
-        const result = try spirv.generate(&ir, allocator, settings);
+        // const result = try spirv.generate(&ir, allocator, settings);
         // _ = result;
 
         //============================
@@ -75,8 +76,8 @@ pub fn test_() !void {
         timestamp = new_timestamp;
 
         parser.dump();
-        ir.dump();
-        std.debug.print("RESULT: {any}\n", .{@as([]u32, @ptrCast(@alignCast(result.bytes)))});
+        // ir.dump();
+        // std.debug.print("RESULT: {any}\n", .{@as([]u32, @ptrCast(@alignCast(result.bytes)))});
     }
     std.debug.print(
         "time: {d} mcs(tc: {d})\n",

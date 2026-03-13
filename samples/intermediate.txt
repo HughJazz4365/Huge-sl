@@ -1,23 +1,14 @@
-=============VARIABLES============
-0.declaration
-1.initialization
-2.references
-3.loads
 
-NameMapping{
-	load: ?u32
+1. proper function handling in parser:
+	'generic' function variants
+	function class detection(pure/non pure, etc)
+	full/partial comptime evaluation
 
-lowerVarRef(.value):
-	const nm = getNameMapping(name)
-	if(nm.load):
-		return nm.load
-	else generate load
-lowerVarRef(.reference):
-	const nm = getNameMapping(name)
-	nm.load = null
-	return nm
+2. in IR work on functions instead of entry points:
+	no global variables, each func have a list of variables
+	have an entry point list that points to function list entries
 
-generateVarDecl:
+3. spirv gen
 
 
 

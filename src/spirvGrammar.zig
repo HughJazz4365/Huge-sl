@@ -1,3 +1,21 @@
+//layout of a module:
+//1. capabilities
+//2. extensions, extInstImports
+//3. memory model
+//4. entry points
+//5. execution modes
+//6. decorations
+//7. type declarations
+//8. constants
+//9. global variables
+//10. functions
+
+//layout of a function
+//1. label
+//2. local variables
+//3. body....
+//last. termination instruction
+
 pub const spirv_magic: u32 = 0x07230203;
 pub const generator_magic: u32 = 0; //unknown
 
