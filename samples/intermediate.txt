@@ -1,3 +1,16 @@
+if Value.type = .function:
+	Value.token = variant
+	(token can be retreived from Function.decl_node.token())
+FUNCTION TRANSFORMATIONS:{
+	1. runtime_arg_&_rtype => no transformations
+	2. comptime_args_&_runtime_rtype => function_variants
+	3. comptime rtype(has_sideeffects) => {
+		function variant that returns 'void'
+		insert function_variant call before the statement with the original call
+		compute return value and insert instead of the original function call
+	}
+	4. pure => compute result if all args are comptime
+}
 
 1. proper function handling in parser:
 	'generic' function variants

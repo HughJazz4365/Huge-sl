@@ -18,6 +18,6 @@ fragment frag = fn f32x4 {
 	const ds = double(scalar)
 
 	const color: f32x3 = .{ds}
-	return .{dc, 1}
+	return .{color, 1}
 }
 

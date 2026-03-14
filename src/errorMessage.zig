@@ -15,6 +15,7 @@ pub const ParserErrorInfo = struct {
     //plan the error message and information dependecies for
     //each error kind
     pub const Payload = union(enum) {
+        argument_count_mismatch: ArgumentCountMismatch,
         push_constant_buffer_overflow,
 
         invalid_builtin,
@@ -23,11 +24,11 @@ pub const ParserErrorInfo = struct {
         redeclaration: Redeclaration,
         dependency_loop,
         return_type_mismatch,
-        cant_implicitly_cast: InvalidCast,
-        invalid_cast: InvalidCast,
+        cant_implicitly_cast: UnexpectedType,
+        invalid_cast: UnexpectedType,
         //'FROM' cannot be casted into 'TO': line
 
-        not_a_type: Parser.Type, //AType, BType, Token
+        unexpected_type_tag: UnexpectedTypeTag,
         //expected {a}, found {b}:
         //<line>
         //===OR===
@@ -95,7 +96,15 @@ pub const ParserErrorInfo = struct {
         pub const Tag = std.meta.Tag(Payload);
     };
 };
-const InvalidCast = struct {
+const ArgumentCountMismatch = struct {
+    expected: u32,
+    got: u32,
+};
+const UnexpectedTypeTag = struct {
+    expected: Parser.TypeEntry.Tag,
+    got: Parser.Type,
+};
+const UnexpectedType = struct {
     from: Parser.Type,
     to: Parser.Type,
 };
@@ -125,6 +134,13 @@ pub fn printErrorMessageParser(parser: *Parser, writer: *std.Io.Writer) Error!vo
     try writer.writeAll(comptime Color.red.ec() ++ " error: " ++ Color.default.ec());
 
     switch (error_info.payload) {
+        .unexpected_type_tag => |ut| {
+            try writer.print("expected {s}, got '{f}'\n", .{
+                @tagName(ut.expected),
+                Parser.DebugType{ .self = parser, .type = ut.got },
+            });
+            try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
+        },
         .cant_implicitly_cast => |cic| {
             try writer.print("can`t implicitly cast '{f}' to '{f}':\n", .{
                 Parser.DebugType{ .self = parser, .type = cic.from },
