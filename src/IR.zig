@@ -84,7 +84,7 @@ pub fn lower(self: *IR) Error!void {
 
         var statement: Parser.Node = 0;
         while (statement < body.len) {
-            defer statement = self.parser.nodeConsumption(statement);
+            defer statement = self.parser.nodeConsumptionUnscoped(statement);
             try self.lowerStatement(statement);
         }
     }
@@ -94,7 +94,7 @@ const ExtensionInformation = struct {
     spirv_glsl_std: bool = true,
 };
 fn lowerStatement(self: *IR, node: Parser.Node) Error!void {
-    const entry = self.parser.getNodeEntry(node).*;
+    const entry = self.parser.getNodeEntryUnscoped(node).*;
     switch (entry) {
         .folded_var_decl => |var_decl| try self.lowerVariableDeclaration(
             var_decl.qualifier,
@@ -103,7 +103,7 @@ fn lowerStatement(self: *IR, node: Parser.Node) Error!void {
         ),
         .assignment => try self.lowerAssignment(node + 1),
         .@"return" => {
-            if (self.parser.getNodeEntry(node + 1).* == .null)
+            if (self.parser.getNodeEntryUnscoped(node + 1).* == .null)
                 _ = try self.addInst(.@"return", &.{}, .null);
 
             const returned_value = try self.lowerExpression(node + 1, .value);
@@ -117,7 +117,7 @@ fn lowerStatement(self: *IR, node: Parser.Node) Error!void {
 fn lowerAssignment(self: *IR, target_node: Parser.Node) Error!void {
     const target_operand = try self.lowerExpression(target_node, .reference);
 
-    const value_node = target_node + self.parser.nodeConsumption(target_node);
+    const value_node = target_node + self.parser.nodeConsumptionUnscoped(target_node);
     const value_operand = try self.lowerExpression(value_node, .value);
     _ = try self.addInst(.store, &.{ target_operand, value_operand }, .null);
 }
@@ -130,10 +130,10 @@ fn lowerVariableDeclaration(
 ) Error!void {
     const storage_class: StorageClass = .fromQualifier(qualifier);
     _ = name;
-    const type_node = node + 1 + self.parser.nodeConsumption(node);
-    const @"type": Parser.Type = @enumFromInt(self.parser.getValuePayload(type_node));
+    const type_node = node + 1 + self.parser.nodeConsumptionUnscoped(node);
+    const @"type": Parser.Type = @enumFromInt(self.parser.getValuePayloadUnscoped(type_node));
 
-    const initializer_node = type_node + self.parser.nodeConsumption(type_node);
+    const initializer_node = type_node + self.parser.nodeConsumptionUnscoped(type_node);
 
     switch (qualifier) {
         .@"const" => {
@@ -166,7 +166,7 @@ fn lowerVariableDeclaration(
 
 const ExpressionKind = enum { value, reference };
 fn lowerExpression(self: *IR, node: Parser.Node, kind: ExpressionKind) Error!Operand {
-    const entry = self.parser.getNodeEntry(node).*;
+    const entry = self.parser.getNodeEntryUnscoped(node).*;
     return switch (entry) {
         .builtin => |builtin| blk: {
             const variable = switch (builtin.builtin) {
@@ -182,9 +182,9 @@ fn lowerExpression(self: *IR, node: Parser.Node, kind: ExpressionKind) Error!Ope
         .value => |value| .new(try self.convertParseValue(value), .parser_value),
         .constructor => |constructor| blk: {
             const type_node = node + 1;
-            const @"type": Parser.Type = @enumFromInt(self.parser.getValuePayload(type_node));
+            const @"type": Parser.Type = @enumFromInt(self.parser.getValuePayloadUnscoped(type_node));
 
-            const elem_node = type_node + self.parser.nodeConsumption(type_node);
+            const elem_node = type_node + self.parser.nodeConsumptionUnscoped(type_node);
 
             break :blk self.lowerConstructor(@"type", constructor.elem_count, elem_node);
             // try self.lowerConstructor(
@@ -251,7 +251,7 @@ fn addNameMapping(self: *IR, operand: Operand, node: Parser.Node, scope: Parser.
 fn lowerIndexing(self: *IR, target_node: Parser.Node, kind: ExpressionKind) Error!Operand {
     const target_operand = try self.lowerExpression(target_node, kind);
 
-    const index_node = target_node + self.parser.nodeConsumption(target_node);
+    const index_node = target_node + self.parser.nodeConsumptionUnscoped(target_node);
     const index_operand = try self.lowerExpression(index_node, .value);
 
     const target_type = try self.convertParserType(try self.parser.typeOf(target_node));
@@ -293,7 +293,7 @@ fn lowerConstructor(self: *IR, parser_type: Parser.Type, elem_count: u32, elem_n
             var node = elem_node;
 
             for (0..elem_count) |_| {
-                defer node += self.parser.nodeConsumption(node);
+                defer node += self.parser.nodeConsumptionUnscoped(node);
                 //TODO: can require a cast!
                 const elem_type = self.parser.typeOf(node) catch unreachable;
                 const elem_slots = (self.parser.constructorStructure(elem_type) catch unreachable).len;

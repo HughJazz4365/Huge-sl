@@ -1,3 +1,4 @@
+//const FUNC = fn(T: type, comptime t: T, A : fn(t:T) type{...}(t)) A{...}
 push vertex_buffer: *f32x3
 
 const double = fn(x: anytype) @TypeOf(x) {
@@ -16,7 +17,6 @@ vertex vert = fn void{
 fragment frag = fn f32x4 {
 	const scalar = 9
 	const ds = double(scalar)
-
 	const color: f32x3 = .{ds}
 	return .{color, 1}
 }
