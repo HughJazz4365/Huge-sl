@@ -322,9 +322,10 @@ pub fn getValuePayload(self: *Parser, scope: Scope, node: Node) u32 {
 }
 
 const FoldMode = enum { //union(enum)
-    value, //regular expression that can be fully evaluated if needed
-    reference, //preserve reference
-    declaration, //: DeclNode, //special case for folding declarations that have additional names(function arguments)
+    force,
+    value,
+    reference,
+    declaration,
 };
 fn foldNode(self: *Parser, node: Node, mode: FoldMode) Error!void {
     switch (self.getNodeEntryUnscoped(node).*) {
@@ -552,7 +553,7 @@ fn foldFunctionDeclaration(self: *Parser, fn_decl: FunctionDeclarationNode, node
     if (arg_count > 0)
         self.fillInferredFunctionDeclarationArgumentTypes(node + 2, 0, arg_count, rtype);
 
-    function_entry.is_consistent = is_consistent;
+    function_entry.flags.is_consistent = is_consistent;
     if (is_consistent)
         try self.foldScope(function_entry.scope);
 }
@@ -1928,7 +1929,7 @@ pub const ScopeEntry = struct {
     const Container = union(enum) {
         @"struct": Struct,
         function: Function,
-        function_header: void,
+        function_permutation: void,
         pub fn isDecl(self: Container) bool {
             return self == .@"struct";
         }
@@ -1973,22 +1974,63 @@ fn addFunction(self: *Parser, entry: FunctionEntry) Error!Function {
 pub fn getFunctionEntry(self: *Parser, handle: Function) *FunctionEntry {
     return &self.functions.items[@intFromEnum(handle)];
 }
+
+//how to get a function permutation
+// fn(T: type, a: T, b: anytype) @TypeOf(b)->
+// T = f32, b = u32{2}
+// fn(a: f32, b: u32) u32{
+//    return .{a} + b
+// }
+
+//for (arguments){
+//   if(comptime) {
+//     if(!passed_arg.isComptime()) errorOut()
+//     add the value to the list
+//   }if(anytype)
+//     add @TypeOf(passed.arg) to args
+//   else(add existing type) to args
+//   THEY CAN DEPEND ON EACH OTHER
+//}
+
+//fold header in created scope then save the data into
+// function permutation entry or smth,
+// then use that created scope to copy over
+// function body, and fold the scope
+
+//FunctionPermutation.getVarRef{
+// 1. for(arguments)
+// 2. for(comptime_values)
+// 3. go through statements
+//}
+pub const FunctionPermutation = enum(u32) { _ };
+pub const FunctionPermutationEntry = struct {
+    function: Function,
+    scope: Scope,
+
+    comptime_args: []Value,
+    arguments: []Argument,
+    pub const Argument = struct {
+        name: Token,
+        type: Type,
+    };
+};
+
 pub const Function = enum(u32) { _ };
 pub const FunctionEntry = struct {
     scope: Scope = undefined,
     node: Node = undefined,
 
-    name: Token = undefined,
-    len: u32 = 0,
-
     arg_count: u32 = 0,
 
-    stage_dependency: StageDependency = .{},
-    is_consistent: bool = false,
-    pub const StageDependency = packed struct {
-        vertex: bool = false,
-        fragment: bool = false,
-        compute: bool = false,
+    flags: Flags = .{},
+
+    // name: Token = undefined,
+    pub const Flags = packed struct {
+        vertex_dep: bool = false,
+        fragment_dep: bool = false,
+        compute_dep: bool = false,
+        is_consistent: bool = false,
+        is_pure: bool = false,
     };
 };
 

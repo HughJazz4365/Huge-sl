@@ -5,10 +5,6 @@ const double = fn(x: anytype) @TypeOf(x) {
 	return x * 2
 }
 
-//should produce this function variant if x='scalar'
-const double_compint = fn(x: compint) compint{
-	return x * compint{2}
-}
 
 vertex vert = fn void{
 	@position = .{vertex_buffer[@vertex_id], 1} 
