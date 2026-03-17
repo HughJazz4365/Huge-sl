@@ -45,8 +45,9 @@ x32_vectors: List(u32x4) = .empty,
 x64_vectors: List(u64x4) = .empty,
 matrix_values: List(u8) = .empty,
 
-functions: List(FunctionEntry) = .empty,
 structs: List(StructEntry) = .empty,
+functions: List(FunctionEntry) = .empty,
+function_permutations: List(FunctionPermutationEntry) = .empty,
 
 scopes: List(ScopeEntry) = .empty,
 
@@ -134,8 +135,9 @@ pub fn new(allocator: Allocator) Error!Parser {
 }
 pub fn deinit(self: *Parser) void {
     self.types.deinit(self.allocator);
-    self.functions.deinit(self.allocator);
     self.structs.deinit(self.allocator);
+    self.function_permutations.deinit(self.allocator);
+    self.functions.deinit(self.allocator);
     self.scopes.deinit(self.allocator);
     self.dependency_stack.deinit(self.allocator);
 
@@ -366,21 +368,21 @@ fn foldCall(self: *Parser, scope: Scope, fn_call: Call, node: Node, mode: FoldMo
     // std.debug.print("FOLD FNCALL< CALLEE TYPE: {f}\n", .{DebugType{ .self = self, .type = callee_type }});
     std.debug.print("FOLD FNCALL< CALLEE: {f}\n", .{self.DEBUGNODE(scope, callee_node)});
     const function_type_entry = self.getTypeEntry(callee_type).function;
-    const arg_types = self.function_type_elems.items[function_type_entry.id .. function_type_entry.id + function_type_entry.arg_count];
+    const arg_types = self.function_type_elems.items[function_type_entry.id .. function_type_entry.id + function_type_entry.parameter_count];
 
     const first_arg_node = callee_node + self.nodeConsumption(scope, callee_node);
     var arg_node = first_arg_node;
 
-    if (fn_call.arg_count != arg_types.len)
+    if (fn_call.argument_count != arg_types.len)
         return self.errorOut(.{
             .token = fn_call.token,
             .payload = .{ .argument_count_mismatch = .{
-                .got = fn_call.arg_count,
+                .got = fn_call.argument_count,
                 .expected = @truncate(arg_types.len),
             } },
         });
 
-    for (0..fn_call.arg_count) |i| {
+    for (0..fn_call.argument_count) |i| {
         // std.debug.print("FOLD ARG NODE< NODE: {f}\n", .{DebugNodeU{ .self = self, .node = arg_node }});
         try self.foldNode(scope, arg_node, mode);
         try self.implicitCast(scope, arg_node, arg_types[i]);
@@ -394,6 +396,7 @@ fn foldCall(self: *Parser, scope: Scope, fn_call: Call, node: Node, mode: FoldMo
             @enumFromInt(self.getValuePayload(scope, callee_node)),
             node,
             first_arg_node,
+            mode,
         ),
         // else => try foldFunctionCall( fn_call: (unknown type), node: (unknown type), mode: FoldMode),
     }
@@ -406,7 +409,17 @@ fn foldFunctionCall(
     function: Function,
     node: Node,
     first_arg_node: Node,
+    mode: FoldMode,
 ) Error!void {
+    const function_entry = self.getFunctionEntry(function).*;
+    if (!function_entry.flags.is_consistent) {
+        _ = try self.generateFunctionPermutation(scope, function, first_arg_node);
+    }
+
+    if (mode == .force) {
+        @panic("evaluate function");
+    }
+
     //(T0, A1, A2, T3) ?RT
     //(T0, T1, T3, T4) RT
     //if(there is no  anytypes)(dispatch if all args are comptime)
@@ -415,7 +428,43 @@ fn foldFunctionCall(
     //fill all anytype arg types with @TypeOf(args[i])
 
     //fold new decl
-    _ = .{ self, scope, function, node, first_arg_node };
+    _ = .{ self, mode, scope, function, node, first_arg_node };
+}
+
+fn generateFunctionPermutation(
+    self: *Parser,
+    scope: Scope,
+    function: Function,
+    first_arg_node: Node,
+) Error!FunctionPermutation {
+    const function_entry = self.getFunctionEntry(function);
+    const decl_node = function_entry.node;
+    const decl_consumption = self.nodeConsumption(scope, decl_node);
+
+    var comptime_args: List(Value) = .empty;
+    var parameters: List(Value) = .empty;
+
+    const function_permutation = try self.addFunctionPermutation(.{ .function = function });
+    const perm_scope = try self.addScope(.{
+        .parent = scope,
+        .container = .{ .function_permutation = function_permutation },
+    });
+    self.getFunctionPermutation(function_permutation).scope = perm_scope;
+
+    const perm_scope_entry = self.getScopeEntry(perm_scope);
+
+    //fill in comptime_args, parameters lists here
+
+    //copy function declaration into newly created scope to fold
+    try perm_scope_entry.body.appendSlice(
+        self.allocator(),
+        self.getScopeEntry(scope).body.items[decl_node .. decl_node + decl_consumption],
+    );
+    //replace function_declaration_node with some kind of new node?
+    // try self.foldNode(perm_scope, 0, .value);
+
+    _ = .{ self, scope, function, first_arg_node, &comptime_args, &parameters };
+    return @enumFromInt(0);
 }
 fn foldBuiltinCall(self: *Parser, scope: Scope, builtin: Builtin, first_arg_node: Node, node: Node, mode: FoldMode) Error!void {
     const node_consumption = self.nodeConsumption(scope, node);
@@ -480,9 +529,9 @@ fn foldFunctionTypeDeclaration(
     node: Node,
     mode: FoldMode,
 ) Error!void {
-    const arg_count = fn_type_decl.arg_count;
+    const parameter_count = fn_type_decl.parameter_count;
     var type_node = node + 1;
-    for (0..arg_count + 1) |_| {
+    for (0..parameter_count + 1) |_| {
         try self.foldNode(scope, type_node, mode);
         _ = try self.asType(scope, type_node);
         type_node += self.nodeConsumption(scope, type_node);
@@ -492,26 +541,26 @@ fn foldFunctionTypeDeclaration(
 
     const function_type: TypeEntry.FunctionType = blk: {
         for (0..fte.len) |i| {
-            var arg_type_node: Node = node + 1;
-            if (i + arg_count >= fte.len) break;
-            for (0..arg_count) |j| {
-                defer arg_type_node += self.nodeConsumption(scope, arg_type_node);
+            var parameter_type_node: Node = node + 1;
+            if (i + parameter_count >= fte.len) break;
+            for (0..parameter_count) |j| {
+                defer parameter_type_node += self.nodeConsumption(scope, parameter_type_node);
 
-                const arg_type = self.asTypeOpt(scope, arg_type_node).?;
-                if (arg_type != fte[i + j]) break;
-            } else if (self.asTypeOpt(scope, arg_type_node).? == fte[i + arg_count])
-                break :blk .{ .id = @truncate(i), .arg_count = arg_count };
+                const parameter_type = self.asTypeOpt(scope, parameter_type_node).?;
+                if (parameter_type != fte[i + j]) break;
+            } else if (self.asTypeOpt(scope, parameter_type_node).? == fte[i + parameter_count])
+                break :blk .{ .id = @truncate(i), .parameter_count = parameter_count };
             //check rtype
         }
 
         type_node = node + 1; //append arg_types to the function_type_elems
-        try self.function_type_elems.ensureUnusedCapacity(self.allocator, arg_count + 1);
+        try self.function_type_elems.ensureUnusedCapacity(self.allocator, parameter_count + 1);
         const function_type_id: u32 = @truncate(self.function_type_elems.items.len);
-        for (0..arg_count + 1) |_| {
+        for (0..parameter_count + 1) |_| {
             self.function_type_elems.appendAssumeCapacity(try self.asType(scope, type_node));
             type_node += self.nodeConsumption(scope, type_node);
         }
-        break :blk .{ .id = function_type_id, .arg_count = arg_count };
+        break :blk .{ .id = function_type_id, .parameter_count = parameter_count };
     };
     self.replaceNodeWithValue(scope, node, type_node - node, .{
         .type = .type,
@@ -525,23 +574,23 @@ fn foldFunctionDeclaration(
     node: Node,
 ) Error!void {
     const function_entry = self.getFunctionEntry(fn_decl.function);
-    const arg_count = function_entry.arg_count;
+    const parameter_count = function_entry.parameter_count;
 
     var is_consistent = true;
-    var arg_type_node: Node = node + 2;
+    var parameter_type_node: Node = node + 2;
 
-    for (0..arg_count) |_| {
-        const consumption = self.nodeConsumption(scope, arg_type_node);
-        defer arg_type_node += 1 + consumption;
+    for (0..parameter_count) |_| {
+        const consumption = self.nodeConsumption(scope, parameter_type_node);
+        defer parameter_type_node += 1 + consumption;
 
-        try self.foldNode(scope, arg_type_node, .{ .declaration = node });
+        try self.foldNode(scope, parameter_type_node, .{ .declaration = node });
 
-        switch (self.getNodeEntry(scope, arg_type_node).*) {
+        switch (self.getNodeEntry(scope, parameter_type_node).*) {
             .null, .@"anytype" => is_consistent = false,
-            else => _ = try self.asType(scope, arg_type_node),
+            else => _ = try self.asType(scope, parameter_type_node),
         }
     }
-    const rtype_node = arg_type_node - 1;
+    const rtype_node = parameter_type_node - 1;
     try self.foldNode(scope, rtype_node, .{ .declaration = node });
     const rtype = self.asTypeOpt(scope, rtype_node) orelse
         if (try self.typeOf(scope, rtype_node) == .type)
@@ -550,8 +599,8 @@ fn foldFunctionDeclaration(
             return self.errorOutNotAType(scope, rtype_node);
     if (rtype == .@"anytype") is_consistent = false;
 
-    if (arg_count > 0)
-        self.fillInferredFunctionDeclarationArgumentTypes(scope, node + 2, 0, arg_count, rtype);
+    if (parameter_count > 0)
+        self.fillInferredFunctionDeclarationParameterTypes(scope, node + 2, 0, parameter_count, rtype);
 
     function_entry.flags.is_consistent = is_consistent;
     if (is_consistent)
@@ -559,7 +608,7 @@ fn foldFunctionDeclaration(
 }
 
 //this might break on arg types/rtypes not known at declaration
-fn fillInferredFunctionDeclarationArgumentTypes(
+fn fillInferredFunctionDeclarationParameterTypes(
     self: *Parser,
     scope: Scope,
     arg_type_node: Node,
@@ -579,7 +628,7 @@ fn fillInferredFunctionDeclarationArgumentTypes(
         return;
     }
     const next_arg_type_node = arg_type_node + 1 + consumption;
-    self.fillInferredFunctionDeclarationArgumentTypes(scope, next_arg_type_node, arg_index + 1, arg_count, rtype);
+    self.fillInferredFunctionDeclarationParameterTypes(scope, next_arg_type_node, arg_index + 1, arg_count, rtype);
     if (entry.* == .null)
         entry.* = self.getNodeEntry(scope, next_arg_type_node).*;
 }
@@ -763,7 +812,7 @@ fn getScopeReturnTypeAndDeclLocation(self: *Parser, scope: Scope, node: Node) Er
 }
 fn getFunctionDeclarationReturnType(self: *Parser, scope: Scope, function: Function) Error!Type {
     const entry = self.getFunctionEntry(function).*;
-    const node = entry.node + 1 + self.nodeSequenceConsumption(scope, entry.node + 1, entry.arg_count);
+    const node = entry.node + 1 + self.nodeSequenceConsumption(scope, entry.node + 1, entry.parameter_count);
     try self.foldNode(scope, node, .value);
 
     const rtype_node = self.getNodeEntry(scope, node).*;
@@ -920,9 +969,9 @@ fn getVariableReferenceCurrentDeclaration(self: *Parser, scope: Scope, node: Nod
     const entry = self.getNodeEntry(scope, node).*;
     return switch (entry) {
         .function_declaration => |fn_decl| blk: {
-            const arg_count = self.getFunctionEntry(fn_decl.function).arg_count;
+            const parameter_count = self.getFunctionEntry(fn_decl.function).parameter_count;
             var param_node = node + 1;
-            break :blk for (0..arg_count) |_| {
+            break :blk for (0..parameter_count) |_| {
                 const param = self.getNodeEntry(scope, param_node).function_parameter;
                 const param_name = self.tokenizer.slice(param.name);
                 if (util.strEql(name, param_name))
@@ -1095,7 +1144,7 @@ pub fn typeOf(self: *Parser, scope: Scope, node: Node) Error!Type {
             const function_type = try self.typeOf(scope, function_node);
             const ftype = self.getTypeEntry(function_type).function;
 
-            const rtype = self.function_type_elems.items[ftype.id + ftype.arg_count];
+            const rtype = self.function_type_elems.items[ftype.id + ftype.parameter_count];
             break :blk rtype;
         },
         else => |e| {
@@ -1137,34 +1186,34 @@ pub fn typeOfVariableReference(self: *Parser, var_ref: VariableReference) Error!
 }
 fn typeOfFunctionDeclaration(self: *Parser, scope: Scope, fn_decl: FunctionDeclarationNode, node: Node) Error!Type {
     const fte = self.function_type_elems.items;
-    const arg_count = self.getFunctionEntry(fn_decl.function).arg_count;
+    const parameter_count = self.getFunctionEntry(fn_decl.function).parameter_count;
 
     const function_type: TypeEntry.FunctionType = blk: {
         //check the element list for matches
         for (0..fte.len) |i| {
             var arg_type_node: Node = node + 2;
-            if (i + arg_count >= fte.len) break;
-            for (0..arg_count) |j| {
+            if (i + parameter_count >= fte.len) break;
+            for (0..parameter_count) |j| {
                 defer arg_type_node += 1 + self.nodeConsumption(scope, arg_type_node);
 
                 const arg_type = self.asTypeOpt(scope, arg_type_node) orelse .@"anytype";
                 if (arg_type != fte[i + j]) break;
-            } else if (self.asTypeOpt(scope, arg_type_node - 1) orelse .@"anytype" == fte[i + arg_count])
-                break :blk .{ .id = @truncate(i), .arg_count = arg_count };
+            } else if (self.asTypeOpt(scope, arg_type_node - 1) orelse .@"anytype" == fte[i + parameter_count])
+                break :blk .{ .id = @truncate(i), .parameter_count = parameter_count };
             //check rtype
         }
 
         //add elements to the functions_type_elems
-        try self.function_type_elems.ensureUnusedCapacity(self.allocator, arg_count + 1);
+        try self.function_type_elems.ensureUnusedCapacity(self.allocator, parameter_count + 1);
         const function_type_id: u32 = @truncate(self.function_type_elems.items.len);
 
         var type_node = node + 2; //append arg_types to the function_type_elems
-        for (0..arg_count + 1) |i| {
-            if (i == arg_count) type_node -= 1;
+        for (0..parameter_count + 1) |i| {
+            if (i == parameter_count) type_node -= 1;
             self.function_type_elems.appendAssumeCapacity(self.asTypeOpt(scope, type_node) orelse .@"anytype");
             type_node += 1 + self.nodeConsumption(scope, type_node);
         }
-        break :blk .{ .id = function_type_id, .arg_count = arg_count };
+        break :blk .{ .id = function_type_id, .parameter_count = parameter_count };
     };
     return try self.addType(.{ .function = function_type });
 }
@@ -1221,7 +1270,8 @@ pub fn nodeConsumption(self: *Parser, scope: Scope, node: u32) u32 {
         .null => 1,
         .function_declaration => 1 + self.nodeConsumption(scope, node + 1), //args
         .constructor => |constructor| 1 + self.nodeSequenceConsumption(scope, node + 1, constructor.elem_count + 1),
-        inline .call, .function_type_declaration => |fn_type_decl| 1 + self.nodeSequenceConsumption(scope, node + 1, fn_type_decl.arg_count + 1),
+        .function_type_declaration => |fn_type_decl| 1 + self.nodeSequenceConsumption(scope, node + 1, fn_type_decl.parameter_count + 1),
+        .call => |fn_type_decl| 1 + self.nodeSequenceConsumption(scope, node + 1, fn_type_decl.argument_count + 1),
         else => 1,
     };
     const body = self.getScopeEntry(scope).body.items;
@@ -1496,7 +1546,7 @@ fn parseExpression1(self: *Parser, scope: Scope, exclude_constructor: bool) Erro
             try self.insertNthLastNode(scope, len, .null);
             const seq = try self.parseSequence(scope, .@")");
             self.getNodeEntry(scope, node).* = .{ .call = .{
-                .arg_count = seq.count,
+                .argument_count = seq.count,
                 .token = open_token,
             } };
             len += 1 + seq.node_consumption;
@@ -1621,11 +1671,11 @@ fn parseFunctionTypeOrDeclaration(self: *Parser, scope: Scope) Error!u32 {
     //to allow endl before delimiter
     const header = try self.appendNode(scope, .{ .function_type_declaration = .{
         .token = header_token,
-        .arg_count = 0,
+        .parameter_count = 0,
     } });
 
-    var arg_count: u32 = 0;
-    var arg_node_consumption: Node = 0;
+    var parameter_count: u32 = 0;
+    var node_consumption: Node = 0;
     var must_be_fn_decl = false;
 
     if (self.tokenizer.kind(self.token) == .@"(") {
@@ -1652,7 +1702,7 @@ fn parseFunctionTypeOrDeclaration(self: *Parser, scope: Scope) Error!u32 {
                     });
                 } else {
                     state = .type_decl;
-                    arg_node_consumption += try self.parseExpression2(scope, .{ .kind_or_comma = .@")" });
+                    node_consumption += try self.parseExpression2(scope, .{ .kind_or_comma = .@")" });
                     if (self.tokenizer.kind(self.token) == .@",")
                         self.token += 1;
                 }
@@ -1670,31 +1720,31 @@ fn parseFunctionTypeOrDeclaration(self: *Parser, scope: Scope) Error!u32 {
                 if (self.tokenizer.kind(self.token) == .@"anytype") {
                     _ = try self.appendNode(scope, .{ .@"anytype" = self.token });
                     self.token += 1;
-                    arg_node_consumption += 2;
-                } else arg_node_consumption += 1 + try self.parseExpression2(scope, .{ .kind_or_comma = .@")" });
+                    node_consumption += 2;
+                } else node_consumption += 1 + try self.parseExpression2(scope, .{ .kind_or_comma = .@")" });
             } else if (state == .fn_decl or must_be_fn_decl) {
                 //parameter with inferred type
                 _ = try self.appendNode(scope, .{ .function_parameter = .{ .name = name, .qualifier = qualifier } });
                 _ = try self.appendNode(scope, .null);
-                arg_node_consumption += 2; //header + <null>
+                node_consumption += 2; //header + <null>
 
             } else if (meat == .identifier) {
                 _ = try self.appendNode(scope, .{ .identifier = name });
-                arg_node_consumption += 1;
+                node_consumption += 1;
             }
 
             if (state == .fn_decl) {
                 defer must_be_fn_decl = true;
-                if (!must_be_fn_decl and arg_count > 0)
-                    try self.convertArgTypesToFunctionParameters(
+                if (!must_be_fn_decl and parameter_count > 0)
+                    try self.convertParameterTypesToFunctionParameters(
                         scope,
                         header + 1,
-                        arg_count,
+                        parameter_count,
                         header_token,
                     );
             }
 
-            arg_count += 1;
+            parameter_count += 1;
 
             if (self.tokenizer.kind(self.token) == .@",") {
                 self.token += 1;
@@ -1712,16 +1762,16 @@ fn parseFunctionTypeOrDeclaration(self: *Parser, scope: Scope) Error!u32 {
     const rtype_len = try self.parseExpression1(scope, true);
 
     if (self.tokenizer.kind(self.tokenPastEndl()) == .@"{") {
-        if (!must_be_fn_decl) try self.convertArgTypesToFunctionParameters(
+        if (!must_be_fn_decl) try self.convertParameterTypesToFunctionParameters(
             scope,
             header + 1,
-            arg_count,
+            parameter_count,
             header_token,
         );
 
         _ = self.skipEndl();
         self.token += 1;
-        const function = try self.addFunction(.{ .node = header, .arg_count = arg_count });
+        const function = try self.addFunction(.{ .node = header, .parameter_count = parameter_count });
         const body_scope = try self.parseScope(.{
             .parent = scope,
             .container = .{ .function = function },
@@ -1736,12 +1786,12 @@ fn parseFunctionTypeOrDeclaration(self: *Parser, scope: Scope) Error!u32 {
             .token = header_token,
             .payload = .missing_function_body,
         });
-        self.getNodeEntry(scope, header).function_type_declaration.arg_count = arg_count;
+        self.getNodeEntry(scope, header).function_type_declaration.parameter_count = parameter_count;
     }
 
-    return 1 + arg_node_consumption + rtype_len;
+    return 1 + node_consumption + rtype_len;
 }
-fn convertArgTypesToFunctionParameters(self: *Parser, scope: Scope, node: Node, count: u32, fn_decl_token: Token) Error!void {
+fn convertParameterTypesToFunctionParameters(self: *Parser, scope: Scope, node: Node, count: u32, fn_decl_token: Token) Error!void {
     try self.getScopeEntry(scope).body.ensureUnusedCapacity(self.allocator, count);
 
     for (0..count) |i| {
@@ -1828,14 +1878,14 @@ fn addFunctionType(self: *Parser, arg_types: []const Type, rtype: Type) Error!Ty
         if (i + arg_count >= fte.len) break;
         if (std.mem.eql(Type, arg_types, fte[i .. i + arg_count]) and
             fte[i + arg_count] == rtype)
-            return .{ .id = @truncate(i), .arg_count = arg_count };
+            return .{ .id = @truncate(i), .parameter_count = arg_count };
     }
     try self.function_type_elems.ensureUnusedCapacity(self.allocator, arg_count + 1);
     const function_type_id: u32 = @truncate(self.function_type_elems.items.len);
     self.function_type_elems.appendSliceAssumeCapacity(arg_types);
     self.function_type_elems.appendAssumeCapacity(rtype);
 
-    return .{ .id = function_type_id, .arg_count = arg_count };
+    return .{ .id = function_type_id, .parameter_count = arg_count };
 }
 
 fn addType(self: *Parser, entry: TypeEntry) Error!Type {
@@ -1923,7 +1973,7 @@ pub const ScopeEntry = struct {
     const Container = union(enum) {
         @"struct": Struct,
         function: Function,
-        function_permutation: void,
+        function_permutation: FunctionPermutation,
         pub fn isDecl(self: Container) bool {
             return self == .@"struct";
         }
@@ -1996,14 +2046,21 @@ pub fn getFunctionEntry(self: *Parser, handle: Function) *FunctionEntry {
 // 2. for(comptime_values)
 // 3. go through statements
 //}
+pub fn getFunctionPermutation(self: *Parser, id: FunctionPermutation) *FunctionPermutationEntry {
+    return &self.function_permutations.items[id];
+}
+pub fn addFunctionPermutation(self: *Parser, entry: FunctionPermutationEntry) FunctionPermutation {
+    try self.function_permutations.append(self.allocator, entry);
+    return @enumFromInt(self.function_permutations.items.len - 1);
+}
 pub const FunctionPermutation = enum(u32) { _ };
 pub const FunctionPermutationEntry = struct {
     function: Function,
-    scope: Scope,
+    scope: Scope = undefined,
 
-    comptime_args: []Value,
-    arguments: []Argument,
-    pub const Argument = struct {
+    comptime_args: []Value = &.{},
+    parameters: []Parameter = &.{},
+    pub const Parameter = struct {
         name: Token,
         type: Type,
     };
@@ -2014,7 +2071,7 @@ pub const FunctionEntry = struct {
     scope: Scope = undefined,
     node: Node = undefined,
 
-    arg_count: u32 = 0,
+    parameter_count: u32 = 0,
 
     flags: Flags = .{},
 
@@ -2057,8 +2114,8 @@ pub const NodeEntry = union(enum) {
     call: Call, //[][callee][args..]
     array_type_decl, //??
 
-    function_type_declaration: FunctionTypeDeclaration, //[fn_type_decl][arg_count][arg_types...][rtype]
-    function_declaration: FunctionDeclarationNode, //[fn_decl][args...][rtype][body...]
+    function_type_declaration: FunctionTypeDeclaration, //[fn_type_decl][param_count][param_types...][rtype]
+    function_declaration: FunctionDeclarationNode, //[fn_decl][param_types...][rtype][body...]
     @"anytype": Token,
     function_parameter: FunctionParameter,
     //[fn_param][type / anytype / null(if the same as the next one)]
@@ -2090,11 +2147,11 @@ pub const NodeEntry = union(enum) {
     }
 };
 const Call = struct {
-    arg_count: u32,
+    argument_count: u32,
     token: Token,
 };
 const FunctionTypeDeclaration = struct {
-    arg_count: u32,
+    parameter_count: u32,
     token: Token,
 };
 const FunctionDeclarationNode = struct {
@@ -2225,7 +2282,7 @@ pub const TypeEntry = union(enum) {
     pub const Tag = std.meta.Tag(@This());
     pub const FunctionType = struct {
         id: u32,
-        arg_count: u32,
+        parameter_count: u32,
     };
     const Array = struct { len: u32, child: Type };
     pub const Matrix = packed struct {
@@ -2338,16 +2395,16 @@ pub const DebugType = struct {
         switch (te) {
             .function => |ftype| {
                 try writer.print("fn(", .{});
-                for (0..ftype.arg_count) |i| try writer.print("{f}{s}", .{
+                for (0..ftype.parameter_count) |i| try writer.print("{f}{s}", .{
                     DebugType{
                         .self = entry.self,
                         .type = entry.self.function_type_elems.items[ftype.id + i],
                     },
-                    if (i + 1 == ftype.arg_count) "" else ", ",
+                    if (i + 1 == ftype.parameter_count) "" else ", ",
                 });
                 try writer.print(") {f}", .{DebugType{
                     .self = entry.self,
-                    .type = entry.self.function_type_elems.items[ftype.id + ftype.arg_count],
+                    .type = entry.self.function_type_elems.items[ftype.id + ftype.parameter_count],
                 }});
             },
             .pointer => |pointed| try writer.print("*{f}", .{DebugType{ .self = entry.self, .type = pointed }}),
@@ -2445,25 +2502,25 @@ const DebugNode = struct {
             .call => |function_call| {
                 entry.node.* += 1;
                 try writer.print("{f}(", .{entry});
-                for (0..function_call.arg_count) |i|
-                    try writer.print("{f}{s}", .{ entry, if (i + 1 == function_call.arg_count) "" else ", " });
+                for (0..function_call.argument_count) |i|
+                    try writer.print("{f}{s}", .{ entry, if (i + 1 == function_call.argument_count) "" else ", " });
                 try writer.print(")", .{});
             },
             .function_type_declaration => |fn_type_decl| {
                 entry.node.* += 1;
                 try writer.print("fn(", .{});
 
-                for (0..fn_type_decl.arg_count) |i|
-                    try writer.print("{f}{s}", .{ entry, if (i + 1 == fn_type_decl.arg_count) "" else ", " });
+                for (0..fn_type_decl.parameter_count) |i|
+                    try writer.print("{f}{s}", .{ entry, if (i + 1 == fn_type_decl.parameter_count) "" else ", " });
                 try writer.print(") {f}", .{entry});
             },
             .function_declaration => |fn_decl| {
                 entry.node.* += 1;
-                const arg_count = entry.self.getFunctionEntry(fn_decl.function).arg_count;
+                const parameter_count = entry.self.getFunctionEntry(fn_decl.function).parameter_count;
                 try writer.print("fn (", .{});
 
-                for (0..arg_count) |i|
-                    try writer.print("{f}{s}", .{ entry, if (i + 1 == arg_count) "" else ", " });
+                for (0..parameter_count) |i|
+                    try writer.print("{f}{s}", .{ entry, if (i + 1 == parameter_count) "" else ", " });
                 try writer.print(") {f}{{\n", .{entry});
 
                 const body_scope = entry.self.getFunctionEntry(fn_decl.function).scope;
