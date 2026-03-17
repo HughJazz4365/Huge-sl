@@ -1,0 +1,42 @@
+1. runtime compilation
+	+ optimized compiler for fast runtime compilation
+	+ better renderer integration
+	+ vendor specific optimizations
+	+ hw capability aware output
+	+ good environment vars/spec constants interface
+	+ free hot reloading
+	+ portability
+2. NO target specific functionality:
+	+ push constants as base(can be replicated by any gApi)
+	+ write once run with any graphics api
+	? missing functionality emulated with help of renderer integration logic
+3. modern hardware focus:
+	+ bindless by default
+	+ buffers as raw pointers to the data
+4. missing features from existing shading languages
+	+ first class 16, 64 bit types, 8 bit integer type support
+	+ wave operations
+	+ controlled loop unrolling 
+	+ bitfields(packed data)
+	+ comptime reflection
+	+ lazy evaluation
+	+ multiple entry points in one file
+	+ bitcasts
+	+ proper name spaced imports
+	+ modern syntax:
+		less ambiguity while parsing
+		more readable code
+6. output reflection:
+	+ per entry point:
+		entry point name
+		push constant information
+		stage IO information
+
+
+on the backburner:
+	geometry/tesselation(questionable)
+	ray tracing
+	mesh shaders
+	auto differentiation
+
+
