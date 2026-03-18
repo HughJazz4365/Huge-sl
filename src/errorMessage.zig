@@ -59,6 +59,7 @@ pub const ParserErrorInfo = struct {
 
         unclosed_scope,
         unable_to_resolve_comptime_value,
+        unable_to_infer_parameter_type: Token,
         invalid_function_declaration, //TOKEN
         //unable_to_resolve_comptime_value:
         //<line>
@@ -183,6 +184,7 @@ pub fn printErrorMessageParser(parser: *Parser, writer: *std.Io.Writer) Error!vo
             try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
         },
         inline .unable_to_resolve_comptime_value,
+        .unable_to_infer_parameter_type,
         .unclosed_scope,
         .dependency_loop,
         => |_, tag| {

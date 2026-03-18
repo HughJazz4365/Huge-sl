@@ -1,7 +1,7 @@
 //const FUNC = fn(T: type, comptime t: T, A : fn(t:T) type{...}(t)) A{...}
 push vertex_buffer: *f32x3
 
-const double = fn(x: anytype) @TypeOf(x) {
+const double = fn(comptime x: anytype) @TypeOf(x) {
 	return x * 2
 }
 

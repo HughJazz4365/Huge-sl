@@ -1,4 +1,6 @@
 
+==========fold function permutation header
+===========
 if Value.type = .function:
 	Value.token = variant
 	(token can be retreived from Function.decl_node.token())
