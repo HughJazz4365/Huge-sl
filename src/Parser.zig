@@ -1,3 +1,5 @@
+//WE cant even check if function parameter type is of type 'type'
+
 //DIFFERENT CHECKS FOR 'is_consistent' in foldFNdecl?
 //IF FUNCTION ARG TYPE IS NOT A VALUE JUST RETURN ANYTYPE
 
@@ -454,6 +456,24 @@ fn generateFunctionPermutation(
     const perm_scope_entry = self.getScopeEntry(perm_scope);
 
     //fill in comptime_args, parameters lists here
+
+    //even if argument is comptime we still need
+    //to compare its type to parameter type which might
+    //be yet unknown,
+    //so this part should already be happening inside perm_scope
+
+    //WHAT ABOUT COMPTIME ONLY TYPES??
+    //we just need to resolve every type and only then
+    //fill in the comptime arguments
+
+    //1. resolve all the types(using arguments)
+    //2. add the comptime arg information
+    //3. strip parameters that are filled by comptime parameters
+    //functieonPermutationeParam: [arg_node,name][type]
+    //FunctionPermutationHeader:[parameter count][param...][rtype]
+
+    var arg_node = first_arg_node;
+    var param_node = 0;
 
     //copy function declaration into newly created scope to fold
     try perm_scope_entry.body.appendSlice(
