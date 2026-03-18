@@ -1,5 +1,7 @@
 
-==========fold function permutation header
+==========fold function permutation header TODO:
+	type of permutation
+	get var ref on permutation parameter
 ===========
 if Value.type = .function:
 	Value.token = variant

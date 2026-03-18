@@ -1,3 +1,7 @@
+//TODO:
+// FORGOT ABOUT FUNCTION PERMUTATION RTYPE
+// typeOfFunctionPermutation
+// check for possible pointer invalidation when storing entries for too long ->
 //**_entry varaibles must only be used immediately as the pointer can be invalidated
 //WE cant even check if function parameter type is of type 'type'(just dont fold if cant)
 
@@ -6,10 +10,7 @@
 
 //NodeEntry.folded_functieon_declaration
 
-//on fold double() call we should produce  new function variant!
 //custom POInter alignment
-
-//decl scope initializers must be comptime known
 
 //BIG TODO: functions, control flow, imports
 //TODO: proper int/float literal parsing
@@ -480,7 +481,7 @@ fn generateFunctionPermutation(
         } };
     }
     node = 0;
-    for (0..function_entry.parameter_count) |_| {
+    for (0..function_entry.parameter_count) |i| {
         defer node += self.nodeConsumption(perm_scope, node);
         try self.foldFunctionPermutationParameter(perm_scope, node);
         const param = self.getNodeEntry(perm_scope, node).function_permutation_parameter;
@@ -494,6 +495,7 @@ fn generateFunctionPermutation(
         } else try parameters.append(self.allocator, .{
             .name = param.name,
             .type = try self.asType(perm_scope, node + 1),
+            .index = @truncate(i),
         });
     }
     const function_permutation_entry = self.getFunctionPermutation(function_permutation);
@@ -2121,6 +2123,7 @@ pub const FunctionPermutationEntry = struct {
     pub const Parameter = struct {
         name: Token,
         type: Type,
+        index: u32, //used to identify order of inteliving comptime/regular arguments
     };
 };
 
