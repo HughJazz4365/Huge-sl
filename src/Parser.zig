@@ -1,12 +1,14 @@
+//fix crash on fold fn decl(unnecessary unable_to_eval_comptime_value error)
 //TODO:
-// FORGOT ABOUT FUNCTION PERMUTATION RTYPE
-// typeOfFunctionPermutation
+//function_parameter reference should just point to the fn param
+//for continued parameter types eg( fn(x) f32 )
+//types should just be inserted with shifting
+
+//incorrect function_parameter_reference
+
 // check for possible pointer invalidation when storing entries for too long ->
 //**_entry varaibles must only be used immediately as the pointer can be invalidated
 //WE cant even check if function parameter type is of type 'type'(just dont fold if cant)
-
-//DIFFERENT CHECKS FOR 'is_consistent' in foldFNdecl?
-//IF FUNCTION ARG TYPE IS NOT A VALUE JUST RETURN ANYTYPE
 
 //NodeEntry.folded_functieon_declaration
 
@@ -109,7 +111,7 @@ pub fn dump(self: *Parser) void {
 fn dumpScope(self: *Parser, scope: Scope, nodes: bool, formatted: bool) void {
     const body = self.getScopeEntry(scope).body.items;
     if (nodes)
-        for (body) |node| std.debug.print("\t{any}\n", .{node});
+        for (body, 0..) |node, i| std.debug.print("\t{d}: {any}\n", .{ i, node });
     if (formatted) {
         var node: Node = 0;
         while (node < body.len) {
@@ -319,6 +321,9 @@ const FoldMode = union(enum) { //union(enum)
 };
 fn foldNode(self: *Parser, scope: Scope, node: Node, mode: FoldMode) Error!void {
     switch (self.getNodeEntry(scope, node).*) {
+        .function_parameter_reference => |fn_param_ref| //
+        try self.foldFunctionParameterReference(scope, fn_param_ref, node),
+
         .call => |fn_call| //
         try self.foldCall(scope, fn_call, node, mode),
 
@@ -357,6 +362,20 @@ fn foldNode(self: *Parser, scope: Scope, node: Node, mode: FoldMode) Error!void 
         },
     }
 }
+fn foldFunctionParameterReference(self: *Parser, scope: Scope, ref: FunctionParameterReference, node: Node) Error!void {
+    if (self.getScopeEntry(scope).container != .function_permutation)
+        unreachable; //or unable to resolve comptime value
+    const call_scope = self.getNodeEntry(scope, 0).function_permutation_header;
+
+    const param_node: Node =
+        1 + self.nodeSequenceConsumption(scope, node, ref.index);
+    const param = self.getNodeEntry(scope, param_node).function_permutation_parameter;
+
+    try self.foldFunctionPermutationParameter(scope, param_node, call_scope);
+
+    const value = (self.getValue(call_scope, param.argument_node) catch unreachable).?;
+    self.getNodeEntry(scope, node).* = .{ .value = value };
+}
 
 fn foldCall(self: *Parser, scope: Scope, fn_call: Call, node: Node, mode: FoldMode) Error!void {
     const callee_node = node + 1;
@@ -386,10 +405,10 @@ fn foldCall(self: *Parser, scope: Scope, fn_call: Call, node: Node, mode: FoldMo
             } },
         });
 
-    for (0..fn_call.argument_count) |i| {
+    for (0..fn_call.argument_count) |_| {
         // std.debug.print("FOLD ARG NODE< NODE: {f}\n", .{DebugNodeU{ .self = self, .node = arg_node }});
         try self.foldNode(scope, arg_node, mode);
-        try self.implicitCast(scope, arg_node, arg_types[i]);
+        // try self.implicitCast(scope, arg_node, arg_types[i]);
         arg_node += self.nodeConsumption(scope, arg_node);
     }
     switch (self.getNodeEntry(scope, callee_node).*) {
@@ -400,6 +419,7 @@ fn foldCall(self: *Parser, scope: Scope, fn_call: Call, node: Node, mode: FoldMo
             @enumFromInt(self.getValuePayload(scope, callee_node)),
             node,
             mode,
+            fn_call.token,
         ),
         // else => try foldFunctionCall( fn_call: (unknown type), node: (unknown type), mode: FoldMode),
     }
@@ -412,6 +432,7 @@ fn foldFunctionCall(
     function: Function,
     node: Node,
     mode: FoldMode,
+    call_token: Token,
 ) Error!void {
     const function_entry = self.getFunctionEntry(function).*;
     const callee_node = node + 1;
@@ -421,21 +442,30 @@ fn foldFunctionCall(
     if (!function_entry.flags.is_consistent) {
         const perm = try self.generateFunctionPermutation(scope, function, first_arg_node);
         self.replaceNode(scope, callee_node, callee_consumption, .{ .function_permutation = perm });
+        const perm_entry = self.getFunctionPermutationEntry(perm).*;
+
+        //remove comptime arguments
+        var param_counter: u32 = 0;
+        var arg_node = first_arg_node;
+        for (0..function_entry.parameter_count) |i| {
+            const consumption = self.nodeConsumption(scope, arg_node);
+            defer arg_node += consumption;
+
+            if (perm_entry.parameters.len > param_counter and
+                i == perm_entry.parameters[param_counter].index)
+                param_counter += 1
+            else
+                self.replaceNode(scope, arg_node, consumption, .pad);
+        }
+        self.getNodeEntry(scope, node).* = .{ .call = .{
+            .argument_count = param_counter,
+            .token = call_token,
+        } };
     }
 
     if (mode == .force) {
         @panic("evaluate function");
     }
-
-    //(T0, A1, A2, T3) ?RT
-    //(T0, T1, T3, T4) RT
-    //if(there is no  anytypes)(dispatch if all args are comptime)
-    //fill all anytypes with actual types
-    //create function permutation
-    //fill all anytype arg types with @TypeOf(args[i])
-
-    //fold new decl
-    _ = .{ self, mode, scope, function, node, first_arg_node };
 }
 
 fn generateFunctionPermutation(
@@ -458,19 +488,21 @@ fn generateFunctionPermutation(
         .parent = call_scope,
         .container = .{ .function_permutation = function_permutation },
     });
-    self.getFunctionPermutation(function_permutation).scope = perm_scope;
+    self.getFunctionPermutationEntry(function_permutation).scope = perm_scope;
 
     const perm_scope_entry = self.getScopeEntry(perm_scope);
     try perm_scope_entry.body.appendSlice(
         self.allocator,
-        self.getScopeEntry(decl_scope).body.items[decl_node + 1 .. decl_node + decl_consumption],
+        self.getScopeEntry(decl_scope).body.items[decl_node .. decl_node + decl_consumption],
     );
+    self.getNodeEntry(perm_scope, 0).* =
+        .{ .function_permutation_header = call_scope };
 
-    var node: Node = 0;
+    var node: Node = 1;
     var arg_node: Node = first_arg_node;
     for (0..function_entry.parameter_count) |_| {
         defer node += self.nodeConsumption(perm_scope, node);
-        defer arg_node += self.nodeConsumption(decl_scope, arg_node);
+        defer arg_node += self.nodeConsumption(call_scope, arg_node);
 
         const node_entry = self.getNodeEntry(perm_scope, node);
         const function_parameter = node_entry.function_parameter;
@@ -479,18 +511,16 @@ fn generateFunctionPermutation(
             .name = function_parameter.name,
             .argument_node = arg_node,
         } };
+        // std.debug.print("PARAM NODE ENTRY: {any}\n", .{node_entry.*});
     }
-    node = 0;
+    node = 1;
     for (0..function_entry.parameter_count) |i| {
         defer node += self.nodeConsumption(perm_scope, node);
-        try self.foldFunctionPermutationParameter(perm_scope, node);
+        try self.foldFunctionPermutationParameter(perm_scope, node, call_scope);
         const param = self.getNodeEntry(perm_scope, node).function_permutation_parameter;
+
         if (param.qualifier == .@"comptime") {
-            const value = (try self.getValue(call_scope, param.argument_node)) orelse
-                return self.errorOut(.{
-                    .token = self.getNodeEntry(call_scope, param.argument_node).token(),
-                    .payload = .unable_to_resolve_comptime_value,
-                });
+            const value = (self.getValue(call_scope, param.argument_node) catch unreachable).?;
             try comptime_args.append(self.allocator, value);
         } else try parameters.append(self.allocator, .{
             .name = param.name,
@@ -498,15 +528,28 @@ fn generateFunctionPermutation(
             .index = @truncate(i),
         });
     }
-    const function_permutation_entry = self.getFunctionPermutation(function_permutation);
+    //fold return type
+    try self.foldNode(perm_scope, node, .{ .declaration = 0 });
+    const rtype = try self.asType(perm_scope, node);
+
+    // try self.foldNode(perm_scope, node: u32, mode: FoldMode)
+    const function_permutation_entry = self.getFunctionPermutationEntry(function_permutation);
+    function_permutation_entry.rtype = rtype;
     function_permutation_entry.comptime_arguments = try comptime_args.toOwnedSlice(self.allocator);
     function_permutation_entry.parameters = try parameters.toOwnedSlice(self.allocator);
+    std.debug.print("RTYPE: {f}\n", .{DebugType{ .self = self, .type = rtype }});
+    std.debug.print("comptime_args: {any}\n", .{
+        function_permutation_entry.comptime_arguments,
+    });
+    std.debug.print("parameters: {any}\n", .{
+        function_permutation_entry.parameters,
+    });
 
     return function_permutation;
 }
-fn foldFunctionPermutationParameter(self: *Parser, scope: Scope, node: Node) Error!void {
+fn foldFunctionPermutationParameter(self: *Parser, scope: Scope, node: Node, call_scope: Scope) Error!void {
     const decl_scope = self.getScopeEntry(scope).parent;
-    const param = self.getNodeEntry(scope, node).function_permutation_parameter;
+    const param = &self.getNodeEntry(scope, node).function_permutation_parameter;
 
     const type_node = node + 1;
     const type_node_entry = self.getNodeEntry(scope, type_node).*;
@@ -523,6 +566,19 @@ fn foldFunctionPermutationParameter(self: *Parser, scope: Scope, node: Node) Err
             .payload = @intFromEnum(arg_type),
         } });
     } else try self.foldNode(scope, type_node, .{ .declaration = 0 });
+
+    const param_type = try self.asType(scope, type_node);
+    //mark parameter as 'comptime' if type is comptime only
+    if (self.getTypeEntry(param_type).isComptime())
+        param.qualifier = .@"comptime";
+
+    if (param.qualifier == .@"comptime") {
+        _ = (try self.getValue(call_scope, param.argument_node)) orelse
+            return self.errorOut(.{
+                .token = self.getNodeEntry(call_scope, param.argument_node).token(),
+                .payload = .unable_to_resolve_comptime_value,
+            });
+    }
 }
 
 fn foldBuiltinCall(self: *Parser, scope: Scope, builtin: Builtin, first_arg_node: Node, node: Node, mode: FoldMode) Error!void {
@@ -530,7 +586,10 @@ fn foldBuiltinCall(self: *Parser, scope: Scope, builtin: Builtin, first_arg_node
     switch (builtin) {
         .TypeOf => {
             const @"type" = try self.typeOf(scope, first_arg_node);
-            std.debug.print("===| TYPE OF : {f}\n", .{DebugType{ .self = self, .type = @"type" }});
+            std.debug.print("===| TYPE OF {f} = {f}\n", .{
+                self.DEBUGNODE(scope, first_arg_node),
+                DebugType{ .self = self, .type = @"type" },
+            });
             if (mode == .declaration and @"type" == .@"anytype")
                 return;
             self.replaceNode(scope, node, node_consumption, .{ .value = .{
@@ -545,13 +604,20 @@ fn foldBuiltinCall(self: *Parser, scope: Scope, builtin: Builtin, first_arg_node
 
 fn foldIdentifier(self: *Parser, scope: Scope, node: Node, token: Token, mode: FoldMode) Error!void {
     const var_ref = try self.getVariableReference(scope, node, token) orelse
-        (if (mode == .declaration) self.getVariableReferenceCurrentDeclaration(scope, mode.declaration, token) else null) orelse
+        (if (mode == .declaration) {
+            const param_ref = self.getFunctionParameterReference(scope, mode.declaration, token) orelse
+                return self.errorOut(.{ .token = token, .payload = .undeclared_identifier });
+            self.getNodeEntry(scope, node).* = .{ .function_parameter_reference = param_ref };
+            return;
+        } else null) orelse
         return self.errorOut(.{ .token = token, .payload = .undeclared_identifier });
 
     self.getNodeEntry(scope, node).* = if (try self.getVariableReferenceValue(var_ref)) |value|
         .{ .value = value }
+        // else if (mode != .declaration)
+        //     .{ .identifier = token }
     else
-        .{ .var_ref = var_ref };
+        .{ .variable_reference = var_ref };
 }
 
 fn foldAssignment(self: *Parser, scope: Scope, node: Node, token: Token) Error!void {
@@ -644,18 +710,14 @@ fn foldFunctionDeclaration(
 
         try self.foldNode(scope, parameter_type_node, .{ .declaration = node });
 
-        switch (self.getNodeEntry(scope, parameter_type_node).*) {
-            .null, .@"anytype" => is_consistent = false,
-            else => _ = try self.asType(scope, parameter_type_node),
-        }
+        if (try self.asTypeInsideFunctionDecl(scope, parameter_type_node) == .@"anytype")
+            is_consistent = false;
     }
     const rtype_node = parameter_type_node - 1;
     try self.foldNode(scope, rtype_node, .{ .declaration = node });
-    const rtype = self.asTypeOpt(scope, rtype_node) orelse
-        if (try self.typeOf(scope, rtype_node) == .type)
-            .@"anytype"
-        else
-            return self.errorOutNotAType(scope, rtype_node);
+    std.debug.print("==RTYPE NODE== {f}\n", .{self.DEBUGNODE(scope, rtype_node)});
+
+    const rtype = try self.asTypeInsideFunctionDecl(scope, rtype_node);
     if (rtype == .@"anytype") is_consistent = false;
 
     if (parameter_count > 0)
@@ -664,6 +726,13 @@ fn foldFunctionDeclaration(
     function_entry.flags.is_consistent = is_consistent;
     if (is_consistent)
         try self.foldScope(function_entry.scope);
+}
+fn asTypeInsideFunctionDecl(self: *Parser, scope: Scope, node: Node) Error!Type {
+    return self.asTypeOpt(scope, node) orelse
+        switch (try self.typeOf(scope, node)) {
+            .type, .@"anytype" => .@"anytype",
+            else => return self.errorOutNotAType(scope, node),
+        };
 }
 
 //this might break on arg types/rtypes not known at declaration
@@ -1020,23 +1089,20 @@ fn getVariableReference(self: *Parser, scope: Scope, node: Node, token: Token) E
     try self.getVariableReference(scope_entry.parent, scope_entry.getDeclNode(self), token);
 }
 
-fn getVariableReferenceCurrentDeclaration(self: *Parser, scope: Scope, node: Node, token: Token) ?VariableReference {
-    std.debug.print("getVariableReferenceNodeContextScope: {s}\n", .{self.tokenizer.slice(token)});
-
+fn getFunctionParameterReference(self: *Parser, scope: Scope, node: Node, token: Token) ?FunctionParameterReference {
     const name = self.tokenizer.slice(token);
-
-    const entry = self.getNodeEntry(scope, node).*;
-    return switch (entry) {
+    return switch (self.getNodeEntry(scope, node).*) {
         .function_declaration => |fn_decl| blk: {
             const parameter_count = self.getFunctionEntry(fn_decl.function).parameter_count;
             var param_node = node + 1;
-            break :blk for (0..parameter_count) |_| {
+            break :blk for (0..parameter_count) |i| {
                 const param = self.getNodeEntry(scope, param_node).function_parameter;
                 const param_name = self.tokenizer.slice(param.name);
                 if (util.strEql(name, param_name))
                     break .{
-                        .node = param_node,
+                        .node = node,
                         .scope = scope,
+                        .index = @truncate(i),
                     };
 
                 param_node += 1 + self.nodeConsumption(scope, param_node + 1);
@@ -1060,7 +1126,12 @@ fn doesStatementContainVariableReference(self: *Parser, scope: Scope, node: Node
     };
 }
 fn implicitCast(self: *Parser, scope: Scope, node: Node, @"type": Type) Error!void {
+    // std.debug.print("FROMNODE: {f}\n", .{self.DEBUGNODE(scope, node)});
     const from = try self.typeOf(scope, node);
+    std.debug.print("FROM: {f}, to: {f}\n", .{
+        DebugType{ .self = self, .type = from },
+        DebugType{ .self = self, .type = @"type" },
+    });
     if (from == @"type") return;
     if (!self.isTypeImplicitlyCastable(from, @"type")) {
         return self.errorOut(.{
@@ -1178,7 +1249,7 @@ pub fn typeOf(self: *Parser, scope: Scope, node: Node) Error!Type {
             u_op.op,
             try self.typeOf(scope, node + 1),
         ),
-        .var_ref => |var_ref| try self.typeOfVariableReference(var_ref),
+        .variable_reference => |var_ref| try self.typeOfVariableReference(var_ref),
 
         //return type of target for now
         .indexing => blk: {
@@ -1194,22 +1265,37 @@ pub fn typeOf(self: *Parser, scope: Scope, node: Node) Error!Type {
         .function_declaration => |fn_decl| try self.typeOfFunctionDeclaration(scope, fn_decl, node),
         // .function_permutation => .function,
         .function_permutation => .type,
+        .function_parameter_reference => |fn_param_ref| //
+        try self.asType(
+            fn_param_ref.scope,
+            fn_param_ref.node + 2 + self.nodeSequenceConsumption(
+                fn_param_ref.scope,
+                fn_param_ref.node + 1,
+                fn_param_ref.index,
+            ),
+        ),
         .constructor => return self.asTypeOpt(scope, node + 1) orelse
             .@"anytype",
 
         .null => .@"anytype",
-        .call => blk: {
-            std.debug.print("FUNCTIONCALL: {f}\n", .{self.DEBUGNODE(scope, node)});
-            const function_node = node + 1;
+        .call => try self.typeOfCall(scope, node),
+        else => |e| {
+            std.debug.print("idk type of '{s}'\n", .{@tagName(e)});
+            return self.errorOut(.unknown);
+        },
+    };
+}
+fn typeOfCall(self: *Parser, scope: Scope, node: Node) Error!Type {
+    std.debug.print("FUNCTIONCALL: {f}\n", .{self.DEBUGNODE(scope, node)});
+    const function_node = node + 1;
+    return switch (self.getNodeEntry(scope, function_node).*) {
+        .function_permutation => |perm| self.getFunctionPermutationEntry(perm).rtype,
+        else => blk: {
             const function_type = try self.typeOf(scope, function_node);
             const ftype = self.getTypeEntry(function_type).function;
 
             const rtype = self.function_type_elems.items[ftype.id + ftype.parameter_count];
             break :blk rtype;
-        },
-        else => |e| {
-            std.debug.print("idk type of '{s}'\n", .{@tagName(e)});
-            return self.errorOut(.unknown);
         },
     };
 }
@@ -1321,14 +1407,14 @@ fn typeOfUOp(self: *Parser, scope: Scope, op: UnaryOperator, operand: Type) Erro
 }
 pub fn nodeConsumption(self: *Parser, scope: Scope, node: u32) u32 {
     // array_type_decl,
-    // function_decl: Function, //[fn_decl][args...][rtype][body...]
     // branch,
     var consumption: u32 = switch (self.getNodeEntry(scope, node).*) {
         .var_decl, .folded_var_decl => 1 + self.nodeSequenceConsumption(scope, node + 1, 3),
         .bin_op, .indexing, .assignment => 1 + self.nodeSequenceConsumption(scope, node + 1, 2),
         .u_op, .@"return", .function_parameter, .function_permutation_parameter => 1 + self.nodeConsumption(scope, node + 1),
         .null => 1,
-        .function_declaration => 1 + self.nodeConsumption(scope, node + 1), //args
+        .function_declaration => |fn_decl| //
+        1 + self.nodeSequenceConsumption(scope, node + 1, self.getFunctionEntry(fn_decl.function).parameter_count + 1), //args
         .constructor => |constructor| 1 + self.nodeSequenceConsumption(scope, node + 1, constructor.elem_count + 1),
         .function_type_declaration => |fn_type_decl| 1 + self.nodeSequenceConsumption(scope, node + 1, fn_type_decl.parameter_count + 1),
         .call => |fn_type_decl| 1 + self.nodeSequenceConsumption(scope, node + 1, fn_type_decl.argument_count + 1),
@@ -1679,7 +1765,7 @@ fn parseExpression0(self: *Parser, scope: Scope) Error!u32 {
             self.token += 1;
             break :blk 1;
         },
-        inline .compint, .compfloat => |c| blk: {
+        inline .compint, .compfloat, .type => |c| blk: {
             _ = try self.appendNode(scope, .{ .value = .{
                 .type = .type,
                 .payload = @intFromEnum(try self.addType(@unionInit(TypeEntry, @tagName(c), {}))),
@@ -2106,7 +2192,7 @@ pub fn getFunctionEntry(self: *Parser, handle: Function) *FunctionEntry {
 // 2. for(comptime_values)
 // 3. go through statements
 //}
-pub fn getFunctionPermutation(self: *Parser, id: FunctionPermutation) *FunctionPermutationEntry {
+pub fn getFunctionPermutationEntry(self: *Parser, id: FunctionPermutation) *FunctionPermutationEntry {
     return &self.function_permutations.items[@intFromEnum(id)];
 }
 pub fn addFunctionPermutation(self: *Parser, entry: FunctionPermutationEntry) Error!FunctionPermutation {
@@ -2120,6 +2206,7 @@ pub const FunctionPermutationEntry = struct {
 
     comptime_arguments: []Value = &.{},
     parameters: []Parameter = &.{},
+    rtype: Type = undefined,
     pub const Parameter = struct {
         name: Token,
         type: Type,
@@ -2180,11 +2267,14 @@ pub const NodeEntry = union(enum) {
     @"anytype": Token,
     function_parameter: FunctionParameter,
 
-    function_permutation_parameter: FunctionPermutationParameter,
     function_permutation: FunctionPermutation,
+    function_parameter_reference: FunctionParameterReference,
+
+    function_permutation_parameter: FunctionPermutationParameter,
+    function_permutation_header: Scope, //call_scope
 
     //[fn_param][type / anytype / null(if the same as the next one)]
-    var_ref: VariableReference,
+    variable_reference: VariableReference,
     assignment: Token, //[assignment][target][value]
 
     @"return": Token, //[return][return value]
@@ -2197,9 +2287,12 @@ pub const NodeEntry = union(enum) {
     pub fn token(self: NodeEntry) Token {
         return switch (self) {
             .null, .pad => 0, //unknown
-            .array_type_decl, .branch, .loop, .var_ref => 0, //
+            .array_type_decl, .branch, .loop, .variable_reference => 0, //
 
-            .function_permutation => 0,
+            .function_permutation,
+            .function_parameter_reference,
+            .function_permutation_header,
+            => 0,
             inline .function_parameter, .function_permutation_parameter => |fp| fp.name,
             .var_decl, .folded_var_decl => |vd| vd.qualifier_token,
             .identifier,
@@ -2211,6 +2304,11 @@ pub const NodeEntry = union(enum) {
             inline else => |o| o.token,
         };
     }
+};
+const FunctionParameterReference = struct {
+    scope: Scope,
+    node: Node,
+    index: u32,
 };
 
 const FunctionPermutationParameter = struct {
@@ -2578,6 +2676,10 @@ const DebugNode = struct {
                     try writer.print("{f}{s}", .{ entry, if (i + 1 == function_call.argument_count) "" else ", " });
                 try writer.print(")", .{});
             },
+            .function_permutation => {
+                entry.node.* += 1;
+                try writer.writeAll("FNPERM");
+            },
             .function_type_declaration => |fn_type_decl| {
                 entry.node.* += 1;
                 try writer.print("fn(", .{});
@@ -2650,7 +2752,7 @@ const DebugNode = struct {
                 try writer.print("@{s}", .{@tagName(builtin_node.builtin)});
                 entry.node.* += 1;
             },
-            .var_ref => |vr| {
+            .variable_reference => |vr| {
                 entry.node.* += 1;
                 const node_entry = entry.self.getNodeEntry(vr.scope, vr.node).*;
                 const token = switch (node_entry) {
@@ -2660,6 +2762,20 @@ const DebugNode = struct {
                 };
 
                 try writer.print("'{s}", .{entry.self.tokenizer.slice(token)});
+            },
+            .function_parameter_reference => |fn_param_ref| {
+                defer entry.node.* += 1;
+                const param_node = fn_param_ref.node + 1 + entry.self.nodeSequenceConsumption(
+                    fn_param_ref.scope,
+                    fn_param_ref.node + 1,
+                    fn_param_ref.index,
+                );
+                const param_entry = entry.self.getNodeEntry(fn_param_ref.scope, param_node).*;
+                const token = switch (param_entry) {
+                    inline .function_parameter, .function_permutation_parameter => |p| p.name,
+                    else => unreachable,
+                };
+                try writer.print("fp'{s}", .{entry.self.tokenizer.slice(token)});
             },
             .null => {
                 entry.node.* += 1;

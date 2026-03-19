@@ -421,6 +421,7 @@ pub const TokenKind = enum(u8) {
 
     compint,
     compfloat,
+    type,
     void,
     true,
     false,
