@@ -172,8 +172,8 @@ fn gatherEntryPointInfos(self: *Parser) Error!void {
     const body = self.getScopeEntry(root).body.items;
     while (statement < body.len) {
         defer statement += self.nodeConsumption(root, statement);
-        if (body[statement] != .folded_var_decl) continue;
-        const var_decl = body[statement].folded_var_decl;
+        if (body[statement] != .folded_variable_declaration) continue;
+        const var_decl = body[statement].folded_variable_declaration;
 
         const qualifier_info_node = statement + 1;
         const type_node = qualifier_info_node + self.nodeConsumption(root, qualifier_info_node);
@@ -216,8 +216,8 @@ fn gatherEntryPointInfos(self: *Parser) Error!void {
         while (statement < ep_body.len) {
             defer statement += self.nodeConsumption(ep_scope, statement);
 
-            if (ep_body[statement] != .folded_var_decl) continue;
-            const var_decl = ep_body[statement].folded_var_decl;
+            if (ep_body[statement] != .folded_variable_declaration) continue;
+            const var_decl = ep_body[statement].folded_variable_declaration;
 
             if (var_decl.qualifier != .push) continue;
 
@@ -277,7 +277,7 @@ fn foldDeclScope(self: *Parser, scope: Scope) Error!void {
 fn isStatementSignificantDeclScope(self: *Parser, scope: Scope, node: Node) bool {
     // if (true) return true;
     return switch (self.getNodeEntry(scope, node).*) {
-        .var_decl => |var_decl| //
+        .variable_declaration => |var_decl| //
         var_decl.qualifier.isEntryPoint() or var_decl.qualifier == .push,
         else => false,
     };
@@ -286,7 +286,7 @@ fn isStatementSignificantDeclScope(self: *Parser, scope: Scope, node: Node) bool
 fn isStatementSignificantBlockScope(self: *Parser, scope: Scope, node: Node) bool {
     // if (true) return true;
     return switch (self.getNodeEntry(scope, node).*) {
-        .var_decl => |var_decl| var_decl.qualifier == .push,
+        .variable_declaration => |var_decl| var_decl.qualifier == .push,
         .@"return", .assignment => true,
         else => false,
     };
@@ -320,8 +320,8 @@ const FoldMode = union(enum) { //union(enum)
 };
 fn foldNode(self: *Parser, scope: Scope, node: Node, mode: FoldMode) Error!void {
     switch (self.getNodeEntry(scope, node).*) {
-        .function_parameter_reference => |fn_param_ref| //
-        try self.foldFunctionParameterReference(scope, fn_param_ref, node),
+        .variable_reference => |var_ref| //
+        try self.foldVariableReference(scope, var_ref, node),
 
         .call => |fn_call| //
         try self.foldCall(scope, fn_call, node, mode),
@@ -352,7 +352,7 @@ fn foldNode(self: *Parser, scope: Scope, node: Node, mode: FoldMode) Error!void 
         .u_op => |op| try self.foldUOp(scope, op, node, mode),
         .identifier => |token| try self.foldIdentifier(scope, node, token, mode),
 
-        .var_decl => |var_decl| try self.foldVariableDeclaration(scope, var_decl, node),
+        .variable_declaration => |var_decl| try self.foldVariableDeclaration(scope, var_decl, node),
         .@"return" => |token| try self.foldReturn(scope, node, token),
         .assignment => |token| try self.foldAssignment(scope, node, token),
         else => |e| {
@@ -361,19 +361,27 @@ fn foldNode(self: *Parser, scope: Scope, node: Node, mode: FoldMode) Error!void 
         },
     }
 }
-fn foldFunctionParameterReference(self: *Parser, scope: Scope, ref: FunctionParameterReference, node: Node) Error!void {
-    if (self.getScopeEntry(scope).container != .function_permutation)
-        unreachable; //or just return//or unable to resolve comptime value
-    const call_scope = self.getNodeEntry(scope, 0).function_permutation_header;
+fn foldVariableReference(self: *Parser, scope: Scope, var_ref: VariableReference, node: Node) Error!void {
+    const ref_entry = self.getNodeEntry(var_ref.scope, var_ref.node).*;
+    switch (ref_entry) {
+        .function_permutation_parameter => {
+            if (self.getScopeEntry(scope).container != .function_permutation)
+                unreachable; //or just return//or unable to resolve comptime value
 
-    const param_node: Node =
-        1 + self.nodeSequenceConsumption(scope, 1, ref.index);
-    const param = self.getNodeEntry(scope, param_node).function_permutation_parameter;
+            const call_scope = self.getNodeEntry(scope, 0).function_permutation_header.call_scope;
+            const index = var_ref.value;
 
-    try self.foldFunctionPermutationParameter(scope, param_node, call_scope);
+            const param_node: Node =
+                1 + self.nodeSequenceConsumption(scope, 1, index);
+            const param = self.getNodeEntry(scope, param_node).function_permutation_parameter;
 
-    const value = (self.getValue(call_scope, param.argument_node) catch unreachable).?;
-    self.getNodeEntry(scope, node).* = .{ .value = value };
+            try self.foldFunctionPermutationParameter(scope, param_node, call_scope);
+
+            const value = (self.getValue(call_scope, param.argument_node) catch unreachable).?;
+            self.getNodeEntry(scope, node).* = .{ .value = value };
+        },
+        else => {},
+    }
 }
 
 fn foldCall(self: *Parser, scope: Scope, fn_call: Call, node: Node, mode: FoldMode) Error!void {
@@ -383,7 +391,7 @@ fn foldCall(self: *Parser, scope: Scope, fn_call: Call, node: Node, mode: FoldMo
     const callee_type = try self.typeOf(scope, callee_node);
     if (self.getTypeEntry(callee_type) != .function)
         return self.errorOut(.{
-            .token = self.getNodeEntry(scope, callee_node).token(),
+            .token = self.nodeToken(scope, callee_node),
             .payload = .{ .unexpected_type_tag = .{ .got = callee_type, .expected = .function } },
         });
 
@@ -494,7 +502,10 @@ fn generateFunctionPermutation(
         self.getScopeEntry(decl_scope).body.items[decl_node .. decl_node + decl_consumption],
     );
     self.getNodeEntry(perm_scope, 0).* =
-        .{ .function_permutation_header = call_scope };
+        .{ .function_permutation_header = .{
+            .call_scope = call_scope,
+            .parameter_count = function_entry.parameter_count,
+        } };
 
     var node: Node = 1;
     var arg_node: Node = first_arg_node;
@@ -550,14 +561,14 @@ fn foldFunctionPermutationParameter(self: *Parser, scope: Scope, node: Node, cal
     const param = &self.getNodeEntry(scope, node).function_permutation_parameter;
 
     const type_node = node + 1;
-    try self.foldNode(scope, type_node, .force);
+    try self.foldNode(scope, type_node, .{ .declaration = 0 });
     const type_node_entry = self.getNodeEntry(scope, type_node).*;
 
     if (type_node_entry == .@"anytype") {
         const arg_type = try self.typeOf(decl_scope, param.argument_node);
         if (arg_type == .@"anytype")
             return self.errorOut(.{
-                .token = self.getNodeEntry(decl_scope, param.argument_node).token(),
+                .token = self.nodeToken(decl_scope, param.argument_node),
                 .payload = .{ .unable_to_infer_parameter_type = param.name }, //
             });
         self.replaceNode(scope, type_node, self.nodeConsumption(scope, type_node), .{ .value = .{
@@ -574,7 +585,7 @@ fn foldFunctionPermutationParameter(self: *Parser, scope: Scope, node: Node, cal
     if (param.qualifier == .@"comptime") {
         _ = (try self.getValue(call_scope, param.argument_node)) orelse
             return self.errorOut(.{
-                .token = self.getNodeEntry(call_scope, param.argument_node).token(),
+                .token = self.nodeToken(call_scope, param.argument_node),
                 .payload = .unable_to_resolve_comptime_value,
             });
     }
@@ -598,19 +609,14 @@ fn foldBuiltinCall(self: *Parser, scope: Scope, builtin: Builtin, first_arg_node
 }
 
 fn foldIdentifier(self: *Parser, scope: Scope, node: Node, token: Token, mode: FoldMode) Error!void {
-    const var_ref = try self.getVariableReference(scope, node, token) orelse
-        (if (mode == .declaration) {
-            const param_ref = self.getFunctionParameterReference(scope, mode.declaration, token) orelse
-                return self.errorOut(.{ .token = token, .payload = .undeclared_identifier });
-            self.getNodeEntry(scope, node).* = .{ .function_parameter_reference = param_ref };
+    if (mode == .declaration)
+        if (try self.foldFunctionParameterReference(scope, node, mode.declaration, token))
             return;
-        } else null) orelse
+    const var_ref = try self.getVariableReference(scope, node, token) orelse
         return self.errorOut(.{ .token = token, .payload = .undeclared_identifier });
 
     self.getNodeEntry(scope, node).* = if (try self.getVariableReferenceValue(var_ref)) |value|
         .{ .value = value }
-        // else if (mode != .declaration)
-        //     .{ .identifier = token }
     else
         .{ .variable_reference = var_ref };
 }
@@ -888,7 +894,7 @@ fn foldConstructor(
             )) {
                 occupied += elem_constructor_structure.len;
             } else return self.errorOut(.{
-                .token = self.getNodeEntry(scope, elem).token(),
+                .token = self.nodeToken(scope, elem),
                 .payload = .{ .wrong_constructor_element_type = .{
                     .constructor_type = @"type",
                     .element_type = elem_type,
@@ -918,14 +924,14 @@ fn getScopeReturnTypeAndDeclLocation(self: *Parser, scope: Scope, node: Node) Er
     while (true) {
         const entry = self.getScopeEntry(current).*;
         if (entry.container.isDecl()) return self.errorOut(.{
-            .token = self.getNodeEntry(current, node).token(),
+            .token = self.nodeToken(current, node),
             .payload = .return_outside_function,
         });
         if (entry.container == .function) {
-            const decl_token = self.getNodeEntry(
+            const decl_token = self.nodeToken(
                 entry.parent,
                 self.getFunctionEntry(entry.container.function).node,
-            ).token();
+            );
             return .{ try self.getFunctionDeclarationReturnType(entry.parent, entry.container.function), decl_token };
         } else {
             current = entry.parent;
@@ -941,17 +947,17 @@ fn getFunctionDeclarationReturnType(self: *Parser, scope: Scope, function: Funct
     const rtype_node = self.getNodeEntry(scope, node).*;
     if (rtype_node != .value or rtype_node.value.type != .type)
         return self.errorOut(.{
-            .token = rtype_node.token(),
+            .token = self.nodeToken(scope, node),
             .payload = .unable_to_resolve_comptime_value,
         });
     return @enumFromInt(rtype_node.value.payload);
 }
 fn foldVariableDeclaration(self: *Parser, scope: Scope, var_decl: VariableDeclaration, node: Node) Error!void {
-    self.getNodeEntry(scope, node).* = .{ .folded_var_decl = var_decl };
+    self.getNodeEntry(scope, node).* = .{ .folded_variable_declaration = var_decl };
 
     //check for redelaration
     if (try self.getVariableReference(scope, node, var_decl.name)) |vr| {
-        var decls: [2]Token = .{ var_decl.qualifier_token, self.getNodeEntry(vr.scope, vr.node).token() };
+        var decls: [2]Token = .{ var_decl.qualifier_token, self.nodeToken(vr.scope, vr.node) };
         if (decls[1] < decls[0] or !self.isScopeParentOfAnother(vr.scope, scope))
             std.mem.swap(Token, &decls[0], &decls[1]);
 
@@ -1042,13 +1048,13 @@ fn isQualifierCompatibleWithType(self: *Parser, qualifier: Qualifier, @"type": T
 pub fn getVariableReferenceQualifier(self: *Parser, var_ref: VariableReference) Qualifier {
     const entry = self.getNodeEntry(var_ref.scope, var_ref.node).*;
     return switch (entry) {
-        .var_decl, .folded_var_decl => |vd| vd.qualifier,
+        .variable_declaration, .folded_variable_declaration => |vd| vd.qualifier,
         else => .@"const",
     };
 }
 pub fn getVariableReferenceValue(self: *Parser, var_ref: VariableReference) Error!?Value {
     const value_node = switch (self.getNodeEntry(var_ref.scope, var_ref.node).*) {
-        .var_decl, .folded_var_decl => |vd| if (vd.qualifier == .@"const")
+        .variable_declaration, .folded_variable_declaration => |vd| if (vd.qualifier == .@"const")
             var_ref.node + 1 + self.nodeSequenceConsumption(var_ref.scope, var_ref.node + 1, 2)
         else
             return null,
@@ -1084,33 +1090,79 @@ fn getVariableReference(self: *Parser, scope: Scope, node: Node, token: Token) E
     try self.getVariableReference(scope_entry.parent, scope_entry.getDeclNode(self), token);
 }
 
-fn getFunctionParameterReference(self: *Parser, scope: Scope, node: Node, token: Token) ?FunctionParameterReference {
+fn foldFunctionParameterReference(
+    self: *Parser,
+    scope: Scope,
+    node: Node,
+    decl_node: Node,
+    token: Token,
+) Error!bool { //found: bool
     const name = self.tokenizer.slice(token);
-    return switch (self.getNodeEntry(scope, node).*) {
-        .function_declaration => |fn_decl| blk: {
-            const parameter_count = self.getFunctionEntry(fn_decl.function).parameter_count;
-            var param_node = node + 1;
-            break :blk for (0..parameter_count) |i| {
-                const param = self.getNodeEntry(scope, param_node).function_parameter;
-                const param_name = self.tokenizer.slice(param.name);
-                if (util.strEql(name, param_name))
-                    break .{
-                        .node = node,
-                        .scope = scope,
-                        .index = @truncate(i),
-                    };
+    const decl_entry = self.getNodeEntry(scope, node).*;
+    switch (decl_entry) {
+        .function_declaration, .function_permutation_header => {
+            std.debug.print("foldFunctionParameterReference: {d}\n", .{node});
+            var param_node = decl_node + 1;
+            var index: u32 = 0;
+            while (decl_node < node) {
+                defer param_node += self.nodeConsumption(scope, param_node);
+                defer index += 1;
 
-                param_node += 1 + self.nodeConsumption(scope, param_node + 1);
-            } else null;
+                const param_name = if (decl_entry == .function_declaration)
+                    self.getNodeEntry(scope, param_node).function_parameter.name
+                else
+                    self.getNodeEntry(scope, param_node).function_permutation_parameter.name;
+
+                std.debug.print("PARAM NAME : {s}\n", .{self.tokenizer.slice(param_name)});
+                if (util.strEql(name, self.tokenizer.slice(param_name))) {
+                    const var_ref: VariableReference = .{
+                        .scope = scope,
+                        .node = decl_node,
+                        .value = index,
+                    };
+                    if (decl_entry == .function_permutation_header) {
+                        const call_scope = decl_entry.function_permutation_header.call_scope;
+                        const param = self.getNodeEntry(scope, param_node).function_permutation_parameter;
+                        if (param.qualifier == .@"comptime") {
+                            const value = try self.getValue(call_scope, param.argument_node) orelse
+                                return self.errorOut(.{
+                                    .token = self.nodeToken(call_scope, param.argument_node),
+                                    .payload = .unable_to_resolve_comptime_value,
+                                });
+                            self.getNodeEntry(scope, node).* = .{ .value = value };
+                            return true;
+                        }
+                    }
+                    self.getNodeEntry(scope, node).* = .{ .variable_reference = var_ref };
+                    return true;
+                }
+            } else return false;
         },
-        else => null,
-    };
+        else => return false,
+        // .function_declaration => |fn_decl| blk: {
+        //     const parameter_count = self.getFunctionEntry(fn_decl.function).parameter_count;
+        //     var param_node = node + 1;
+        //     break :blk for (0..parameter_count) |i| {
+        //         const param = self.getNodeEntry(scope, param_node).function_parameter;
+        //         const param_name = self.tokenizer.slice(param.name);
+        //         if (util.strEql(name, param_name))
+        //             break .{
+        //                 .node = node,
+        //                 .scope = scope,
+        //                 .value = @truncate(i),
+        //             };
+
+        //         param_node += 1 + self.nodeConsumption(scope, param_node + 1);
+        //     } else null;
+        // },
+        // else => null,
+    }
 }
 
 fn doesStatementContainVariableReference(self: *Parser, scope: Scope, node: Node, token: Token) Error!bool {
     const name = self.tokenizer.slice(token);
     return switch (self.getNodeEntry(scope, node).*) {
-        .var_decl, .folded_var_decl => |vd| if (util.strEql(
+        .variable_declaration, .folded_variable_declaration => |vd| if (util.strEql(
             name,
             self.tokenizer.slice(vd.name),
         )) {
@@ -1130,7 +1182,7 @@ fn implicitCast(self: *Parser, scope: Scope, node: Node, @"type": Type) Error!vo
     if (from == @"type") return;
     if (!self.isTypeImplicitlyCastable(from, @"type")) {
         return self.errorOut(.{
-            .token = self.getNodeEntry(scope, node).token(),
+            .token = self.nodeToken(scope, node),
             .payload = .{ .cant_implicitly_cast = .{
                 .from = from,
                 .to = @"type",
@@ -1260,15 +1312,6 @@ pub fn typeOf(self: *Parser, scope: Scope, node: Node) Error!Type {
         .function_declaration => |fn_decl| try self.typeOfFunctionDeclaration(scope, fn_decl, node),
         // .function_permutation => .function,
         .function_permutation => .type,
-        .function_parameter_reference => |fn_param_ref| //
-        try self.asTypeLoose(
-            fn_param_ref.scope,
-            fn_param_ref.node + 2 + self.nodeSequenceConsumption(
-                fn_param_ref.scope,
-                fn_param_ref.node + 1,
-                fn_param_ref.index,
-            ),
-        ),
         .constructor => return self.asTypeOpt(scope, node + 1) orelse
             .@"anytype",
 
@@ -1316,14 +1359,14 @@ fn typeOfBuiltin(self: *Parser, builtin: Builtin) Error!Type {
 
 pub fn typeOfVariableReference(self: *Parser, var_ref: VariableReference) Error!Type {
     const decl_entry = self.getNodeEntry(var_ref.scope, var_ref.node).*;
-    const node = switch (decl_entry) {
-        .var_decl, .folded_var_decl => //
-        var_ref.node + 1 + self.nodeConsumption(var_ref.scope, var_ref.node + 1),
-        .function_parameter => var_ref.node + 1,
+    return switch (decl_entry) {
+        .variable_declaration, .folded_variable_declaration => //
+        try self.asType(var_ref.scope, var_ref.node + 1 + self.nodeConsumption(var_ref.scope, var_ref.node + 1)),
+        .function_declaration, .function_permutation_header => //
+        try self.asTypeLoose(var_ref.scope, var_ref.node + 2 +
+            self.nodeSequenceConsumption(var_ref.scope, var_ref.node + 1, var_ref.value)),
         else => unreachable,
     };
-
-    return try self.asType(var_ref.scope, node);
 }
 fn typeOfFunctionDeclaration(self: *Parser, scope: Scope, fn_decl: FunctionDeclarationNode, node: Node) Error!Type {
     const fte = self.function_type_elems.items;
@@ -1367,7 +1410,7 @@ fn asType(self: *Parser, scope: Scope, node: Node) Error!Type {
 
         if (type_of == .type)
             return self.errorOut(.{
-                .token = self.getNodeEntry(scope, node).token(),
+                .token = self.nodeToken(scope, node),
                 .payload = .unable_to_resolve_comptime_value,
             })
         else
@@ -1404,7 +1447,7 @@ pub fn nodeConsumption(self: *Parser, scope: Scope, node: u32) u32 {
     // array_type_decl,
     // branch,
     var consumption: u32 = switch (self.getNodeEntry(scope, node).*) {
-        .var_decl, .folded_var_decl => 1 + self.nodeSequenceConsumption(scope, node + 1, 3),
+        .variable_declaration, .folded_variable_declaration => 1 + self.nodeSequenceConsumption(scope, node + 1, 3),
         .bin_op, .indexing, .assignment => 1 + self.nodeSequenceConsumption(scope, node + 1, 2),
         .u_op, .@"return", .function_parameter, .function_permutation_parameter => 1 + self.nodeConsumption(scope, node + 1),
         .null => 1,
@@ -1552,7 +1595,7 @@ fn parseVarDecl(
         return self.errorOut(.{ .token = name_token, .payload = .unexpected_token });
     self.token += 1;
 
-    _ = try self.appendNode(scope, .{ .var_decl = .{
+    _ = try self.appendNode(scope, .{ .variable_declaration = .{
         .qualifier = qualifier,
         .qualifier_token = qualifier_token,
         .name = name_token,
@@ -2263,10 +2306,9 @@ pub const NodeEntry = union(enum) {
     function_parameter: FunctionParameter,
 
     function_permutation: FunctionPermutation,
-    function_parameter_reference: FunctionParameterReference,
 
     function_permutation_parameter: FunctionPermutationParameter,
-    function_permutation_header: Scope, //call_scope
+    function_permutation_header: FunctionPermutationHeader, //call_scope
 
     //[fn_param][type / anytype / null(if the same as the next one)]
     variable_reference: VariableReference,
@@ -2277,35 +2319,14 @@ pub const NodeEntry = union(enum) {
     loop: [11]u8,
 
     //statement
-    var_decl: VariableDeclaration, //[var_decl][qualifier_info][type][initializer]
-    folded_var_decl: VariableDeclaration,
-    pub fn token(self: NodeEntry) Token {
-        return switch (self) {
-            .null, .pad => 0, //unknown
-            .array_type_decl, .branch, .loop, .variable_reference => 0, //
-
-            .function_permutation,
-            .function_parameter_reference,
-            .function_permutation_header,
-            => 0,
-            inline .function_parameter, .function_permutation_parameter => |fp| fp.name,
-            .var_decl, .folded_var_decl => |vd| vd.qualifier_token,
-            .identifier,
-            .assignment,
-            .indexing,
-            .@"return",
-            .@"anytype",
-            => |tok| tok,
-            inline else => |o| o.token,
-        };
-    }
-};
-const FunctionParameterReference = struct {
-    scope: Scope,
-    node: Node,
-    index: u32,
+    variable_declaration: VariableDeclaration, //[var_decl][qualifier_info][type][initializer]
+    folded_variable_declaration: VariableDeclaration,
 };
 
+const FunctionPermutationHeader = struct {
+    call_scope: Scope,
+    parameter_count: u32,
+};
 const FunctionPermutationParameter = struct {
     name: Node,
     argument_node: Node,
@@ -2532,10 +2553,35 @@ pub const TypeEntry = union(enum) {
         }
     }
 };
+fn nodeToken(self: *Parser, scope: Scope, node: Node) Token {
+    return switch (self.getNodeEntry(scope, node).*) {
+        .variable_reference => |var_ref| self.nodeToken(
+            var_ref.scope,
+            switch (self.getNodeEntry(var_ref.scope, var_ref.node).*) {
+                .function_declaration, .function_permutation_header => //
+                var_ref.node + 1 + self.nodeSequenceConsumption(var_ref.scope, var_ref.node + 1, var_ref.value),
+                else => var_ref.node,
+            },
+        ),
+        .null, .pad => 0,
+        .array_type_decl, .branch, .loop => 0, //
+        .function_permutation_header, .function_permutation => 0,
+
+        inline .function_parameter, .function_permutation_parameter => |fp| fp.name,
+        .variable_declaration, .folded_variable_declaration => |vd| vd.qualifier_token,
+        .identifier,
+        .assignment,
+        .indexing,
+        .@"return",
+        .@"anytype",
+        => |tok| tok,
+        inline else => |o| o.token,
+    };
+}
 
 pub fn errorOutNotAType(self: *Parser, scope: Scope, node: Node) Error {
     return self.errorOut(.{
-        .token = self.getNodeEntry(scope, node).token(),
+        .token = self.nodeToken(scope, node),
         .payload = .{ .unexpected_type_tag = .{
             .expected = .type,
             .got = try self.typeOf(scope, node),
@@ -2710,8 +2756,8 @@ const DebugNode = struct {
                 entry.node.* += 1;
                 try writer.print("{f} = {f}", .{ entry, entry });
             },
-            .var_decl, .folded_var_decl => |var_decl| {
-                if (body[entry.node.*] == .folded_var_decl) try writer.writeByte('*');
+            .variable_declaration, .folded_variable_declaration => |var_decl| {
+                if (body[entry.node.*] == .folded_variable_declaration) try writer.writeByte('*');
                 entry.node.* += 1;
                 try writer.print("{s}", .{@tagName(var_decl.qualifier)});
                 if (var_decl.qualifier == .compute) {
@@ -2747,30 +2793,24 @@ const DebugNode = struct {
                 try writer.print("@{s}", .{@tagName(builtin_node.builtin)});
                 entry.node.* += 1;
             },
-            .variable_reference => |vr| {
-                entry.node.* += 1;
-                const node_entry = entry.self.getNodeEntry(vr.scope, vr.node).*;
-                const token = switch (node_entry) {
-                    .folded_var_decl => |var_decl| var_decl.name,
-                    .function_parameter => |fn_param| fn_param.name,
-                    else => unreachable,
-                };
-
-                try writer.print("'{s}", .{entry.self.tokenizer.slice(token)});
-            },
-            .function_parameter_reference => |fn_param_ref| {
+            .variable_reference => |var_ref| {
                 defer entry.node.* += 1;
-                const param_node = fn_param_ref.node + 1 + entry.self.nodeSequenceConsumption(
-                    fn_param_ref.scope,
-                    fn_param_ref.node + 1,
-                    fn_param_ref.index,
-                );
-                const param_entry = entry.self.getNodeEntry(fn_param_ref.scope, param_node).*;
-                const token = switch (param_entry) {
-                    inline .function_parameter, .function_permutation_parameter => |p| p.name,
+                switch (entry.self.getNodeEntry(var_ref.scope, var_ref.node).*) {
+                    inline .function_declaration, .function_permutation_header => {
+                        const param_node = var_ref.node + 1 + entry.self.nodeSequenceConsumption(
+                            var_ref.scope,
+                            var_ref.node + 1,
+                            var_ref.value,
+                        );
+                        const name = switch (entry.self.getNodeEntry(var_ref.scope, param_node).*) {
+                            inline .function_parameter, .function_permutation_parameter => |p| p.name,
+                            else => unreachable,
+                        };
+                        try writer.print("fp'{s}", .{entry.self.tokenizer.slice(name)});
+                    },
+                    inline .folded_variable_declaration, .variable_declaration => |vd| try writer.print("'{s}", .{entry.self.tokenizer.slice(vd.name)}),
                     else => unreachable,
-                };
-                try writer.print("fp'{s}", .{entry.self.tokenizer.slice(token)});
+                }
             },
             .null => {
                 entry.node.* += 1;
