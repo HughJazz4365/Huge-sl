@@ -1,11 +1,26 @@
 
-==========fold function permutation header TODO:
-	type of permutation
-	get var ref on permutation parameter
-===========
-if Value.type = .function:
-	Value.token = variant
-	(token can be retreived from Function.decl_node.token())
+how variable reference querry
+inside of function_declaration/permutation_header
+can reach target
+.{.declaration = node} chain breaks 
+FoldMode declaration might be useless 
+
+while function_permutation_header parameters
+can be accessed with just a scope
+
+for regular function declaration cant be
+fn(T: type, a : fn(T) T) T
+//return type can become a reference, but can type of a?
+//it might be because fold_mode can be propogated
+until there is new function declaration
+but a new function declaration shouldnt even be able to
+access parameters of the outer one
+//????
+we just need to make sure that mode is
+being fully propogated(through type_of, as_type???)
+					  (should those fold??)
+
+
 FUNCTION TRANSFORMATIONS:{
 	1. runtime_arg_&_rtype => no transformations
 	2. comptime_args_&_runtime_rtype => function_variants
