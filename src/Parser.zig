@@ -1,10 +1,9 @@
-//fix crash on fold fn decl(unnecessary unable_to_eval_comptime_value error)
+//mode: FoldMode as argument in typeOf()????
+//actually check types of passed arguments
+//can only reference previousely defined arguments but not the next ones
 //TODO:
-//function_parameter reference should just point to the fn param
 //for continued parameter types eg( fn(x) f32 )
 //types should just be inserted with shifting
-
-//incorrect function_parameter_reference
 
 // check for possible pointer invalidation when storing entries for too long ->
 //**_entry varaibles must only be used immediately as the pointer can be invalidated
@@ -364,11 +363,11 @@ fn foldNode(self: *Parser, scope: Scope, node: Node, mode: FoldMode) Error!void 
 }
 fn foldFunctionParameterReference(self: *Parser, scope: Scope, ref: FunctionParameterReference, node: Node) Error!void {
     if (self.getScopeEntry(scope).container != .function_permutation)
-        unreachable; //or unable to resolve comptime value
+        unreachable; //or just return//or unable to resolve comptime value
     const call_scope = self.getNodeEntry(scope, 0).function_permutation_header;
 
     const param_node: Node =
-        1 + self.nodeSequenceConsumption(scope, node, ref.index);
+        1 + self.nodeSequenceConsumption(scope, 1, ref.index);
     const param = self.getNodeEntry(scope, param_node).function_permutation_parameter;
 
     try self.foldFunctionPermutationParameter(scope, param_node, call_scope);
@@ -388,7 +387,6 @@ fn foldCall(self: *Parser, scope: Scope, fn_call: Call, node: Node, mode: FoldMo
             .payload = .{ .unexpected_type_tag = .{ .got = callee_type, .expected = .function } },
         });
 
-    // std.debug.print("FOLD FNCALL< CALLEE TYPE: {f}\n", .{DebugType{ .self = self, .type = callee_type }});
     std.debug.print("FOLD FNCALL< CALLEE: {f}\n", .{self.DEBUGNODE(scope, callee_node)});
     const function_type_entry = self.getTypeEntry(callee_type).function;
     const arg_types = self.function_type_elems.items[function_type_entry.id .. function_type_entry.id + function_type_entry.parameter_count];
@@ -552,6 +550,7 @@ fn foldFunctionPermutationParameter(self: *Parser, scope: Scope, node: Node, cal
     const param = &self.getNodeEntry(scope, node).function_permutation_parameter;
 
     const type_node = node + 1;
+    try self.foldNode(scope, type_node, .force);
     const type_node_entry = self.getNodeEntry(scope, type_node).*;
 
     if (type_node_entry == .@"anytype") {
@@ -586,10 +585,6 @@ fn foldBuiltinCall(self: *Parser, scope: Scope, builtin: Builtin, first_arg_node
     switch (builtin) {
         .TypeOf => {
             const @"type" = try self.typeOf(scope, first_arg_node);
-            std.debug.print("===| TYPE OF {f} = {f}\n", .{
-                self.DEBUGNODE(scope, first_arg_node),
-                DebugType{ .self = self, .type = @"type" },
-            });
             if (mode == .declaration and @"type" == .@"anytype")
                 return;
             self.replaceNode(scope, node, node_consumption, .{ .value = .{
@@ -658,9 +653,10 @@ fn foldFunctionTypeDeclaration(
     var type_node = node + 1;
     for (0..parameter_count + 1) |_| {
         try self.foldNode(scope, type_node, mode);
-        _ = try self.asType(scope, type_node);
+        if (mode == .force) _ = try self.asType(scope, type_node);
         type_node += self.nodeConsumption(scope, type_node);
     }
+    if (mode != .force) return;
 
     const fte = self.function_type_elems.items;
 
@@ -710,14 +706,13 @@ fn foldFunctionDeclaration(
 
         try self.foldNode(scope, parameter_type_node, .{ .declaration = node });
 
-        if (try self.asTypeInsideFunctionDecl(scope, parameter_type_node) == .@"anytype")
+        if (try self.asTypeLoose(scope, parameter_type_node) == .@"anytype")
             is_consistent = false;
     }
     const rtype_node = parameter_type_node - 1;
     try self.foldNode(scope, rtype_node, .{ .declaration = node });
-    std.debug.print("==RTYPE NODE== {f}\n", .{self.DEBUGNODE(scope, rtype_node)});
 
-    const rtype = try self.asTypeInsideFunctionDecl(scope, rtype_node);
+    const rtype = try self.asTypeLoose(scope, rtype_node);
     if (rtype == .@"anytype") is_consistent = false;
 
     if (parameter_count > 0)
@@ -727,7 +722,7 @@ fn foldFunctionDeclaration(
     if (is_consistent)
         try self.foldScope(function_entry.scope);
 }
-fn asTypeInsideFunctionDecl(self: *Parser, scope: Scope, node: Node) Error!Type {
+fn asTypeLoose(self: *Parser, scope: Scope, node: Node) Error!Type {
     return self.asTypeOpt(scope, node) orelse
         switch (try self.typeOf(scope, node)) {
             .type, .@"anytype" => .@"anytype",
@@ -1266,7 +1261,7 @@ pub fn typeOf(self: *Parser, scope: Scope, node: Node) Error!Type {
         // .function_permutation => .function,
         .function_permutation => .type,
         .function_parameter_reference => |fn_param_ref| //
-        try self.asType(
+        try self.asTypeLoose(
             fn_param_ref.scope,
             fn_param_ref.node + 2 + self.nodeSequenceConsumption(
                 fn_param_ref.scope,
