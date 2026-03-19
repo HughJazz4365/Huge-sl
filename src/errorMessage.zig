@@ -1,6 +1,7 @@
 //TODO: wrong line/char calculations
 const std = @import("std");
 const root = @import("root.zig");
+const debug = @import("debug.zig");
 const Tokenizer = @import("Tokenizer.zig");
 const Parser = @import("Parser.zig");
 pub const TokenizerErrorInfo = struct {
@@ -138,14 +139,14 @@ pub fn printErrorMessageParser(parser: *Parser, writer: *std.Io.Writer) Error!vo
         .unexpected_type_tag => |ut| {
             try writer.print("expected {s}, got '{f}'\n", .{
                 @tagName(ut.expected),
-                Parser.DebugType{ .self = parser, .type = ut.got },
+                debug.DebugType{ .self = parser, .type = ut.got },
             });
             try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
         },
         .cant_implicitly_cast => |cic| {
             try writer.print("can`t implicitly cast '{f}' to '{f}':\n", .{
-                Parser.DebugType{ .self = parser, .type = cic.from },
-                Parser.DebugType{ .self = parser, .type = cic.to },
+                debug.DebugType{ .self = parser, .type = cic.from },
+                debug.DebugType{ .self = parser, .type = cic.to },
             });
             try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
         },
@@ -179,7 +180,7 @@ pub fn printErrorMessageParser(parser: *Parser, writer: *std.Io.Writer) Error!vo
         .qualifier_incompatible_with_type => |q| {
             try writer.print("{s} variables cant have type '{f}'\n", .{
                 @tagName(q.qualifier),
-                Parser.DebugType{ .self = parser, .type = q.type },
+                debug.DebugType{ .self = parser, .type = q.type },
             });
             try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
         },

@@ -495,23 +495,6 @@ pub fn bindingPower(op: BinaryOperator) u8 {
     };
 }
 
-pub const DebugToken = struct {
-    self: Tokenizer,
-    token: Token,
-    pub fn format(entry: DebugToken, writer: *std.Io.Writer) !void {
-        const token_kind = entry.self.kind(entry.token);
-        try writer.print("'{s}'", .{@tagName(token_kind)});
-        switch (token_kind) {
-            .identifier,
-            .int_literal,
-            .float_literal,
-            .type_literal,
-            => try writer.print(" : \"{s}\"", .{entry.self.slice(entry.token)}),
-            else => {},
-        }
-    }
-};
-
 pub fn errorOut(self: *Tokenizer, error_info: ErrorInfo) Error {
     self.error_info = error_info;
     return Error.CompilationError;

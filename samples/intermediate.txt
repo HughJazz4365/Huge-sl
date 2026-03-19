@@ -1,40 +1,4 @@
-
-how variable reference querry
-inside of function_declaration/permutation_header
-can reach target
-.{.declaration = node} chain breaks 
-FoldMode declaration might be useless 
-
-while function_permutation_header parameters
-can be accessed with just a scope
-
-for regular function declaration cant be
-fn(T: type, a : fn(T) T) T
-//return type can become a reference, but can type of a?
-//it might be because fold_mode can be propogated
-until there is new function declaration
-but a new function declaration shouldnt even be able to
-access parameters of the outer one
-//????
-we just need to make sure that mode is
-being fully propogated(through type_of, as_type???)
-					  (should those fold??)
-
-
-FUNCTION TRANSFORMATIONS:{
-	1. runtime_arg_&_rtype => no transformations
-	2. comptime_args_&_runtime_rtype => function_variants
-	3. comptime rtype(has_sideeffects) => {
-		function variant that returns 'void'
-		insert function_variant call before the statement with the original call
-		compute return value and insert instead of the original function call
-	}
-	4. pure => compute result if all args are comptime
-}
-
 1. proper function handling in parser:
-	'generic' function variants
-	function class detection(pure/non pure, etc)
 	full/partial comptime evaluation
 
 2. in IR work on functions instead of entry points:

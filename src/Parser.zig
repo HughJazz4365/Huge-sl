@@ -1,7 +1,5 @@
-//mode: FoldMode as argument in typeOf()????
-//actually check types of passed arguments
-//can only reference previousely defined arguments but not the next ones
-//TODO:
+//split logic into multiple files(atleast debug things)
+
 //for continued parameter types eg( fn(x) f32 )
 //types should just be inserted with shifting
 
@@ -11,9 +9,12 @@
 
 //NodeEntry.folded_functieon_declaration
 
-//custom POInter alignment
+//custom device POInter alignment
 
-//BIG TODO: functions, control flow, imports
+//TODO: function evaluation
+// function side effect detection
+
+//TODO: control flow, imports
 //TODO: proper int/float literal parsing
 
 //TODO: if arg_count=0 function_type.id could just be Type
@@ -27,6 +28,7 @@
 
 const std = @import("std");
 const util = @import("util.zig");
+const debug = @import("debug.zig");
 const zigbuiltin = @import("builtin");
 const Parser = @This();
 const Tokenizer = @import("Tokenizer.zig");
@@ -69,6 +71,10 @@ global_push_constant_count: usize = 0,
 
 push_constants: List(PushConstantInfo) = .empty,
 
+pub fn DEBUGNODE(self: *Parser, scope: Scope, node: Node) debug.DebugNodeU {
+    return .{ .self = self, .scope = scope, .node = node };
+}
+
 pub fn dump(self: *Parser) void {
     // std.debug.print("push constant infos({d}, global: {d}):\n", .{
     //     self.push_constants.items.len,
@@ -91,7 +97,7 @@ pub fn dump(self: *Parser) void {
     // std.debug.print("function type elem:\n", .{});
     // for (self.function_type_elems.items) |t| std.debug.print("--- {}\n", .{t});
     // std.debug.print("types:\n", .{});
-    // for (self.types.items) |t| std.debug.print("--- {any}\n", .{t});
+    // for (0..self.types.items.len) |i| std.debug.print("--- ({d}){f}\n", .{ i, DebugType{ .self = self, .type = @enumFromInt(i) } });
     // std.debug.print("structs:\n", .{});
     // for (self.structs.items) |t| std.debug.print("--- {any}\n", .{t});
 
@@ -107,14 +113,14 @@ pub fn dump(self: *Parser) void {
         };
 }
 
-fn dumpScope(self: *Parser, scope: Scope, nodes: bool, formatted: bool) void {
+pub fn dumpScope(self: *Parser, scope: Scope, nodes: bool, formatted: bool) void {
     const body = self.getScopeEntry(scope).body.items;
     if (nodes)
         for (body, 0..) |node, i| std.debug.print("\t{d}: {any}\n", .{ i, node });
     if (formatted) {
         var node: Node = 0;
         while (node < body.len) {
-            std.debug.print("\t{f}\n", .{DebugNode{
+            std.debug.print("\t{f}\n", .{debug.DebugNode{
                 .self = self,
                 .scope = scope,
                 .node = &node,
@@ -254,6 +260,8 @@ fn foldScope(self: *Parser, scope: Scope) Error!void {
 }
 
 fn foldBlockScope(self: *Parser, scope: Scope, node: Node) Error!void {
+    if (self.getScopeEntry(scope).body.items.len <= node) return;
+
     //fold in reverse order
     const consumption = self.nodeConsumption(scope, node);
     const next_node = node + consumption;
@@ -364,21 +372,18 @@ fn foldNode(self: *Parser, scope: Scope, node: Node, mode: FoldMode) Error!void 
 fn foldVariableReference(self: *Parser, scope: Scope, var_ref: VariableReference, node: Node) Error!void {
     const ref_entry = self.getNodeEntry(var_ref.scope, var_ref.node).*;
     switch (ref_entry) {
-        .function_permutation_parameter => {
+        .function_permutation_header, .function_declaration => {
             if (self.getScopeEntry(scope).container != .function_permutation)
-                unreachable; //or just return//or unable to resolve comptime value
-
+                unreachable; //or return!
             const call_scope = self.getNodeEntry(scope, 0).function_permutation_header.call_scope;
-            const index = var_ref.value;
 
-            const param_node: Node =
-                1 + self.nodeSequenceConsumption(scope, 1, index);
+            const param_node = 1 + self.nodeSequenceConsumption(scope, 1, var_ref.value);
             const param = self.getNodeEntry(scope, param_node).function_permutation_parameter;
 
-            try self.foldFunctionPermutationParameter(scope, param_node, call_scope);
-
-            const value = (self.getValue(call_scope, param.argument_node) catch unreachable).?;
-            self.getNodeEntry(scope, node).* = .{ .value = value };
+            if (param.qualifier == .@"comptime") {
+                const value = (self.getValue(call_scope, param.argument_node) catch unreachable).?;
+                self.getNodeEntry(scope, node).* = .{ .value = value };
+            }
         },
         else => {},
     }
@@ -395,7 +400,6 @@ fn foldCall(self: *Parser, scope: Scope, fn_call: Call, node: Node, mode: FoldMo
             .payload = .{ .unexpected_type_tag = .{ .got = callee_type, .expected = .function } },
         });
 
-    std.debug.print("FOLD FNCALL< CALLEE: {f}\n", .{self.DEBUGNODE(scope, callee_node)});
     const function_type_entry = self.getTypeEntry(callee_type).function;
     const arg_types = self.function_type_elems.items[function_type_entry.id .. function_type_entry.id + function_type_entry.parameter_count];
 
@@ -412,7 +416,6 @@ fn foldCall(self: *Parser, scope: Scope, fn_call: Call, node: Node, mode: FoldMo
         });
 
     for (0..fn_call.argument_count) |_| {
-        // std.debug.print("FOLD ARG NODE< NODE: {f}\n", .{DebugNodeU{ .self = self, .node = arg_node }});
         try self.foldNode(scope, arg_node, mode);
         // try self.implicitCast(scope, arg_node, arg_types[i]);
         arg_node += self.nodeConsumption(scope, arg_node);
@@ -520,7 +523,6 @@ fn generateFunctionPermutation(
             .name = function_parameter.name,
             .argument_node = arg_node,
         } };
-        // std.debug.print("PARAM NODE ENTRY: {any}\n", .{node_entry.*});
     }
     node = 1;
     for (0..function_entry.parameter_count) |i| {
@@ -537,7 +539,7 @@ fn generateFunctionPermutation(
             .index = @truncate(i),
         });
     }
-    //fold return type
+
     try self.foldNode(perm_scope, node, .{ .declaration = 0 });
     const rtype = try self.asType(perm_scope, node);
 
@@ -546,7 +548,7 @@ fn generateFunctionPermutation(
     function_permutation_entry.rtype = rtype;
     function_permutation_entry.comptime_arguments = try comptime_args.toOwnedSlice(self.allocator);
     function_permutation_entry.parameters = try parameters.toOwnedSlice(self.allocator);
-    std.debug.print("RTYPE: {f}\n", .{DebugType{ .self = self, .type = rtype }});
+    std.debug.print("RTYPE: {f}\n", .{debug.DebugType{ .self = self, .type = rtype }});
     std.debug.print("comptime_args: {any}\n", .{
         function_permutation_entry.comptime_arguments,
     });
@@ -579,6 +581,7 @@ fn foldFunctionPermutationParameter(self: *Parser, scope: Scope, node: Node, cal
 
     const param_type = try self.asType(scope, type_node);
     //mark parameter as 'comptime' if type is comptime only
+    std.debug.print("PARAM TYPE: {f}\n", .{debug.DebugType{ .type = param_type, .self = self }});
     if (self.getTypeEntry(param_type).isComptime())
         param.qualifier = .@"comptime";
 
@@ -633,7 +636,7 @@ fn foldAssignment(self: *Parser, scope: Scope, node: Node, token: Token) Error!v
     const value_node = target_node + self.nodeConsumption(scope, target_node);
     try self.foldNode(scope, value_node, .value);
     const target_type = try self.typeOf(scope, target_node);
-    try self.implicitCast(scope, value_node, target_type);
+    try self.implicitlyCast(scope, value_node, target_type);
 }
 
 fn foldReturn(self: *Parser, scope: Scope, node: Node, token: Token) Error!void {
@@ -646,7 +649,7 @@ fn foldReturn(self: *Parser, scope: Scope, node: Node, token: Token) Error!void 
                 .token = token,
                 .payload = .{ .missing_return_value = rt[1] },
             });
-    } else try self.implicitCast(scope, node + 1, rt[0]);
+    } else try self.implicitlyCast(scope, node + 1, rt[0]);
 }
 fn foldFunctionTypeDeclaration(
     self: *Parser,
@@ -659,10 +662,10 @@ fn foldFunctionTypeDeclaration(
     var type_node = node + 1;
     for (0..parameter_count + 1) |_| {
         try self.foldNode(scope, type_node, mode);
-        if (mode == .force) _ = try self.asType(scope, type_node);
+        _ = try self.asTypeLoose(scope, type_node);
         type_node += self.nodeConsumption(scope, type_node);
     }
-    if (mode != .force) return;
+    // if (mode != .force) return;
 
     const fte = self.function_type_elems.items;
 
@@ -675,7 +678,7 @@ fn foldFunctionTypeDeclaration(
 
                 const parameter_type = self.asTypeOpt(scope, parameter_type_node).?;
                 if (parameter_type != fte[i + j]) break;
-            } else if (self.asTypeOpt(scope, parameter_type_node).? == fte[i + parameter_count])
+            } else if (self.asTypeOpt(scope, parameter_type_node) orelse return == fte[i + parameter_count])
                 break :blk .{ .id = @truncate(i), .parameter_count = parameter_count };
             //check rtype
         }
@@ -684,7 +687,7 @@ fn foldFunctionTypeDeclaration(
         try self.function_type_elems.ensureUnusedCapacity(self.allocator, parameter_count + 1);
         const function_type_id: u32 = @truncate(self.function_type_elems.items.len);
         for (0..parameter_count + 1) |_| {
-            self.function_type_elems.appendAssumeCapacity(try self.asType(scope, type_node));
+            self.function_type_elems.appendAssumeCapacity(self.asTypeOpt(scope, type_node) orelse return);
             type_node += self.nodeConsumption(scope, type_node);
         }
         break :blk .{ .id = function_type_id, .parameter_count = parameter_count };
@@ -999,7 +1002,7 @@ fn foldVariableDeclaration(self: *Parser, scope: Scope, var_decl: VariableDeclar
     //if type is <null> inferr type from initializer
     //else implicitly cast initializer to variable type
     if (type_node_entry != .null) {
-        try self.implicitCast(scope, initializer_node, try self.asType(scope, type_node));
+        try self.implicitlyCast(scope, initializer_node, try self.asType(scope, type_node));
     } else {
         self.getNodeEntry(scope, type_node).* = .{ .value = .{
             .type = .type,
@@ -1019,7 +1022,6 @@ fn foldVariableDeclaration(self: *Parser, scope: Scope, var_decl: VariableDeclar
 }
 
 fn foldUOp(self: *Parser, scope: Scope, u_op: UOpNode, node: Node, mode: FoldMode) Error!void {
-    // std.debug.print("FOLD UOP: {}\n", .{u_op.op});
     const target = node + 1;
     try self.foldNode(scope, target, mode);
     const target_consumption = self.nodeConsumption(scope, target);
@@ -1098,13 +1100,12 @@ fn foldFunctionParameterReference(
     token: Token,
 ) Error!bool { //found: bool
     const name = self.tokenizer.slice(token);
-    const decl_entry = self.getNodeEntry(scope, node).*;
+    const decl_entry = self.getNodeEntry(scope, decl_node).*;
     switch (decl_entry) {
         .function_declaration, .function_permutation_header => {
-            std.debug.print("foldFunctionParameterReference: {d}\n", .{node});
             var param_node = decl_node + 1;
             var index: u32 = 0;
-            while (decl_node < node) {
+            while (param_node < node) {
                 defer param_node += self.nodeConsumption(scope, param_node);
                 defer index += 1;
 
@@ -1113,7 +1114,6 @@ fn foldFunctionParameterReference(
                 else
                     self.getNodeEntry(scope, param_node).function_permutation_parameter.name;
 
-                std.debug.print("PARAM NAME : {s}\n", .{self.tokenizer.slice(param_name)});
                 if (util.strEql(name, self.tokenizer.slice(param_name))) {
                     const var_ref: VariableReference = .{
                         .scope = scope,
@@ -1172,13 +1172,13 @@ fn doesStatementContainVariableReference(self: *Parser, scope: Scope, node: Node
         else => false,
     };
 }
-fn implicitCast(self: *Parser, scope: Scope, node: Node, @"type": Type) Error!void {
+fn implicitlyCast(self: *Parser, scope: Scope, node: Node, @"type": Type) Error!void {
     // std.debug.print("FROMNODE: {f}\n", .{self.DEBUGNODE(scope, node)});
     const from = try self.typeOf(scope, node);
-    std.debug.print("FROM: {f}, to: {f}\n", .{
-        DebugType{ .self = self, .type = from },
-        DebugType{ .self = self, .type = @"type" },
-    });
+    // std.debug.print("FROM: {f}, to: {f}\n", .{
+    //     DebugType{ .self = self, .type = from },
+    //     DebugType{ .self = self, .type = @"type" },
+    // });
     if (from == @"type") return;
     if (!self.isTypeImplicitlyCastable(from, @"type")) {
         return self.errorOut(.{
@@ -1190,8 +1190,7 @@ fn implicitCast(self: *Parser, scope: Scope, node: Node, @"type": Type) Error!vo
         });
     }
 
-    const entry = self.getNodeEntry(scope, node);
-    switch (entry.*) {
+    switch (self.getNodeEntry(scope, node).*) {
         .constructor => |elem_count| {
             _ = elem_count;
             const type_node = node + 1;
@@ -1207,12 +1206,13 @@ fn implicitCast(self: *Parser, scope: Scope, node: Node, @"type": Type) Error!vo
             } };
             if (changed) try self.foldNode(scope, node, .value);
         },
+        .value => |value| self.getNodeEntry(scope, node).* =
+            .{ .value = try self.castValue(@"type", value) },
         // inline else => |_, tag| @panic("implicit cast ts: " ++ @tagName(tag)),
         else => {},
         // constructor: u32, //[count][type][elems..]
 
     }
-    _ = .{ self, node, @"type" };
 }
 fn isTypeExplicitlyCastable(self: *Parser, from: Type, to: Type) bool {
     if (from == to or from == .@"anytype") return true;
@@ -1296,7 +1296,7 @@ pub fn typeOf(self: *Parser, scope: Scope, node: Node) Error!Type {
             u_op.op,
             try self.typeOf(scope, node + 1),
         ),
-        .variable_reference => |var_ref| try self.typeOfVariableReference(var_ref),
+        .variable_reference => |var_ref| try self.typeOfVariableReference(scope, var_ref),
 
         //return type of target for now
         .indexing => blk: {
@@ -1324,7 +1324,6 @@ pub fn typeOf(self: *Parser, scope: Scope, node: Node) Error!Type {
     };
 }
 fn typeOfCall(self: *Parser, scope: Scope, node: Node) Error!Type {
-    std.debug.print("FUNCTIONCALL: {f}\n", .{self.DEBUGNODE(scope, node)});
     const function_node = node + 1;
     return switch (self.getNodeEntry(scope, function_node).*) {
         .function_permutation => |perm| self.getFunctionPermutationEntry(perm).rtype,
@@ -1357,14 +1356,18 @@ fn typeOfBuiltin(self: *Parser, builtin: Builtin) Error!Type {
     };
 }
 
-pub fn typeOfVariableReference(self: *Parser, var_ref: VariableReference) Error!Type {
+pub fn typeOfVariableReference(self: *Parser, scope: Scope, var_ref: VariableReference) Error!Type {
     const decl_entry = self.getNodeEntry(var_ref.scope, var_ref.node).*;
     return switch (decl_entry) {
         .variable_declaration, .folded_variable_declaration => //
         try self.asType(var_ref.scope, var_ref.node + 1 + self.nodeConsumption(var_ref.scope, var_ref.node + 1)),
-        .function_declaration, .function_permutation_header => //
-        try self.asTypeLoose(var_ref.scope, var_ref.node + 2 +
-            self.nodeSequenceConsumption(var_ref.scope, var_ref.node + 1, var_ref.value)),
+        .function_declaration, .function_permutation_header => blk: { //
+            if (self.getScopeEntry(scope).container != .function_permutation)
+                break :blk .@"anytype";
+            const type_node = 2 + self.nodeSequenceConsumption(scope, 1, var_ref.value);
+            break :blk self.asType(scope, type_node) catch unreachable;
+            // break :blk try self.asType(scope, type_node);
+        },
         else => unreachable,
     };
 }
@@ -2038,7 +2041,7 @@ fn tokenPastEndl(self: *Parser) Token {
     return self.token + @intFromBool(self.tokenizer.kind(self.token) == .endl);
 }
 
-fn getNumberValue(self: *Parser, id: u32) u128 {
+pub fn getNumberValue(self: *Parser, id: u32) u128 {
     return self.number_values.items[id];
 }
 
@@ -2121,7 +2124,7 @@ fn addVectorValue(self: *Parser, V: type, value: V) Error!u32 {
     return @truncate(list.items.len - 1);
 }
 
-fn getVectorList(self: *Parser, comptime width: comptime_int) *List(@Vector(4, @Int(.unsigned, width))) {
+pub fn getVectorList(self: *Parser, comptime width: comptime_int) *List(@Vector(4, @Int(.unsigned, width))) {
     return switch (width) {
         8 => &self.x8_vectors,
         16 => &self.x16_vectors,
@@ -2593,244 +2596,6 @@ pub fn errorOut(self: *Parser, error_info: ErrorInfo) Error {
     return Error.CompilationError;
 }
 
-//debug structs for formatting
-
-pub const DebugType = struct {
-    self: *Parser,
-    type: Type,
-    pub fn format(entry: DebugType, writer: *std.Io.Writer) !void {
-        if (entry.type == .@"anytype")
-            return try writer.writeAll("anytype");
-
-        const te = entry.self.getTypeEntry(entry.type);
-        switch (te) {
-            .function => |ftype| {
-                try writer.print("fn(", .{});
-                for (0..ftype.parameter_count) |i| try writer.print("{f}{s}", .{
-                    DebugType{
-                        .self = entry.self,
-                        .type = entry.self.function_type_elems.items[ftype.id + i],
-                    },
-                    if (i + 1 == ftype.parameter_count) "" else ", ",
-                });
-                try writer.print(") {f}", .{DebugType{
-                    .self = entry.self,
-                    .type = entry.self.function_type_elems.items[ftype.id + ftype.parameter_count],
-                }});
-            },
-            .pointer => |pointed| try writer.print("*{f}", .{DebugType{ .self = entry.self, .type = pointed }}),
-            else => try TypeEntry.format(te, writer),
-        }
-    }
-};
-const DebugValue = struct {
-    self: *Parser,
-    value: Value,
-    pub fn format(entry: DebugValue, writer: *std.Io.Writer) !void {
-        const type_entry = entry.self.getTypeEntry(entry.value.type);
-        switch (type_entry) {
-            .compint => try writer.print("{d}", .{
-                util.extract(i128, entry.self.getNumberValue(entry.value.payload)),
-            }),
-            .bool => try writer.print("{}", .{util.extract(bool, entry.self.getNumberValue(entry.value.payload))}),
-            .type => try writer.print("{f}", .{DebugType{
-                .self = entry.self,
-                .type = @enumFromInt(entry.value.payload),
-            }}),
-            .scalar => |scalar| switch (scalar.layout) {
-                inline else => |sl| switch (scalar.width) {
-                    inline else => |sw| {
-                        const T = (TypeEntry.Scalar{ .layout = sl, .width = sw }).ToZig();
-                        try writer.print("{s}[{}]", .{
-                            @typeName(T),
-                            util.extract(T, entry.self.getNumberValue(entry.value.payload)),
-                        });
-                    },
-                },
-            },
-            .function => {
-                const function_entry = entry.self.getFunctionEntry(@enumFromInt(entry.value.payload));
-                _ = function_entry;
-                try writer.print("FN'{d}'", .{entry.value.payload});
-            },
-            .vector => |vector| switch (vector.len) {
-                inline else => |len| switch (vector.scalar.layout) {
-                    inline else => |sl| switch (vector.scalar.width) {
-                        inline else => |sw| {
-                            const uvec = entry.self.getVectorList(sw.value()).items[entry.value.payload];
-
-                            const T = (TypeEntry.Scalar{ .layout = sl, .width = sw }).ToZig();
-                            try writer.print("{s}x{}[", .{ @typeName(T), vector.len.value() });
-                            inline for (0..comptime len.value()) |i| {
-                                try writer.print("{d}", .{util.extract(T, uvec[i])});
-                                try writer.writeAll(if (i + 1 >= len.value()) "]" else ", ");
-                            }
-                        },
-                    },
-                },
-            },
-            else => {},
-        }
-    }
-};
-pub fn DEBUGNODE(self: *Parser, scope: Scope, node: Node) DebugNodeU {
-    return .{ .self = self, .scope = scope, .node = node };
-}
-const DebugNodeU = struct {
-    self: *Parser,
-    scope: Scope,
-    node: Node,
-
-    pub fn format(entry: DebugNodeU, writer: *std.Io.Writer) !void {
-        var node = entry.node;
-        try (DebugNode{ .self = entry.self, .scope = entry.scope, .node = &node }).format(writer);
-    }
-};
-const DebugNode = struct {
-    self: *Parser,
-    scope: Scope,
-    node: *Node,
-    pub fn format(entry: DebugNode, writer: *std.Io.Writer) !void {
-        const scope = entry.scope;
-        const body = entry.self.getScopeEntry(scope).body.items;
-        switch (body[entry.node.*]) {
-            .@"return" => {
-                entry.node.* += 1;
-                try writer.print("return {f}", .{entry});
-            },
-            .constructor => |constructor| {
-                entry.node.* += 1;
-                try writer.print("{f}{{", .{entry});
-
-                for (0..constructor.elem_count) |i|
-                    try writer.print("{f}{s}", .{ entry, if (i + 1 == constructor.elem_count) "" else ", " });
-                try writer.print("}}", .{});
-            },
-            .indexing => {
-                entry.node.* += 1;
-                try writer.print("{f}[{f}]", .{ entry, entry });
-            },
-            .call => |function_call| {
-                entry.node.* += 1;
-                try writer.print("{f}(", .{entry});
-                for (0..function_call.argument_count) |i|
-                    try writer.print("{f}{s}", .{ entry, if (i + 1 == function_call.argument_count) "" else ", " });
-                try writer.print(")", .{});
-            },
-            .function_permutation => {
-                entry.node.* += 1;
-                try writer.writeAll("FNPERM");
-            },
-            .function_type_declaration => |fn_type_decl| {
-                entry.node.* += 1;
-                try writer.print("fn(", .{});
-
-                for (0..fn_type_decl.parameter_count) |i|
-                    try writer.print("{f}{s}", .{ entry, if (i + 1 == fn_type_decl.parameter_count) "" else ", " });
-                try writer.print(") {f}", .{entry});
-            },
-            .function_declaration => |fn_decl| {
-                entry.node.* += 1;
-                const parameter_count = entry.self.getFunctionEntry(fn_decl.function).parameter_count;
-                try writer.print("fn (", .{});
-
-                for (0..parameter_count) |i|
-                    try writer.print("{f}{s}", .{ entry, if (i + 1 == parameter_count) "" else ", " });
-                try writer.print(") {f}{{\n", .{entry});
-
-                const body_scope = entry.self.getFunctionEntry(fn_decl.function).scope;
-
-                entry.self.dumpScope(body_scope, false, true);
-            },
-            .function_parameter => |fn_param| {
-                entry.node.* += 1;
-                try writer.print("{s}{s}: {f}", .{
-                    if (fn_param.qualifier == .none) "" else switch (fn_param.qualifier) {
-                        inline else => |tag| @tagName(tag) ++ " ",
-                    },
-                    entry.self.tokenizer.slice(fn_param.name),
-                    entry,
-                });
-            },
-            .assignment => {
-                entry.node.* += 1;
-                try writer.print("{f} = {f}", .{ entry, entry });
-            },
-            .variable_declaration, .folded_variable_declaration => |var_decl| {
-                if (body[entry.node.*] == .folded_variable_declaration) try writer.writeByte('*');
-                entry.node.* += 1;
-                try writer.print("{s}", .{@tagName(var_decl.qualifier)});
-                if (var_decl.qualifier == .compute) {
-                    try writer.print("({f})", .{entry});
-                } else entry.node.* += 1;
-                try writer.print(" {s}: {f} = {f}", .{
-                    entry.self.tokenizer.slice(var_decl.name),
-                    entry,
-                    entry,
-                });
-            },
-            .bin_op => |bin_op| {
-                entry.node.* += 1;
-                try writer.print("({f} <{s}> {f})", .{
-                    entry,
-                    @tagName(bin_op.op),
-                    entry,
-                });
-            },
-            .u_op => |u_op| {
-                entry.node.* += 1;
-                try writer.print("<{s}>{f}", .{ @tagName(u_op.op), entry });
-            },
-            .value => |value| {
-                try writer.print("{f}", .{DebugValue{ .self = entry.self, .value = value }});
-                entry.node.* += 1;
-            },
-            .identifier => |identifier| {
-                try writer.print("\"{s}", .{entry.self.tokenizer.slice(identifier)});
-                entry.node.* += 1;
-            },
-            .builtin => |builtin_node| {
-                try writer.print("@{s}", .{@tagName(builtin_node.builtin)});
-                entry.node.* += 1;
-            },
-            .variable_reference => |var_ref| {
-                defer entry.node.* += 1;
-                switch (entry.self.getNodeEntry(var_ref.scope, var_ref.node).*) {
-                    inline .function_declaration, .function_permutation_header => {
-                        const param_node = var_ref.node + 1 + entry.self.nodeSequenceConsumption(
-                            var_ref.scope,
-                            var_ref.node + 1,
-                            var_ref.value,
-                        );
-                        const name = switch (entry.self.getNodeEntry(var_ref.scope, param_node).*) {
-                            inline .function_parameter, .function_permutation_parameter => |p| p.name,
-                            else => unreachable,
-                        };
-                        try writer.print("fp'{s}", .{entry.self.tokenizer.slice(name)});
-                    },
-                    inline .folded_variable_declaration, .variable_declaration => |vd| try writer.print("'{s}", .{entry.self.tokenizer.slice(vd.name)}),
-                    else => unreachable,
-                }
-            },
-            .null => {
-                entry.node.* += 1;
-                try writer.print("<null>", .{});
-            },
-            .@"anytype" => {
-                entry.node.* += 1;
-                try writer.print("anytype", .{});
-            },
-
-            else => {
-                entry.node.* += 1;
-                if (entry.node.* < body.len)
-                    try writer.print("{f}", .{entry});
-            },
-        }
-    }
-};
-
-pub const DebugToken = Tokenizer.DebugToken;
 const ErrorInfo = error_message.ParserErrorInfo;
 const Error = hgsl.Error;
 const List = std.ArrayList;

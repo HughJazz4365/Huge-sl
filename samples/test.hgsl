@@ -1,24 +1,16 @@
-//const FUNC = fn(T: type, comptime t: T, A : fn(t:T) type{...}(t)) A{...}
-//const double = fn(T: type, x: T, z: fn(pep: type) type{return compint}()) @TypeOf(x) {
-
 push vertex_buffer: *f32x3
-
-	const fn_type = fn(compint) compint
-//const double = fn(T: type, x: @TypeOf(z), z: T) @TypeOf(z) {
-const double = fn(T: type, a: T) T {
-	return x * 2
-}
-
 
 vertex vert = fn void{
 	@position = .{vertex_buffer[@vertex_id], 1} 
 }
 
+const double = fn(x : anytype) @TypeOf(x){
+	return x * 2
+}
+
 fragment frag = fn f32x4 {
-	const scalar = 9
-	const fef = fn(x: compint) compint{}
-	const ds = double(compint, scalar)
-	const color: f32x3 = .{ds}
-	return .{color, 1}
+	const scalar : f32 = 9
+	const ds = double(scalar)
+	return .{f32x3{ds}, 1}
 }
 
