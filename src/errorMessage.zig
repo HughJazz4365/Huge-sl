@@ -120,7 +120,7 @@ const NonMatchingConstructorElementCount = struct {
     got_count: u32,
 };
 const Redeclaration = struct {
-    statement: Token,
+    original_declaration: Token,
     name: Token,
 };
 const QualifierIncompatibleWithType = struct {
@@ -164,7 +164,7 @@ pub fn printErrorMessageParser(parser: *Parser, writer: *std.Io.Writer) Error!vo
             try writer.print("redeclaration of '{s}':\n", .{parser.tokenizer.slice(redeclaration.name)});
             try loc.printLineToken(.pointer_underline, parser.tokenizer, writer);
 
-            const other_loc: TokenSourceLocation = .get(parser.tokenizer, redeclaration.statement);
+            const other_loc: TokenSourceLocation = .get(parser.tokenizer, redeclaration.original_declaration);
             try other_loc.printWithPath(parser.tokenizer, writer);
 
             try writer.print(" originally declared:\n", .{});
