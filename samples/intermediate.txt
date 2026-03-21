@@ -1,3 +1,7 @@
+
+get variable reference should give out reference to comptime perm args
+
+
 1. proper function handling in parser:
 	full/partial comptime evaluation
 

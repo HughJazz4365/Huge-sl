@@ -206,7 +206,7 @@ pub const DebugNode = struct {
                         const param_node = var_ref.node + 1 + entry.self.nodeSequenceConsumption(
                             var_ref.scope,
                             var_ref.node + 1,
-                            var_ref.value,
+                            var_ref.data.index,
                         );
                         const name = switch (entry.self.getNodeEntry(var_ref.scope, param_node).*) {
                             inline .function_parameter, .function_permutation_parameter => |p| p.name,
@@ -214,7 +214,8 @@ pub const DebugNode = struct {
                         };
                         try writer.print("fp'{s}", .{entry.self.tokenizer.slice(name)});
                     },
-                    inline .folded_variable_declaration, .variable_declaration => |vd| try writer.print("'{s}", .{entry.self.tokenizer.slice(vd.name)}),
+                    inline .folded_variable_declaration, .variable_declaration => |vd| //
+                    try writer.print("'{s}", .{entry.self.tokenizer.slice(vd.name)}),
                     else => unreachable,
                 }
             },
@@ -255,5 +256,5 @@ pub const DebugToken = struct {
 const Type = Parser.Type;
 const Node = Parser.Node;
 const TypeEntry = Parser.TypeEntry;
-const Token = Parser.Token;
+const Token = Tokenizer.Token;
 const Scope = Parser.Scope;

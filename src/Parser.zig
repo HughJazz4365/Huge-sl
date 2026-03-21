@@ -1,6 +1,4 @@
-//repurpose VariableReference.value:
-//the node where value is located can be found from declaration node
-//should store Kind : u2, and value : u30(.parameter, index)
+//return type detection doesnt detect perm scope
 
 //for continued parameter types eg( fn(x) f32 )
 //types should just be inserted with shifting
@@ -388,7 +386,7 @@ fn foldVariableReference(self: *Parser, scope: Scope, var_ref: VariableReference
                 unreachable; //or return!
             const call_scope = self.getNodeEntry(scope, 0).function_permutation_header.call_scope;
 
-            const param_node = 1 + self.nodeSequenceConsumption(scope, 1, var_ref.value);
+            const param_node = 1 + self.nodeSequenceConsumption(scope, 1, var_ref.data.index);
             const param = self.getNodeEntry(scope, param_node).function_permutation_parameter;
 
             if (param.qualifier == .@"comptime") {
@@ -505,7 +503,7 @@ fn generateFunctionPermutation(
 
     const function_permutation = try self.addFunctionPermutation(.{ .function = function });
     const perm_scope = try self.addScope(.{
-        .parent = call_scope,
+        .parent = decl_scope,
         .container = .{ .function_permutation = function_permutation },
     });
     self.getFunctionPermutationEntry(function_permutation).scope = perm_scope;
@@ -542,7 +540,11 @@ fn generateFunctionPermutation(
 
         if (param.qualifier == .@"comptime") {
             const value = (self.getValue(call_scope, param.argument_node) catch unreachable).?;
-            try comptime_args.append(self.allocator, value);
+            try comptime_args.append(self.allocator, .{
+                .type = value.type,
+                .payload = value.payload,
+                .token = param.name,
+            });
         } else try parameters.append(self.allocator, .{
             .name = param.name,
             .type = try self.asType(perm_scope, node + 1),
@@ -637,22 +639,6 @@ fn foldIdentifier(self: *Parser, scope: Scope, node: Node, token: Token, mode: F
     if (mode == .declaration)
         if (try self.foldFunctionParameterReference(scope, node, mode.declaration, token))
             return;
-    //get scope kind specific variable references
-    const name = self.tokenizer.slice(token);
-    switch (self.getScopeEntry(scope).container) {
-        .function_permutation => |perm| {
-            const perm_entry = self.getFunctionPermutationEntry(perm).*;
-            for (perm_entry.comptime_arguments) |arg| {
-                if (util.strEql(self.tokenizer.slice(arg.token), name))
-                    self.getNodeEntry(scope, node).* = .{ .value = arg };
-            }
-            // for(
-            // scope: Scope,
-            // node: Node,
-            // value: Node = 0,
-        },
-        else => {},
-    }
     const var_ref = try self.getVariableReference(scope, node, token) orelse
         return self.errorOut(.{ .token = token, .payload = .undeclared_identifier });
 
@@ -991,35 +977,38 @@ fn getScopeReturnTypeAndDeclLocation(self: *Parser, scope: Scope, node: Node) Er
     var current = scope;
     while (true) {
         const entry = self.getScopeEntry(current).*;
-        if (entry.container.isDecl()) return self.errorOut(.{
-            .token = self.nodeToken(current, node),
-            .payload = .return_outside_function,
-        });
-        if (entry.container == .function) {
-            const decl_token = self.nodeToken(
-                entry.parent,
-                self.getFunctionEntry(entry.container.function).node,
-            );
-            return .{ try self.getFunctionDeclarationReturnType(entry.parent, entry.container.function), decl_token };
-        } else {
-            current = entry.parent;
-            continue;
+        switch (entry.container) {
+            .function => |function| {
+                const function_entry = self.getFunctionEntry(function).*;
+                const rtype_node = function_entry.node + 1 + self.nodeSequenceConsumption(
+                    entry.parent,
+                    function_entry.node + 1,
+                    function_entry.parameter_count,
+                );
+                return .{
+                    try self.asType(entry.parent, rtype_node),
+                    self.nodeToken(entry.parent, function_entry.node),
+                };
+            },
+            .function_permutation => |perm| {
+                const perm_entry = self.getFunctionPermutationEntry(perm).*;
+                const function_entry = self.getFunctionEntry(perm_entry.function).*;
+                return .{
+                    perm_entry.rtype,
+                    self.nodeToken(entry.parent, function_entry.node),
+                };
+            },
+
+            else => if (!entry.container.isDecl()) {
+                current = entry.parent;
+            } else return self.errorOut(.{
+                .token = self.nodeToken(current, node),
+                .payload = .return_outside_function,
+            }),
         }
     } else unreachable;
 }
-fn getFunctionDeclarationReturnType(self: *Parser, scope: Scope, function: Function) Error!Type {
-    const entry = self.getFunctionEntry(function).*;
-    const node = entry.node + 1 + self.nodeSequenceConsumption(scope, entry.node + 1, entry.parameter_count);
-    try self.foldNode(scope, node, .value);
 
-    const rtype_node = self.getNodeEntry(scope, node).*;
-    if (rtype_node != .value or rtype_node.value.type != .type)
-        return self.errorOut(.{
-            .token = self.nodeToken(scope, node),
-            .payload = .unable_to_resolve_comptime_value,
-        });
-    return @enumFromInt(rtype_node.value.payload);
-}
 fn foldVariableDeclaration(self: *Parser, scope: Scope, var_decl: VariableDeclaration, node: Node) Error!void {
     self.getNodeEntry(scope, node).* = .{ .folded_variable_declaration = var_decl };
 
@@ -1113,6 +1102,8 @@ fn isQualifierCompatibleWithType(self: *Parser, qualifier: Qualifier, @"type": T
 }
 
 pub fn getVariableReferenceQualifier(self: *Parser, var_ref: VariableReference) Qualifier {
+    if (var_ref.data.kind == .parameter) return .@"const";
+
     const entry = self.getNodeEntry(var_ref.scope, var_ref.node).*;
     return switch (entry) {
         .variable_declaration, .folded_variable_declaration => |vd| vd.qualifier,
@@ -1120,6 +1111,15 @@ pub fn getVariableReferenceQualifier(self: *Parser, var_ref: VariableReference) 
     };
 }
 pub fn getVariableReferenceValue(self: *Parser, var_ref: VariableReference) Error!?Value {
+    if (var_ref.data.kind == .parameter) {
+        const perm = self.getFunctionPermutationEntry(
+            self.getScopeEntry(var_ref.scope).container.function_permutation,
+        );
+        if (perm.absIndexToComp(var_ref.data.index)) |comp|
+            return perm.comptime_arguments[comp]
+        else
+            return null;
+    }
     const value_node = switch (self.getNodeEntry(var_ref.scope, var_ref.node).*) {
         .variable_declaration, .folded_variable_declaration => |vd| if (vd.qualifier == .@"const")
             var_ref.node + 1 + self.nodeSequenceConsumption(var_ref.scope, var_ref.node + 1, 2)
@@ -1138,6 +1138,31 @@ fn getVariableReference(self: *Parser, scope: Scope, node: Node, token: Token) E
         }
     }
     const scope_entry = self.getScopeEntry(scope).*;
+    switch (scope_entry.container) {
+        .function_permutation => |perm| {
+            const perm_entry = self.getFunctionPermutationEntry(perm).*;
+
+            for (perm_entry.comptime_arguments, 0..) |arg, i| {
+                if (util.strEql(self.tokenizer.slice(arg.token), name)) return .{
+                    .scope = scope,
+                    .data = .{
+                        .kind = .parameter,
+                        .index = @truncate(perm_entry.compIndexToAbs(i)),
+                    },
+                };
+            }
+            for (perm_entry.parameters, 0..) |param, i| {
+                if (util.strEql(self.tokenizer.slice(param.name), name)) return .{
+                    .scope = scope,
+                    .data = .{
+                        .kind = .parameter,
+                        .index = @truncate(perm_entry.paramIndexToAbs(i)),
+                    },
+                };
+            }
+        },
+        else => {},
+    }
 
     const cap = if (scope_entry.container.isDecl())
         self.getScopeEntry(scope).body.items.len
@@ -1192,7 +1217,9 @@ fn foldFunctionParameterReference(
                     const var_ref: VariableReference = .{
                         .scope = scope,
                         .node = decl_node,
-                        .value = index,
+                        .data = .{
+                            .index = @truncate(index),
+                        },
                     };
                     if (decl_entry == .function_permutation_header) {
                         const call_scope = decl_entry.function_permutation_header.call_scope;
@@ -1432,13 +1459,22 @@ fn typeOfBuiltin(self: *Parser, builtin: Builtin) Error!Type {
 
 pub fn typeOfVariableReference(self: *Parser, scope: Scope, var_ref: VariableReference) Error!Type {
     const decl_entry = self.getNodeEntry(var_ref.scope, var_ref.node).*;
+    if (var_ref.data.kind == .parameter) {
+        const perm = self.getFunctionPermutationEntry(
+            self.getScopeEntry(var_ref.scope).container.function_permutation,
+        );
+        return if (perm.absIndexToComp(var_ref.data.index)) |c|
+            perm.comptime_arguments[c].type
+        else
+            perm.parameters[perm.absIndexToParam(var_ref.data.index).?].type;
+    }
     return switch (decl_entry) {
         .variable_declaration, .folded_variable_declaration => //
         try self.asType(var_ref.scope, var_ref.node + 1 + self.nodeConsumption(var_ref.scope, var_ref.node + 1)),
         .function_declaration, .function_permutation_header => blk: { //
             if (self.getScopeEntry(scope).container != .function_permutation)
                 break :blk .@"anytype";
-            const type_node = 2 + self.nodeSequenceConsumption(scope, 1, var_ref.value);
+            const type_node = 2 + self.nodeSequenceConsumption(scope, 1, var_ref.data.index);
             break :blk self.asType(scope, type_node) catch unreachable;
             // break :blk try self.asType(scope, type_node);
         },
@@ -2283,33 +2319,6 @@ pub fn getFunctionEntry(self: *Parser, handle: Function) *FunctionEntry {
     return &self.functions.items[@intFromEnum(handle)];
 }
 
-//how to get a function permutation
-// fn(T: type, a: T, b: anytype) @TypeOf(b)->
-// T = f32, b = u32{2}
-// fn(a: f32, b: u32) u32{
-//    return .{a} + b
-// }
-
-//for (arguments){
-//   if(comptime) {
-//     if(!passed_arg.isComptime()) errorOut()
-//     add the value to the list
-//   }if(anytype)
-//     add @TypeOf(passed.arg) to args
-//   else(add existing type) to args
-//   THEY CAN DEPEND ON EACH OTHER
-//}
-
-//fold header in created scope then save the data into
-// function permutation entry or smth,
-// then use that created scope to copy over
-// function body, and fold the scope
-
-//FunctionPermutation.getVarRef{
-// 1. for(arguments)
-// 2. for(comptime_values)
-// 3. go through statements
-//}
 pub fn getFunctionPermutationEntry(self: *Parser, id: FunctionPermutation) *FunctionPermutationEntry {
     return &self.function_permutations.items[@intFromEnum(id)];
 }
@@ -2330,6 +2339,55 @@ pub const FunctionPermutationEntry = struct {
         type: Type,
         index: u32, //used to identify order of inteliving comptime/regular arguments
     };
+    pub fn paramCount(self: @This()) usize {
+        return self.comptime_arguments.len + self.parameters.len;
+    }
+    pub fn paramIndexToAbs(self: @This(), param_index: usize) usize {
+        for (self.parameters, 0..) |p, i|
+            if (i == param_index) return p.index;
+        unreachable;
+    }
+    pub fn absIndexToParam(self: @This(), index: usize) ?usize {
+        for (self.parameters, 0..) |p, i|
+            if (p.index == index) return i;
+        return null;
+    }
+    pub fn compIndexToAbs(self: @This(), comp_index: usize) usize {
+        const len = self.comptime_arguments.len + self.parameters.len;
+        var param_count: u32 = 0;
+        var comp_count: u32 = 0;
+        var count: u32 = 0;
+
+        return while (count < len) {
+            defer count += 1;
+            if (param_count < self.parameters.len and
+                self.parameters[param_count].index == count)
+            {
+                param_count += 1;
+            } else if (comp_count == comp_index)
+                break count
+            else
+                comp_count += 1;
+        } else unreachable;
+    }
+    pub fn absIndexToComp(self: @This(), index: usize) ?usize {
+        const len = self.comptime_arguments.len + self.parameters.len;
+        var param_count: u32 = 0;
+        var comp_count: u32 = 0;
+        var count: u32 = 0;
+
+        return while (count < len) {
+            defer count += 1;
+            if (param_count < self.parameters.len and
+                self.parameters[param_count].index == count)
+            {
+                param_count += 1;
+            } else if (count == index)
+                break comp_count
+            else
+                comp_count += 1;
+        } else return null;
+    }
 };
 
 pub const Function = enum(u32) { _ };
@@ -2391,7 +2449,6 @@ pub const NodeEntry = union(enum) {
     function_permutation_header: FunctionPermutationHeader, //call_scope
 
     //[fn_param][type / anytype / null(if the same as the next one)]
-    parameter_reference: ParameterReference,
     variable_reference: VariableReference,
     assignment: Token, //[assignment][target][value]
 
@@ -2447,15 +2504,15 @@ pub const ParameterQualifier = enum {
     linear,
     flat,
 };
-// pub const ParameterReference = struct {
-//     scope: Scope,
-//     index: u32,
-// };
-
 pub const VariableReference = struct {
     scope: Scope,
-    node: Node,
-    value: Node = 0,
+    node: Node = 0,
+    data: packed struct(u32) {
+        index: u31 = 0,
+        kind: Kind = .variable,
+    } = .{},
+
+    pub const Kind = enum(u1) { variable, parameter };
 };
 pub const VariableDeclaration = struct {
     qualifier: Qualifier,
@@ -2645,7 +2702,7 @@ fn nodeToken(self: *Parser, scope: Scope, node: Node) Token {
             var_ref.scope,
             switch (self.getNodeEntry(var_ref.scope, var_ref.node).*) {
                 .function_declaration, .function_permutation_header => //
-                var_ref.node + 1 + self.nodeSequenceConsumption(var_ref.scope, var_ref.node + 1, var_ref.value),
+                var_ref.node + 1 + self.nodeSequenceConsumption(var_ref.scope, var_ref.node + 1, var_ref.data.index),
                 else => var_ref.node,
             },
         ),

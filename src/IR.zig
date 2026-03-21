@@ -620,8 +620,8 @@ const Op = enum(u32) {
     @"return",
     return_value,
 };
-const InstructionPool = Pool(Inst, 16);
-const OperandPool = Pool(Operand, 64);
+const InstructionPool = Pool(Inst, 64);
+const OperandPool = Pool(Operand, 128);
 fn Pool(T: type, comptime block_size: comptime_int) type {
     return struct {
         blocks: List([]T) = .empty,
