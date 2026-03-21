@@ -62,9 +62,9 @@ pub fn test_() !void {
         };
         _ = settings;
 
-        // var ir = try IR.new(&parser, allocator);
-        // defer ir.deinit();
-        // try ir.lower();
+        var ir = try IR.new(&parser, allocator);
+        defer ir.deinit();
+        try ir.lower();
 
         // const result = try spirv.generate(&ir, allocator, settings);
         // _ = result;

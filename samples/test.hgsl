@@ -4,11 +4,11 @@ vertex vert = fn void{
 	@position = .{vertex_buffer[@vertex_id], 1} 
 }
 
-const double = fn(T:type,x : T) T{
-	return x * 2
-}
 
 fragment frag = fn f32x4 {
+	const double = fn(T:type,x : T) T{
+		return x * 2
+	}
 	const ds = double(f32, 9)
 	return .{f32x3{ds}, 1}
 }

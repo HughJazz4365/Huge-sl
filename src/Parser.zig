@@ -1,15 +1,11 @@
-//return type detection doesnt detect perm scope
+//TODO:  call directly on function declaration fails
 
 //for continued parameter types eg( fn(x) f32 )
 //types should just be inserted with shifting
 
-// check for possible pointer invalidation when storing entries for too long ->
-//**_entry varaibles must only be used immediately as the pointer can be invalidated
-//WE cant even check if function parameter type is of type 'type'(just dont fold if cant)
-
 //NodeEntry.folded_functieon_declaration
 
-//custom device POInter alignment
+//custom device POInter alignment(2^n)
 
 //TODO: function evaluation
 // function side effect detection
@@ -22,9 +18,7 @@
 
 //bin op assignments( a *= b, c -= 1 )
 
-//TODO: foldInsignificant
-//(to avoid 'const a = undecl_id' in the middle of the function)
-//(dont go into inner functions)
+//proper fold modes utilization
 
 const std = @import("std");
 const util = @import("util.zig");
@@ -269,7 +263,7 @@ fn foldBlockScope(self: *Parser, scope: Scope, node: Node) Error!void {
         try self.foldBlockScope(scope, next_node);
 
     if (self.isStatementSignificantBlockScope(scope, node))
-        try self.foldNode(scope, node, .value);
+        try self.foldNode(scope, node, .check);
 }
 
 fn foldDeclScope(self: *Parser, scope: Scope) Error!void {
@@ -277,7 +271,7 @@ fn foldDeclScope(self: *Parser, scope: Scope) Error!void {
     var i: Node = 0;
     while (i < body.len) {
         if (self.isStatementSignificantDeclScope(scope, i))
-            try self.foldNode(scope, i, .value);
+            try self.foldNode(scope, i, .check);
         i += self.nodeConsumption(scope, i);
     }
 }
@@ -321,9 +315,9 @@ pub fn getValuePayload(self: *Parser, scope: Scope, node: Node) u32 {
 }
 
 const FoldMode = union(enum) { //union(enum)
-    force,
-    value,
-    reference,
+    eval,
+    check,
+    reference_eval,
     declaration: Node,
 };
 fn foldNode(self: *Parser, scope: Scope, node: Node, mode: FoldMode) Error!void {
@@ -481,7 +475,7 @@ fn foldFunctionCall(
         } };
     }
 
-    if (mode == .force) {
+    if (mode == .eval) {
         @panic("evaluate function");
     }
 }
@@ -561,13 +555,6 @@ fn generateFunctionPermutation(
     function_permutation_entry.comptime_arguments = try comptime_args.toOwnedSlice(self.allocator);
     function_permutation_entry.parameters = try parameters.toOwnedSlice(self.allocator);
 
-    std.debug.print("RTYPE: {f}\n", .{debug.DebugType{ .self = self, .type = rtype }});
-    std.debug.print("comptime_args: {any}\n", .{
-        function_permutation_entry.comptime_arguments,
-    });
-    std.debug.print("parameters: {any}\n", .{
-        function_permutation_entry.parameters,
-    });
     const perm_scope_entry = self.getScopeEntry(perm_scope);
     perm_scope_entry.body.items.len = 0;
     //copy over the function body into permutation body
@@ -576,7 +563,16 @@ fn generateFunctionPermutation(
         self.getScopeEntry(function_entry.scope).body.items,
     );
     try self.foldScope(perm_scope);
-    self.dumpScope(perm_scope, true, true);
+    if (false) {
+        std.debug.print("RTYPE: {f}\n", .{debug.DebugType{ .self = self, .type = rtype }});
+        std.debug.print("comptime_args: {any}\n", .{
+            function_permutation_entry.comptime_arguments,
+        });
+        std.debug.print("parameters: {any}\n", .{
+            function_permutation_entry.parameters,
+        });
+        self.dumpScope(perm_scope, true, true);
+    }
 
     return function_permutation;
 }
@@ -650,7 +646,7 @@ fn foldIdentifier(self: *Parser, scope: Scope, node: Node, token: Token, mode: F
 
 fn foldAssignment(self: *Parser, scope: Scope, node: Node, token: Token) Error!void {
     const target_node = node + 1;
-    try self.foldNode(scope, target_node, .reference);
+    try self.foldNode(scope, target_node, .reference_eval);
     if (!self.isValidAssignmentTarget(scope, target_node))
         return self.errorOut(.{
             .token = token,
@@ -658,13 +654,13 @@ fn foldAssignment(self: *Parser, scope: Scope, node: Node, token: Token) Error!v
         });
 
     const value_node = target_node + self.nodeConsumption(scope, target_node);
-    try self.foldNode(scope, value_node, .value);
+    try self.foldNode(scope, value_node, .check);
     const target_type = try self.typeOf(scope, target_node);
     try self.implicitlyCast(scope, value_node, target_type);
 }
 
 fn foldReturn(self: *Parser, scope: Scope, node: Node, token: Token) Error!void {
-    try self.foldNode(scope, node + 1, .value);
+    try self.foldNode(scope, node + 1, .check);
     const rt = try self.getScopeReturnTypeAndDeclLocation(scope, node);
 
     if (self.getNodeEntry(scope, node + 1).* == .null) {
@@ -1031,11 +1027,11 @@ fn foldVariableDeclaration(self: *Parser, scope: Scope, var_decl: VariableDeclar
     defer self.dependency_stack.items.len -= 1; //pop
 
     const qualifier_info_node = node + 1;
-    try self.foldNode(scope, qualifier_info_node, .value);
+    try self.foldNode(scope, qualifier_info_node, .check);
 
     const qualifier_info_node_consumption = self.nodeConsumption(scope, node + 1);
     const type_node = node + 1 + qualifier_info_node_consumption;
-    try self.foldNode(scope, type_node, .value);
+    try self.foldNode(scope, type_node, .check);
 
     const type_node_entry = self.getNodeEntry(scope, type_node).*;
     if (type_node_entry != .null) {
@@ -1051,7 +1047,7 @@ fn foldVariableDeclaration(self: *Parser, scope: Scope, var_decl: VariableDeclar
 
     const type_node_consumption = self.nodeConsumption(scope, type_node);
     const initializer_node = type_node + type_node_consumption;
-    try self.foldNode(scope, initializer_node, .value);
+    try self.foldNode(scope, initializer_node, .check);
 
     //if type is <null> inferr type from initializer
     //else implicitly cast initializer to variable type
@@ -1179,7 +1175,7 @@ fn getVariableReference(self: *Parser, scope: Scope, node: Node, token: Token) E
         switch (self.getNodeEntry(scope, i).*) {
             .variable_declaration, .folded_variable_declaration => |vd| //
             if (util.strEql(name, self.tokenizer.slice(vd.name))) {
-                try self.foldNode(scope, i, .value);
+                try self.foldNode(scope, i, .check);
                 break current;
             },
             else => {},
@@ -1267,7 +1263,7 @@ fn doesStatementContainVariableReference(self: *Parser, scope: Scope, node: Node
             name,
             self.tokenizer.slice(vd.name),
         )) {
-            try self.foldNode(scope, node, .value);
+            try self.foldNode(scope, node, .check);
             return true;
         } else false,
         else => false,
@@ -1305,7 +1301,7 @@ fn implicitlyCast(self: *Parser, scope: Scope, node: Node, @"type": Type) Error!
                 .type = .type,
                 .payload = @intFromEnum(@"type"),
             } };
-            if (changed) try self.foldNode(scope, node, .value);
+            if (changed) try self.foldNode(scope, node, .check);
         },
         .value => |value| self.getNodeEntry(scope, node).* =
             .{ .value = try self.castValue(@"type", value) },
@@ -2594,6 +2590,7 @@ pub const TypeEntry = union(enum) {
     void,
     type,
     bool,
+    bool_vec: Vector.Len,
     compint,
     compfloat,
 
