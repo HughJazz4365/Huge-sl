@@ -4,7 +4,7 @@ vertex vert = fn void{
 	@position = .{vertex_buffer[@vertex_id], 1} 
 }
 
-const double = fn(T:type,comptime x : T) T{
+const double = fn(T:type,x : T) T{
 	return x * 2
 }
 

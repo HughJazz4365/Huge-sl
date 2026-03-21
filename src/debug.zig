@@ -177,6 +177,8 @@ pub const DebugNode = struct {
             },
             .bin_op => |bin_op| {
                 entry.node.* += 1;
+                // const tagname = @tagName(entry.self.getNodeEntry(entry.scope, entry.node.*).*);
+                // entry.node.* += entry.self.nodeConsumption(entry.scope, entry.node.*);
                 try writer.print("({f} <{s}> {f})", .{
                     entry,
                     @tagName(bin_op.op),
@@ -201,6 +203,14 @@ pub const DebugNode = struct {
             },
             .variable_reference => |var_ref| {
                 defer entry.node.* += 1;
+                if (var_ref.data.kind == .parameter) {
+                    const perm = entry.self.getFunctionPermutationEntry(
+                        entry.self.getScopeEntry(var_ref.scope).container.function_permutation,
+                    ).*;
+
+                    const name = perm.parameters[perm.absIndexToParam(var_ref.data.index).?].name;
+                    try writer.print("'{s}", .{entry.self.tokenizer.slice(name)});
+                } else //
                 switch (entry.self.getNodeEntry(var_ref.scope, var_ref.node).*) {
                     inline .function_declaration, .function_permutation_header => {
                         const param_node = var_ref.node + 1 + entry.self.nodeSequenceConsumption(
